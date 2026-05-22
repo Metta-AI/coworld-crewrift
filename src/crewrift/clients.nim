@@ -3,6 +3,7 @@ import std/os
 const
   PlayerClientRoute* = "/client/player"
   GlobalClientRoute* = "/client/global"
+  ReplayClientRoute* = "/client/replay"
   AdminClientRoute* = "/client/admin"
   RewardClientRoute* = "/client/reward"
   PlayerClientPath* = PlayerClientRoute
@@ -18,13 +19,6 @@ const
   QrcodeClientRoute* = "/qrcode.min.js"
   SnappyClientPath* = "/client/snappyjs.min.js"
   QrcodeClientPath* = "/client/qrcode.min.js"
-  CoworldPlayerClientRoute* = "/clients/player"
-  CoworldGlobalClientRoute* = "/clients/global"
-  CoworldReplayClientRoute* = "/clients/replay"
-  CoworldAdminClientRoute* = "/clients/admin"
-  CoworldRewardClientRoute* = "/clients/rewards"
-  CoworldSnappyClientRoute* = "/clients/snappyjs.min.js"
-  CoworldQrcodeClientRoute* = "/clients/qrcode.min.js"
   GlobalClientHtml* = "global_client.html"
   PlayerClientHtml* = GlobalClientHtml
   AdminClientHtml* = "admin_client.html"
@@ -38,7 +32,7 @@ proc repoDir*(): string =
 
 proc packagedClientsDir(): string =
   ## Returns client assets vendored beside the Crewrift source.
-  currentSourcePath().parentDir() / "clients"
+  repoDir() / "client"
 
 proc hasClientResources(path: string): bool =
   ## Returns true when a directory looks like a client asset root.
@@ -47,24 +41,24 @@ proc hasClientResources(path: string): bool =
 proc clientsDir*(): string =
   ## Returns the shared Crewrift clients directory.
   when defined(emscripten):
-    "clients"
+    "client"
   else:
     try:
       let
         cwd = getCurrentDir()
         candidates = [
-          cwd / "clients",
+          cwd / "client",
           cwd,
-          cwd / ".." / "clients",
-          repoDir() / "clients",
+          cwd / ".." / "client",
+          repoDir() / "client",
           packagedClientsDir()
         ]
       for candidate in candidates:
         if candidate.hasClientResources():
           return candidate
-      repoDir() / "clients"
+      repoDir() / "client"
     except OSError:
-      repoDir() / "clients"
+      repoDir() / "client"
 
 proc clientDataDir*(): string =
   ## Returns the local client data directory.
@@ -85,20 +79,18 @@ proc clientDistPath*(path: string): string =
 proc clientRoute*(route: string, playerRoute = PlayerClientRoute): string =
   ## Maps public client aliases to the underlying shared client route.
   case route
-  of CoworldPlayerClientRoute, PlayerClientRoute, PlayerClientHtmlRoute:
+  of PlayerClientRoute, PlayerClientHtmlRoute:
     playerRoute
-  of CoworldGlobalClientRoute, CoworldReplayClientRoute, GlobalClientRoute,
-      GlobalClientHtmlRoute, "/client/global_client.html":
+  of GlobalClientRoute, ReplayClientRoute, GlobalClientHtmlRoute, "/client/global_client.html":
     GlobalClientRoute
-  of CoworldAdminClientRoute, AdminClientRoute, AdminClientHtmlRoute:
+  of AdminClientRoute, AdminClientHtmlRoute:
     AdminClientRoute
-  of CoworldRewardClientRoute, RewardClientRoute, RewardsClientPath,
-      RewardClientHtmlRoute, "/client/reward.html",
+  of RewardClientRoute, RewardsClientPath, RewardClientHtmlRoute, "/client/reward.html",
       "/client/reward_client.html":
     RewardClientRoute
-  of CoworldSnappyClientRoute, SnappyClientPath:
+  of SnappyClientPath:
     SnappyClientRoute
-  of CoworldQrcodeClientRoute, QrcodeClientPath:
+  of QrcodeClientPath:
     QrcodeClientRoute
   else:
     route

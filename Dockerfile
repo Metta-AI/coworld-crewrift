@@ -54,6 +54,6 @@ COPY --from=build /workspace/crewrift/*.json ./
 COPY --from=build /workspace/crewrift/*.aseprite ./
 COPY --from=build /workspace/crewrift/*.png ./
 COPY --from=build /workspace/crewrift/data ./data
-COPY --from=build /workspace/crewrift/clients ./clients
+COPY --from=build /workspace/crewrift/client ./client
 
 CMD ["/bin/crewrift", "--address:0.0.0.0", "--port:8080"]

@@ -373,7 +373,7 @@ proc replayRequestUri(request: Request): string =
 
 proc replayRequestUriOrPending(request: Request): tuple[uri: string, loaded: bool] =
   ## Returns the websocket URI, falling back to the URI captured when serving
-  ## /clients/replay. Kubernetes service-proxy websocket upgrades do not
+  ## /client/replay. Kubernetes service-proxy websocket upgrades do not
   ## preserve query params, so the preceding client HTML request is the durable
   ## place to capture the artifact URI.
   result.uri = request.replayRequestUri()
@@ -481,7 +481,7 @@ proc httpHandler(request: Request) =
           withLock appState.lock:
             appState.kickRequests.add(identity)
         request.respondControl(202, "kick queued\n")
-  elif request.path == CoworldReplayClientRoute and request.httpMethod == "GET":
+  elif request.path == ReplayClientRoute and request.httpMethod == "GET":
     if replayServerModeEnabled():
       let uri = request.replayRequestUri()
       if uri.len == 0:

@@ -404,7 +404,7 @@ proc atlasPath(): string =
   let dir = gameDir()
   for candidate in [
     dir / "dist" / "atlas.png",
-    dir / ".." / "clients" / "dist" / "atlas.png"
+    dir / ".." / "client" / "dist" / "atlas.png"
   ]:
     if fileExists(candidate):
       return candidate
@@ -5652,7 +5652,7 @@ when isMainModule and not defined(italkalotLibrary):
     gui = false
     name = ""
     mapPath = ""
-    url = getEnv("COGAMES_ENGINE_WS_URL")
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     token = ""
     slot = -1
     exitOnDisconnect = url.len > 0

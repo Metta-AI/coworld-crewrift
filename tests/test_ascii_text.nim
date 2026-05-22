@@ -17,7 +17,7 @@ type TextCase = object
 
 proc loadTestAsciiSprites(): PixelFont =
   ## Loads the Crewrift tiny ASCII font for text OCR tests.
-  loadPalette(RootDir / "clients" / "data" / "pallete.png")
+  loadPalette(RootDir / "client" / "data" / "pallete.png")
   loadAsciiSprites(GameDir / "tiny5.aseprite")
 
 proc renderText(

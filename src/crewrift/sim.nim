@@ -437,23 +437,23 @@ proc gameDir*(): string =
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
   when defined(emscripten):
-    "clients" / "data"
+    "client" / "data"
   else:
     let
       cwd = getCurrentDir()
       sourceDir = currentSourcePath().parentDir()
       repoDir = sourceDir.parentDir().parentDir()
       candidates = [
-        cwd / "clients" / "data",
+        cwd / "client" / "data",
         cwd / "data",
-        cwd / ".." / "clients" / "data",
-        repoDir / "clients" / "data",
-        sourceDir / "clients" / "data"
+        cwd / ".." / "client" / "data",
+        repoDir / "client" / "data",
+        sourceDir / "client" / "data"
       ]
     for candidate in candidates:
       if dirExists(candidate):
         return candidate
-    repoDir / "clients" / "data"
+    repoDir / "client" / "data"
 
 proc resolveGamePath*(path: string, baseDir = ""): string =
   ## Resolves a game data path against the map file and game directory.
