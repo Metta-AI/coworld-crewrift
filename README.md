@@ -114,7 +114,7 @@ Useful config fields:
 - `killCooldownTicks`: kill cooldown.
 - `voteTimerTicks`: voting duration in ticks. At 24 FPS, 6000 ticks is 250 seconds.
 - `buttonCalls`: emergency button calls allowed per player.
-- `mapPath`: map JSON file to load. The default is `map.json`.
+- `mapPath`: resource map file to load. The default is `data/croatoan.resources`.
 
 You can also load config from a file:
 
@@ -220,20 +220,21 @@ nim r players/nottoodumb/nottoodumb.nim -- --name nottoodumb --slot 0
 
 ### Map Files
 
-The default map is `map.json`. It controls the Skeld image, Aseprite layer
-indices, task stations, vents, emergency button rectangle, meeting home point,
-and room names used by the bots. Map images currently need to be `952x534`.
+The default map is `data/croatoan.resources`. It controls task stations,
+vents, and room names. It is paired with `data/croatoan.aseprite`, whose
+layers provide the map, walkability, and walls. Map images currently need to be
+`1235x659`.
 
 Use a different map with `--map`:
 
 ```sh
-nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --map:map.json
+nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --map:data/croatoan.resources
 ```
 
 Or set it in config:
 
 ```sh
-nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"map.json","minPlayers":8}'
+nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"data/croatoan.resources","minPlayers":8}'
 ```
 
 ### Slot Config For Source Tests

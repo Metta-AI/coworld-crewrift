@@ -471,7 +471,7 @@ proc resolveGamePath*(path: string, baseDir = ""): string =
   gameDir() / trimmed
 
 proc resolveMapPath*(path: string): string =
-  ## Resolves a Crewrift map JSON path.
+  ## Resolves a Crewrift resource map path.
   let trimmed =
     if path.strip().len == 0:
       DefaultMapPath
@@ -570,110 +570,6 @@ proc crewVariantIndex*(slotId: int): int =
     return 0
   ((slotId mod CrewSpriteVariants) + CrewSpriteVariants) mod
     CrewSpriteVariants
-
-proc requireObject(node: JsonNode, name: string): JsonNode =
-  ## Reads one required JSON object field.
-  if node.kind != JObject or not node.hasKey(name):
-    raise newException(CrewriftError, "Map is missing object field " & name & ".")
-  result = node[name]
-  if result.kind != JObject:
-    raise newException(CrewriftError, "Map field " & name & " must be an object.")
-
-proc requireArray(node: JsonNode, name: string): JsonNode =
-  ## Reads one required JSON array field.
-  if node.kind != JObject or not node.hasKey(name):
-    raise newException(CrewriftError, "Map is missing array field " & name & ".")
-  result = node[name]
-  if result.kind != JArray:
-    raise newException(CrewriftError, "Map field " & name & " must be an array.")
-
-proc requireString(node: JsonNode, name: string): string =
-  ## Reads one required JSON string field.
-  if node.kind != JObject or not node.hasKey(name):
-    raise newException(CrewriftError, "Map is missing string field " & name & ".")
-  let item = node[name]
-  if item.kind != JString:
-    raise newException(CrewriftError, "Map field " & name & " must be a string.")
-  item.getStr()
-
-proc optionalString(node: JsonNode, name, default: string): string =
-  ## Reads one optional JSON string field.
-  if node.kind != JObject or not node.hasKey(name):
-    return default
-  let item = node[name]
-  if item.kind != JString:
-    raise newException(CrewriftError, "Map field " & name & " must be a string.")
-  item.getStr()
-
-proc requireInt(node: JsonNode, name: string): int =
-  ## Reads one required JSON integer field.
-  if node.kind != JObject or not node.hasKey(name):
-    raise newException(CrewriftError, "Map is missing integer field " & name & ".")
-  let item = node[name]
-  if item.kind != JInt:
-    raise newException(CrewriftError, "Map field " & name & " must be an integer.")
-  item.getInt()
-
-proc optionalInt(node: JsonNode, name: string, default: int): int =
-  ## Reads one optional JSON integer field.
-  if node.kind != JObject or not node.hasKey(name):
-    return default
-  let item = node[name]
-  if item.kind != JInt:
-    raise newException(CrewriftError, "Map field " & name & " must be an integer.")
-  item.getInt()
-
-proc readMapRect(node: JsonNode, name: string): MapRect =
-  ## Reads one required map rectangle.
-  let item = node.requireObject(name)
-  MapRect(
-    x: item.requireInt("x"),
-    y: item.requireInt("y"),
-    w: item.requireInt("w"),
-    h: item.requireInt("h")
-  )
-
-proc readMapPoint(node: JsonNode, name: string): MapPoint =
-  ## Reads one required map point.
-  let item = node.requireObject(name)
-  MapPoint(
-    x: item.requireInt("x"),
-    y: item.requireInt("y")
-  )
-
-proc readTaskStation(node: JsonNode): TaskStation =
-  ## Reads one task station from map JSON.
-  TaskStation(
-    name: node.requireString("name"),
-    x: node.requireInt("x"),
-    y: node.requireInt("y"),
-    w: node.requireInt("w"),
-    h: node.requireInt("h")
-  )
-
-proc readVent(node: JsonNode): Vent =
-  ## Reads one vent from map JSON.
-  let group = node.requireString("group")
-  if group.len == 0:
-    raise newException(CrewriftError, "Map vent group cannot be empty.")
-  Vent(
-    x: node.requireInt("x"),
-    y: node.requireInt("y"),
-    w: node.requireInt("w"),
-    h: node.requireInt("h"),
-    group: group[0],
-    groupIndex: node.requireInt("groupIndex")
-  )
-
-proc readRoom(node: JsonNode): Room =
-  ## Reads one named room rectangle from map JSON.
-  Room(
-    name: node.requireString("name"),
-    x: node.requireInt("x"),
-    y: node.requireInt("y"),
-    w: node.requireInt("w"),
-    h: node.requireInt("h")
-  )
 
 proc centerPoint(rect: ResourceRect): MapPoint =
   ## Returns the center point for one resource rectangle.
@@ -826,20 +722,21 @@ proc validateMap(gameMap: CrewriftMap) =
       gameMap.height
     )
 
-proc loadResourceCrewriftMap(resolvedPath: string): CrewriftMap =
+proc loadResourceCrewriftMap(
+  resolvedPath: string,
+  readAsepriteSize = true
+): CrewriftMap =
   ## Loads a Crewrift map from a CSS-like resource file.
   let
     baseDir = resolvedPath.splitFile().dir
     asepritePath = resolvedPath.changeFileExt(".aseprite")
-  if not fileExists(asepritePath):
+  if readAsepriteSize and not fileExists(asepritePath):
     raise newException(
       CrewriftError,
       "Resource map is missing matching aseprite: " & asepritePath
     )
 
-  let
-    sprite = readAseprite(asepritePath)
-    rects = loadResourceRects(resolvedPath)
+  let rects = loadResourceRects(resolvedPath)
   if rects.len == 0:
     raise newException(
       CrewriftError,
@@ -849,8 +746,13 @@ proc loadResourceCrewriftMap(resolvedPath: string): CrewriftMap =
   result.name = resolvedPath.splitFile().name
   result.path = resolvedPath
   result.asepritePath = resolveGamePath(asepritePath, baseDir)
-  result.width = sprite.header.width
-  result.height = sprite.header.height
+  if readAsepriteSize:
+    let sprite = readAseprite(asepritePath)
+    result.width = sprite.header.width
+    result.height = sprite.header.height
+  else:
+    result.width = MapWidth
+    result.height = MapHeight
   result.mapLayer = 0
   result.walkLayer = 1
   result.wallLayer = 2
@@ -910,45 +812,24 @@ proc loadResourceCrewriftMap(resolvedPath: string): CrewriftMap =
   result.validateMap()
 
 proc loadCrewriftMap*(path = ""): CrewriftMap =
-  ## Loads a Crewrift map file.
-  let
-    resolvedPath = resolveMapPath(path)
-    baseDir = resolvedPath.splitFile().dir
-  if resolvedPath.splitFile().ext.toLowerAscii() == ".resources":
-    return loadResourceCrewriftMap(resolvedPath)
-  var node: JsonNode
-  try:
-    node = parseJson(readFile(resolvedPath))
-  except JsonParsingError as e:
-    raise newException(CrewriftError, "Could not parse map JSON: " & e.msg)
-  except IOError as e:
-    raise newException(CrewriftError, "Could not read map JSON: " & e.msg)
-  if node.kind != JObject:
-    raise newException(CrewriftError, "Map JSON must be an object.")
+  ## Loads a Crewrift resource map and its matching Aseprite file.
+  let resolvedPath = resolveMapPath(path)
+  if resolvedPath.splitFile().ext.toLowerAscii() != ".resources":
+    raise newException(
+      CrewriftError,
+      "Map path must be a .resources file: " & resolvedPath
+    )
+  loadResourceCrewriftMap(resolvedPath)
 
-  let layers = node.requireObject("layers")
-  result.name = node.optionalString("name", "Unknown")
-  result.path = resolvedPath
-  result.width = node.optionalInt("width", MapWidth)
-  result.height = node.optionalInt("height", MapHeight)
-  result.asepritePath = node.optionalString("asepritePath", "")
-  if result.asepritePath.len == 0:
-    result.asepritePath = node.requireString("aseprite")
-  result.asepritePath = resolveGamePath(result.asepritePath, baseDir)
-  result.mapLayer = layers.optionalInt("map", 0)
-  result.walkLayer = layers.optionalInt("walk", 1)
-  result.wallLayer = layers.optionalInt("walls", 2)
-  result.button = node.readMapRect("button")
-  result.home = node.readMapPoint("home")
-
-  for item in node.requireArray("tasks"):
-    result.tasks.add(item.readTaskStation())
-  for item in node.requireArray("vents"):
-    result.vents.add(item.readVent())
-  for item in node.requireArray("rooms"):
-    result.rooms.add(item.readRoom())
-
-  result.validateMap()
+proc loadCrewriftMapMetadata*(path = ""): CrewriftMap =
+  ## Loads resource map metadata without opening map image assets.
+  let resolvedPath = resolveMapPath(path)
+  if resolvedPath.splitFile().ext.toLowerAscii() != ".resources":
+    raise newException(
+      CrewriftError,
+      "Map path must be a .resources file: " & resolvedPath
+    )
+  loadResourceCrewriftMap(resolvedPath, readAsepriteSize = false)
 
 proc asepritePixelAt(
   aseprite: AsepriteSprite,
@@ -1316,10 +1197,6 @@ proc readConfigSlots(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
       slot.hasColor = true
     slots.add(slot)
 
-proc defaultSlotName(slotIndex: int): string =
-  ## Returns the canonical name for one generated tournament slot.
-  "Player" & $(slotIndex + 1)
-
 proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
   ## Reads optional fixed player slot tokens.
   if not node.hasKey("tokens"):
@@ -1348,8 +1225,6 @@ proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
           "].token."
       )
     slots[i].token = token
-    if slots[i].name.len == 0:
-      slots[i].name = defaultSlotName(i)
 
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
@@ -1388,15 +1263,11 @@ proc validate(config: GameConfig) =
     )
   if config.closedRoster:
     for i, slot in config.slots:
-      if slot.name.len == 0:
+      if slot.name.len == 0 and slot.token.len == 0:
         raise newException(
           CrewriftError,
-          "Config field closedRoster requires slots[" & $i & "].name."
-        )
-      if slot.token.len == 0:
-        raise newException(
-          CrewriftError,
-          "Config field closedRoster requires slots[" & $i & "].token."
+          "Config field closedRoster requires slots[" & $i &
+            "] to have a name or token."
         )
   for i in 0 ..< config.slots.len:
     for j in i + 1 ..< config.slots.len:
@@ -1785,6 +1656,8 @@ proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
 proc slotRestricted(config: GameConfig, slotIndex: int): bool =
   ## Returns true when a slot has identity restrictions.
   let slot = config.slotConfig(slotIndex)
+  if not config.closedRoster and slot.name.len == 0:
+    return false
   slot.name.len > 0 or slot.token.len > 0
 
 proc slotAuthMatches(
@@ -1797,7 +1670,8 @@ proc slotAuthMatches(
   let slot = config.slotConfig(slotIndex)
   if slot.name.len > 0 and address != slot.name:
     return false
-  if slot.token.len > 0 and token != slot.token:
+  if slot.token.len > 0 and token != slot.token and
+      (config.closedRoster or slot.name.len > 0):
     return false
   true
 
@@ -1814,7 +1688,8 @@ proc validatePlayerSlot(
       CrewriftError,
       "Player name does not match configured slot " & $slotIndex & "."
     )
-  if slot.token.len > 0 and token != slot.token:
+  if slot.token.len > 0 and token != slot.token and
+      (config.closedRoster or slot.name.len > 0):
     raise newException(
       CrewriftError,
       "Player token does not match configured slot " & $slotIndex & "."

@@ -30,7 +30,7 @@ Build and upload the Crewrift Coworld release from Crewrift master.
 
 Steps:
   1. git pull --ff-only and require a clean master checkout.
-  2. Build and push GHCR images for the game runner and ivotewell baseline.
+  2. Build and push GHCR images for the game runner and notsus baseline.
   3. Run coworld upload-coworld --build with a temporary version override.
   4. Rebuild and upload the hosted replay viewer bundle to S3.
 
@@ -216,9 +216,9 @@ build_and_push_ghcr_images() {
   run docker buildx build \
     --platform linux/amd64 \
     --push \
-    -f "${REPO_ROOT}/players/ivotewell/Dockerfile" \
-    -t "${REGISTRY}/crewrift-ivotewell:${VERSION}" \
-    -t "${REGISTRY}/crewrift-ivotewell:latest" \
+    -f "${REPO_ROOT}/players/notsus/Dockerfile" \
+    -t "${REGISTRY}/crewrift-notsus:${VERSION}" \
+    -t "${REGISTRY}/crewrift-notsus:latest" \
     "${REPO_ROOT}"
 }
 

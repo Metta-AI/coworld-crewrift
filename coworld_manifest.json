@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "crewrift",
     "version": "0.1.20",
@@ -209,9 +209,9 @@
           "default": true
         },
         "mapPath": {
-          "description": "Map JSON file path.",
+          "description": "Resource map file path.",
           "type": "string",
-          "default": "map.json"
+          "default": "data/croatoan.resources"
         }
       }
     },
@@ -375,11 +375,14 @@
   },
   "player": [
     {
-      "id": "ivotewell",
-      "name": "ivotewell",
+      "id": "notsus",
+      "name": "notsus",
       "type": "player",
-      "description": "Deterministic baseline Crewrift player used for local smoke episodes.",
-      "image": "ghcr.io/treeform/crewrift-ivotewell:latest"
+      "description": "Sprite-protocol Crewrift bot used for local smoke episodes.",
+      "image": "ghcr.io/treeform/crewrift-notsus:latest",
+      "run": [
+        "/bin/notsus"
+      ]
     }
   ],
   "variants": [
@@ -398,6 +401,7 @@
         "gameOverTicks": 360,
         "maxTicks": 10000,
         "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
         "voteTimerTicks": 240,
         "killCooldownTicks": 900,
         "showTaskArrows": true,
@@ -409,28 +413,28 @@
   "certification": {
     "players": [
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       },
       {
-        "player_id": "ivotewell"
+        "player_id": "notsus"
       }
     ],
     "game_config": {
@@ -444,6 +448,7 @@
       "gameOverTicks": 1,
       "maxTicks": 300,
       "maxGames": 1,
+      "mapPath": "data/croatoan.resources",
       "voteTimerTicks": 120,
       "killCooldownTicks": 900,
       "showTaskArrows": false,

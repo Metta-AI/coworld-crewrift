@@ -34,6 +34,7 @@ RUN nimby --global sync nimby.lock && \
 COPY . .
 RUN nim c \
   -d:release \
+  -d:botHeadless \
   -d:useMalloc \
   --opt:speed \
   --stackTrace:on \
@@ -52,5 +53,7 @@ RUN apt-get update && \
 
 WORKDIR /workspace/crewrift
 COPY --from=build /workspace/crewrift/notsus /bin/notsus
+COPY --from=build /workspace/crewrift/data/croatoan.resources \
+  ./data/croatoan.resources
 
 CMD ["/bin/notsus", "--address:host.docker.internal", "--port:8080"]

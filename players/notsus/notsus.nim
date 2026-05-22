@@ -389,13 +389,13 @@ type
     visibleGhosts: seq[GhostMatch]
 
 proc gameDir(): string =
-  ## Returns the Among Them game directory.
+  ## Returns the Crewrift game directory.
   let
     sourceDir = currentSourcePath().parentDir().parentDir().parentDir()
     cwd = getCurrentDir()
     candidates = [sourceDir, cwd, cwd.parentDir(), cwd.parentDir().parentDir()]
   for candidate in candidates:
-    if fileExists(candidate / "map.json"):
+    if fileExists(candidate / DefaultMapPath):
       return candidate
   sourceDir
 
@@ -1300,6 +1300,8 @@ proc updateLocation(bot: var Bot) {.measure.} =
         "SKIP"
       elif protocolTextReady:
         bot.protocolInterstitialText
+      elif bot.spriteDetectionsReady:
+        ""
       else:
         bot.detectInterstitialText()
     bot.visibleTaskIcons.setLen(0)
@@ -4808,28 +4810,42 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
     sheet.subImage(cellX * SpriteSize, cellY * SpriteSize, SpriteSize, SpriteSize)
   )
 
+proc initBotSim(config: GameConfig): SimServer =
+  ## Builds only the sim data a headless sprite bot needs.
+  when defined(botHeadless):
+    result.config = config
+    result.gameMap = loadCrewriftMapMetadata(config.mapPath)
+    result.tasks = result.gameMap.tasks
+    result.vents = result.gameMap.vents
+    result.rooms = result.gameMap.rooms
+    result.walkMask = newSeq[bool](MapWidth * MapHeight)
+    result.wallMask = newSeq[bool](MapWidth * MapHeight)
+  else:
+    result = initSimServer(config)
+
 proc botGameDir(): string =
   ## Returns the game asset directory used by the private bot.
   for candidate in [CrewriftGameDir, AmongThemGameDir]:
-    if fileExists(candidate / "map.json"):
+    if fileExists(candidate / DefaultMapPath):
       return candidate
   gameDir()
 
 proc initBot(mapPath = ""): Bot {.measure.} =
-  ## Builds a bot and loads all map and sprite data.
+  ## Builds a bot and loads the runtime data required by its build mode.
   setCurrentDir(botGameDir())
   result = Bot()
   var config = defaultGameConfig()
   if mapPath.len > 0:
     config.mapPath = mapPath
-  result.sim = initSimServer(config)
-  let sheet = loadSpriteSheet()
-  result.playerSprite = sheet.sheetSprite(0, 0)
-  result.bodySprite = sheet.sheetSprite(1, 0)
-  result.killButtonSprite = sheet.sheetSprite(3, 0)
-  result.taskSprite = sheet.sheetSprite(4, 0)
-  result.ghostSprite = sheet.sheetSprite(6, 0)
-  result.ghostIconSprite = sheet.sheetSprite(7, 0)
+  result.sim = initBotSim(config)
+  when not defined(botHeadless):
+    let sheet = loadSpriteSheet()
+    result.playerSprite = sheet.sheetSprite(0, 0)
+    result.bodySprite = sheet.sheetSprite(1, 0)
+    result.killButtonSprite = sheet.sheetSprite(3, 0)
+    result.taskSprite = sheet.sheetSprite(4, 0)
+    result.ghostSprite = sheet.sheetSprite(6, 0)
+    result.ghostIconSprite = sheet.sheetSprite(7, 0)
   result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
@@ -4840,7 +4856,8 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
   result.lastTaskRadarResetTick = -TaskRadarResetTicks
   result.lastDropLogTick = -1_000_000
-  result.buildPatchEntries()
+  when not defined(botHeadless):
+    result.buildPatchEntries()
   result.cameraX = result.sim.buttonCameraX()
   result.cameraY = result.sim.buttonCameraY()
   result.lastCameraX = result.cameraX
