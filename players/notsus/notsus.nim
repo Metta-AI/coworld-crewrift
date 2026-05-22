@@ -134,9 +134,10 @@ const
   VoteUnknown = -1
   VoteSkip = -2
   VoteBlackMarker = 12'u8
-  VoteListenBaseTicks = 100
-  VoteListenJitterTicks = 50
-  VoteImposterSkipTicks = 150
+  VoteDeadlineTicks = sim.VoteTimerTicks
+  VoteListenBaseTicks = VoteDeadlineTicks div 4
+  VoteListenJitterTicks = VoteDeadlineTicks div 16
+  VoteImposterSkipTicks = VoteListenBaseTicks + VoteListenJitterTicks
   BodySuspectRange = 64
   ImposterHuntDelayTicks = 500
   ButtonResetCooldownLeadTicks = 150

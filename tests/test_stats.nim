@@ -490,21 +490,62 @@ suite "stats":
     sim.voteState.votes[playerVoteIndex] = timeoutIndex
     sim.voteState.votes[skipIndex] = -2
     sim.voteState.votes[timeoutIndex] = -1
-    sim.tallyVotes()
+    sim.tallyVotes(timedOut = true)
 
     let results = parseJson(sim.playerResultsJson())
     check results["names"][0].getStr() == "player-vote"
+    check results["scores"][0].getInt() == 0
     check results["vote_players"][0].getInt() == 1
     check results["vote_skip"][0].getInt() == 0
     check results["vote_timeout"][0].getInt() == 0
     check results["names"][1].getStr() == "skip"
+    check results["scores"][1].getInt() == 0
     check results["vote_players"][1].getInt() == 0
     check results["vote_skip"][1].getInt() == 1
     check results["vote_timeout"][1].getInt() == 0
     check results["names"][2].getStr() == "timeout"
+    check results["scores"][2].getInt() == VoteTimeoutPenalty
     check results["vote_players"][2].getInt() == 0
     check results["vote_skip"][2].getInt() == 0
     check results["vote_timeout"][2].getInt() == 1
+
+  test "idle task holders lose stuck score":
+    let config = defaultGameConfig()
+    var sim = initCrewriftForTest(config)
+
+    let playerIndex = sim.addPlayer("stuck", 0)
+    sim.phase = Playing
+    sim.players[playerIndex].role = Crewmate
+    sim.players[playerIndex].assignedTasks = @[0]
+    sim.players[playerIndex].lastMoveTick = sim.tickCount
+    sim.tasks[0].completed[playerIndex] = false
+
+    var inputs = newSeq[InputState](sim.players.len)
+    for _ in 0 ..< StuckPenaltyTicks - 1:
+      sim.step(inputs, inputs)
+    check sim.players[playerIndex].reward == 0
+
+    sim.step(inputs, inputs)
+    check sim.players[playerIndex].reward == StuckPenalty
+
+  test "voting does not count as stuck":
+    var config = defaultGameConfig()
+    config.voteTimerTicks = StuckPenaltyTicks + 5
+    var sim = initCrewriftForTest(config)
+
+    let playerIndex = sim.addPlayer("voter", 0)
+    sim.players[playerIndex].role = Crewmate
+    sim.players[playerIndex].assignedTasks = @[0]
+    sim.tasks[0].completed[playerIndex] = false
+    sim.startVote()
+    sim.players[playerIndex].lastMoveTick =
+      sim.tickCount - StuckPenaltyTicks
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+
+    check sim.phase == Voting
+    check sim.players[playerIndex].reward == 0
 
   test "player result json reflects draw scores":
     let config = defaultGameConfig()

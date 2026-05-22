@@ -15,6 +15,9 @@ proc initCrewriftForTest(config: GameConfig): SimServer =
     setCurrentDir(previousDir)
 
 suite "max ticks":
+  test "default vote timer is ten seconds":
+    check defaultGameConfig().voteTimerTicks == TargetFps * 10
+
   test "config json":
     var config = defaultGameConfig()
     config.maxTicks = 123

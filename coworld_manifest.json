@@ -125,7 +125,7 @@
           "description": "Voting phase duration in ticks.",
           "type": "integer",
           "minimum": 1,
-          "default": 6000
+          "default": 240
         },
         "voteResultTicks": {
           "description": "Vote result display duration in ticks.",
@@ -398,7 +398,7 @@
         "gameOverTicks": 360,
         "maxTicks": 10000,
         "maxGames": 1,
-        "voteTimerTicks": 6000,
+        "voteTimerTicks": 240,
         "killCooldownTicks": 900,
         "showTaskArrows": true,
         "showTaskBubbles": true,

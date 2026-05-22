@@ -44,6 +44,7 @@ const
   StopThreshold* = 8
   MovementSlideMaxScan = 3
   TargetFps* = 24
+  StuckPenaltyTicks* = TargetFps * 20
   SpaceColor* = 0'u8
   MapVoidColor* = 12'u8
   TintColor* = 3'u8
@@ -65,7 +66,7 @@ const
   ImposterCount* = 2
   AutoImposterCount* = true
   StartWaitTicks* = 5 * TargetFps
-  VoteTimerTicks* = 6000
+  VoteTimerTicks* = TargetFps * 10
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
   MaxTicks* = 10_000  ## 0 = no limit.
@@ -91,6 +92,8 @@ const
   TaskReward* = 1
   KillReward* = 10
   WinReward* = 100
+  VoteTimeoutPenalty* = -10
+  StuckPenalty* = -1
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -310,6 +313,7 @@ type
     homeX*, homeY*: int
     velX*, velY*: int
     carryX*, carryY*: int
+    lastMoveTick*: int
     flipH*: bool
     role*: PlayerRole
     alive*: bool
@@ -1660,6 +1664,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(player.velY)
     result.mixHashInt(player.carryX)
     result.mixHashInt(player.carryY)
+    result.mixHashInt(player.lastMoveTick)
     result.mixHashBool(player.flipH)
     result.mixHashInt(ord(player.role))
     result.mixHashBool(player.alive)
@@ -1732,6 +1737,7 @@ proc resetPlayerToHome*(sim: var SimServer, playerIndex: int) =
   sim.players[playerIndex].velY = 0
   sim.players[playerIndex].carryX = 0
   sim.players[playerIndex].carryY = 0
+  sim.players[playerIndex].lastMoveTick = sim.tickCount
   sim.players[playerIndex].activeTask = -1
   sim.players[playerIndex].taskProgress = 0
 
@@ -2134,6 +2140,7 @@ proc addPlayer*(
     address: address,
     color: color,
     lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
+    lastMoveTick: sim.tickCount,
     activeTask: -1,
     reward: sim.rewardAccounts[accountIndex].reward
   )
@@ -2344,6 +2351,7 @@ proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
   sim.tasks[taskIndex].completed[playerIndex] = true
   sim.addReward(playerIndex, TaskReward)
   sim.recordTask(playerIndex)
+  sim.players[playerIndex].lastMoveTick = sim.tickCount
 
 proc startGame*(sim: var SimServer) =
   logGameEvent(
@@ -2388,6 +2396,8 @@ proc startGame*(sim: var SimServer) =
       swap(indices[j], indices[k])
     sim.players[i].assignedTasks =
       indices[0 ..< min(sim.config.tasksPerPlayer, indices.len)]
+  for player in sim.players.mitems:
+    player.lastMoveTick = sim.tickCount
   sim.roleRevealTimer = sim.config.roleRevealTicks
   if sim.roleRevealTimer > 0:
     sim.phase = RoleReveal
@@ -3148,7 +3158,7 @@ proc allVotesCast*(sim: SimServer): bool =
       return false
   true
 
-proc tallyVotes*(sim: var SimServer) =
+proc tallyVotes*(sim: var SimServer, timedOut = false) =
   ## Counts the votes and moves to the vote-result phase.
   var counts = newSeq[int](sim.players.len)
   var skipCount = 0
@@ -3164,6 +3174,8 @@ proc tallyVotes*(sim: var SimServer) =
       elif v == -1:
         inc skipCount
         sim.recordVoteTimeout(i)
+        if timedOut:
+          sim.addReward(i, VoteTimeoutPenalty)
   var maxVotes = skipCount
   var maxPlayer = -1
   var tied = false
@@ -3208,6 +3220,49 @@ proc moveCursor*(sim: var SimServer, playerIndex: int, delta: int) =
     if cur == n or sim.players[cur].alive:
       break
   sim.voteState.cursor[playerIndex] = cur
+
+proc hasUnfinishedTasks*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when one player still has assigned tasks to finish.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  if sim.players[playerIndex].role != Crewmate:
+    return false
+  for t in sim.players[playerIndex].assignedTasks:
+    if t >= 0 and t < sim.tasks.len and
+        playerIndex < sim.tasks[t].completed.len and
+        not sim.tasks[t].completed[playerIndex]:
+      return true
+  false
+
+proc applyStuckPenalty(sim: var SimServer, playerIndex: int) =
+  ## Penalizes players who stop moving while tasks remain.
+  if sim.phase != Playing:
+    return
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].activeTask >= 0:
+    return
+  if not sim.hasUnfinishedTasks(playerIndex):
+    return
+  if sim.tickCount - sim.players[playerIndex].lastMoveTick < StuckPenaltyTicks:
+    return
+  sim.addReward(playerIndex, StuckPenalty)
+  sim.players[playerIndex].lastMoveTick = sim.tickCount
+  logGameEvent("stuck penalty: " & sim.playerText(playerIndex))
+
+proc trackMovementAndStuckPenalty(
+  sim: var SimServer,
+  playerIndex,
+  oldX,
+  oldY: int
+) =
+  ## Updates movement timers and applies idle task penalties.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.players[playerIndex].x != oldX or sim.players[playerIndex].y != oldY:
+    sim.players[playerIndex].lastMoveTick = sim.tickCount
+    return
+  sim.applyStuckPenalty(playerIndex)
 
 proc totalTasksRemaining*(sim: SimServer): int =
   for i in 0 ..< sim.players.len:
@@ -3849,6 +3904,8 @@ proc step*(
     if sim.roleRevealTimer <= 0:
       sim.phase = Playing
       sim.gameStartTick = sim.tickCount
+      for player in sim.players.mitems:
+        player.lastMoveTick = sim.tickCount
     return
 
   if sim.phase == GameOver:
@@ -3868,7 +3925,7 @@ proc step*(
   if sim.phase == Voting:
     dec sim.voteState.voteTimer
     if sim.voteState.voteTimer <= 0:
-      sim.tallyVotes()
+      sim.tallyVotes(timedOut = true)
       return
     for i in 0 ..< sim.players.len:
       if not sim.players[i].alive:
@@ -3914,7 +3971,11 @@ proc step*(
     let prev =
       if playerIndex < prevInputs.len: prevInputs[playerIndex]
       else: InputState()
+    let
+      oldX = sim.players[playerIndex].x
+      oldY = sim.players[playerIndex].y
     sim.applyInput(playerIndex, input, prev, bodiesBeforeTick)
+    sim.trackMovementAndStuckPenalty(playerIndex, oldX, oldY)
 
   sim.checkWinCondition()
   sim.checkMaxTicks()
