@@ -3,6 +3,7 @@ import
   test_ascii_text,
   test_imposter_ratio,
   test_max_ticks,
+  test_movement_slide,
   test_replay_controls,
   test_slots,
   test_start_wait,

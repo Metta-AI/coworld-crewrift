@@ -274,6 +274,10 @@ proc crewPlayerSpriteId(colorIndex, slotId: int, flipH: bool): int =
     side = if flipH: 1 else: 0
   PlayerSpriteBase + (colorIndex * CrewSpriteVariants + variant) * 2 + side
 
+proc bodySpriteId(colorIndex, slotId: int): int =
+  ## Returns the sprite id for one dead body variant.
+  BodySpriteBase + colorIndex * CrewSpriteVariants + crewVariantIndex(slotId)
+
 proc selectedCrewPlayerSpriteId(colorIndex, slotId: int, flipH: bool): int =
   ## Returns the selected sprite id for one living crew variant.
   let
@@ -586,26 +590,11 @@ proc buildCrewProtocolActorSprite(
       )
 
 proc buildSpriteProtocolBodySprite(
-  bodySprite: Sprite,
+  bodySprite: CrewSprite,
   tint: uint8
 ): seq[uint8] {.measure.} =
-  ## Builds a tinted dead body sprite for the global viewer.
-  let
-    outWidth = bodySprite.width + 2
-    outHeight = bodySprite.height + 2
-  result = newRgbaPixels(outWidth, outHeight)
-
-  proc outIndex(x, y: int): int =
-    y * outWidth + x
-
-  for y in 0 ..< bodySprite.height:
-    for x in 0 ..< bodySprite.width:
-      let colorIndex = bodySprite.pixels[bodySprite.spriteIndex(x, y)]
-      if colorIndex != TransparentColorIndex:
-        result.putRgbaPixel(
-          outIndex(x + 1, y + 1),
-          actorColor(colorIndex, tint)
-        )
+  ## Builds a selectively tinted true-color dead body sprite.
+  buildCrewProtocolActorSprite(bodySprite, tint, false)
 
 proc buildSpriteProtocolRawSprite(sprite: Sprite): seq[uint8] {.measure.} =
   ## Builds a raw global protocol sprite from a game sprite.
@@ -1306,7 +1295,7 @@ proc addProtocolVoteActorSprites(
         if player.alive:
           crewPlayerSpriteId(colorIndex, player.joinOrder, false)
         else:
-          BodySpriteBase + colorIndex
+          bodySpriteId(colorIndex, player.joinOrder)
     currentIds.add(objectId)
     packet.addObject(
       objectId,
@@ -1683,10 +1672,6 @@ proc buildSpriteProtocolInit(
         true,
         true
       )
-      bodyPixels = buildSpriteProtocolBodySprite(
-        sim.bodySprite,
-        PlayerColors[i]
-      )
     result.addSpriteChanged(
       spriteDefs,
       GhostSpriteBase + i * 2,
@@ -1719,14 +1704,18 @@ proc buildSpriteProtocolInit(
       selectedGhostLeft,
       "selected ghost " & playerColorName(i) & " left"
     )
-    result.addSpriteChanged(
-      spriteDefs,
-      BodySpriteBase + i,
-      sim.bodySprite.width + 2,
-      sim.bodySprite.height + 2,
-      bodyPixels,
-      "body " & playerColorName(i)
-    )
+    for variant in 0 ..< CrewSpriteVariants:
+      let
+        body = sim.bodySprites[variant]
+        bodyPixels = buildSpriteProtocolBodySprite(body, PlayerColors[i])
+      result.addSpriteChanged(
+        spriteDefs,
+        bodySpriteId(i, variant),
+        body.width + 2,
+        body.height + 2,
+        bodyPixels,
+        "body " & playerColorName(i)
+      )
 
 proc buildSpriteProtocolPlayerInit(
   sim: SimServer,
@@ -1837,10 +1826,6 @@ proc buildSpriteProtocolPlayerInit(
         PlayerColors[i],
         true
       )
-      bodyPixels = buildSpriteProtocolBodySprite(
-        sim.bodySprite,
-        PlayerColors[i]
-      )
     result.addSpriteChanged(
       spriteDefs,
       GhostSpriteBase + i * 2,
@@ -1857,14 +1842,18 @@ proc buildSpriteProtocolPlayerInit(
       ghostLeft,
       "ghost " & playerColorName(i) & " left"
     )
-    result.addSpriteChanged(
-      spriteDefs,
-      BodySpriteBase + i,
-      sim.bodySprite.width + 2,
-      sim.bodySprite.height + 2,
-      bodyPixels,
-      "body " & playerColorName(i)
-    )
+    for variant in 0 ..< CrewSpriteVariants:
+      let
+        body = sim.bodySprites[variant]
+        bodyPixels = buildSpriteProtocolBodySprite(body, PlayerColors[i])
+      result.addSpriteChanged(
+        spriteDefs,
+        bodySpriteId(i, variant),
+        body.width + 2,
+        body.height + 2,
+        bodyPixels,
+        "body " & playerColorName(i)
+      )
 
 proc spriteObjectId(player: Player): int =
   ## Returns the stable global protocol object id for a player.
@@ -2388,7 +2377,7 @@ proc buildSpriteProtocolPlayerUpdates*(
         body.y - SpriteDrawOffY - 1 - cameraY,
         body.y,
         MapLayerId,
-        BodySpriteBase + playerColorIndex(body.color)
+        bodySpriteId(playerColorIndex(body.color), body.slotId)
       )
 
     for other in sim.players:
@@ -2936,7 +2925,7 @@ proc buildSpriteProtocolUpdates*(
       body.y - SpriteDrawOffY - 1,
       body.y,
       MapLayerId,
-      BodySpriteBase + playerColorIndex(body.color)
+      bodySpriteId(playerColorIndex(body.color), body.slotId)
     )
 
   if sim.config.showTaskBubbles:

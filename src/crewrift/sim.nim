@@ -42,6 +42,7 @@ const
   FrictionDen* = 256
   MaxSpeed* = 704
   StopThreshold* = 8
+  MovementSlideMaxScan = 3
   TargetFps* = 24
   SpaceColor* = 0'u8
   MapVoidColor* = 12'u8
@@ -234,6 +235,7 @@ type
   Body* = object
     x*, y*: int
     color*: uint8
+    slotId*: int
 
   CrewSprite* = ref object
     width*, height*: int
@@ -343,7 +345,7 @@ type
     rewardAccounts*: seq[RewardAccount]
     bodies*: seq[Body]
     crewSprites*: seq[CrewSprite]
-    bodySprite*: Sprite
+    bodySprites*: seq[CrewSprite]
     boneSprite*: Sprite
     killButtonSprite*: Sprite
     taskIconSprite*: Sprite
@@ -513,37 +515,49 @@ proc crewPixelIsShade*(r, g, b, a: uint8): bool =
   ## Returns true when one crew source pixel is the darker tint marker.
   a >= 20'u8 and r == 0x9b'u8 and g == 0xad'u8 and b == 0xb7'u8
 
-proc crewSpriteFromImage(image: Image, index: int): CrewSprite =
-  ## Extracts one raw 16x16 crew sprite from the first row.
+proc crewSpriteFromImage(image: Image, index, row: int): CrewSprite =
+  ## Extracts one raw 16x16 crew sprite from one sheet row.
   result = CrewSprite(
     width: CrewSpriteSize,
     height: CrewSpriteSize,
     rgba: newSeq[uint8](CrewSpriteSize * CrewSpriteSize * 4)
   )
-  let baseX = index * CrewSpriteSize
+  let
+    baseX = index * CrewSpriteSize
+    baseY = row * CrewSpriteSize
   for y in 0 ..< CrewSpriteSize:
     for x in 0 ..< CrewSpriteSize:
       let
-        pixel = image[baseX + x, y]
+        pixel = image[baseX + x, baseY + y]
         offset = result.crewSpriteOffset(x, y)
       result.rgba[offset] = pixel.r
       result.rgba[offset + 1] = pixel.g
       result.rgba[offset + 2] = pixel.b
       result.rgba[offset + 3] = pixel.a
 
-proc loadCrewSprites*(): seq[CrewSprite] =
-  ## Loads the first eight 16x16 crew sprites.
+proc loadCrewSpriteRow*(row: int, label: string): seq[CrewSprite] =
+  ## Loads eight 16x16 crew sprites from one sheet row.
+  if row < 0:
+    raise newException(CrewriftError, "Crew sprite sheet row is negative.")
   let
     path = crewSheetPath()
     image = readAsepriteImage(path)
   if image.width < CrewSpriteSize * CrewSpriteVariants or
-      image.height < CrewSpriteSize:
+      image.height < CrewSpriteSize * (row + 1):
     raise newException(
       CrewriftError,
-      "Crew sprite sheet must contain eight 16x16 sprites: " & path
+      label & " sprite sheet row is missing eight 16x16 sprites: " & path
     )
   for i in 0 ..< CrewSpriteVariants:
-    result.add(image.crewSpriteFromImage(i))
+    result.add(image.crewSpriteFromImage(i, row))
+
+proc loadCrewSprites*(): seq[CrewSprite] =
+  ## Loads the first eight 16x16 living crew sprites.
+  loadCrewSpriteRow(0, "Crew")
+
+proc loadCrewBodySprites*(): seq[CrewSprite] =
+  ## Loads the first eight 16x16 dead body sprites.
+  loadCrewSpriteRow(1, "Crew body")
 
 proc crewVariantIndex*(slotId: int): int =
   ## Returns the crew sprite variant for one player slot.
@@ -1666,6 +1680,7 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(body.x)
     result.mixHashInt(body.y)
     result.mixHashInt(int(body.color))
+    result.mixHashInt(body.slotId)
   result.mixHashInt(sim.tasks.len)
   for task in sim.tasks:
     result.mixHashInt(task.completed.len)
@@ -2385,13 +2400,109 @@ proc startGame*(sim: var SimServer) =
   sim.lastLobbyNeededLogged = -1
   sim.lastLobbySecondsLogged = -1
 
+proc signOf(value: int): int {.inline.} =
+  ## Returns the sign of one integer.
+  if value < 0:
+    return -1
+  if value > 0:
+    return 1
+  0
+
+proc slideScanRadius(sim: SimServer, carry, velocity: int): int =
+  ## Returns the perpendicular scan radius for blocked movement.
+  let
+    pending = abs(carry) div sim.config.motionScale
+    speed = (
+      abs(velocity) + sim.config.motionScale - 1
+    ) div sim.config.motionScale
+  clamp(max(1, max(pending, speed)), 1, MovementSlideMaxScan)
+
+proc canSlideHorizontal(
+  sim: SimServer,
+  x, y, step, offset: int
+): bool =
+  ## Returns true when a horizontal step can slide by one offset.
+  if offset == 0:
+    return false
+  let slideStep = signOf(offset)
+  for i in 1 .. abs(offset):
+    if not sim.canOccupy(x, y + slideStep * i):
+      return false
+  sim.canOccupy(x + step, y + offset)
+
+proc canSlideVertical(
+  sim: SimServer,
+  x, y, step, offset: int
+): bool =
+  ## Returns true when a vertical step can slide by one offset.
+  if offset == 0:
+    return false
+  let slideStep = signOf(offset)
+  for i in 1 .. abs(offset):
+    if not sim.canOccupy(x + slideStep * i, y):
+      return false
+  sim.canOccupy(x + offset, y + step)
+
+proc trySlideOffset(
+  sim: SimServer,
+  player: var Player,
+  step, offset: int,
+  horizontal: bool
+): bool =
+  ## Tries one candidate slide offset for a blocked movement step.
+  if horizontal:
+    if not sim.canSlideHorizontal(player.x, player.y, step, offset):
+      return false
+    player.x += step
+    player.y += offset
+  else:
+    if not sim.canSlideVertical(player.x, player.y, step, offset):
+      return false
+    player.x += offset
+    player.y += step
+  true
+
+proc trySlideMove(
+  sim: SimServer,
+  player: var Player,
+  step, radius, preferredSlide: int,
+  horizontal: bool
+): bool =
+  ## Tries nearby slide offsets for one blocked movement step.
+  if radius <= 0:
+    return false
+  let preferred = signOf(preferredSlide)
+  for distance in 1 .. radius:
+    if preferred != 0:
+      if sim.trySlideOffset(
+        player,
+        step,
+        preferred * distance,
+        horizontal
+      ):
+        return true
+      if sim.trySlideOffset(
+        player,
+        step,
+        -preferred * distance,
+        horizontal
+      ):
+        return true
+    else:
+      if sim.trySlideOffset(player, step, -distance, horizontal):
+        return true
+      if sim.trySlideOffset(player, step, distance, horizontal):
+        return true
+  false
+
 proc applyMomentumAxis(
   sim: SimServer,
   player: var Player,
   carry: var int,
-  velocity: int,
+  velocity, preferredSlide: int,
   horizontal: bool
 ) =
+  ## Applies one fixed-point movement axis with collision sliding.
   carry += velocity
   while abs(carry) >= sim.config.motionScale:
     let step = if carry < 0: -1 else: 1
@@ -2405,24 +2516,16 @@ proc applyMomentumAxis(
         player.y = ny
       carry -= step * sim.config.motionScale
     else:
-      var slid = false
-      if horizontal:
-        for slideY in [player.y - 1, player.y + 1]:
-          if sim.canOccupy(nx, slideY):
-            player.x = nx
-            player.y = slideY
-            carry -= step * sim.config.motionScale
-            slid = true
-            break
+      let radius = sim.slideScanRadius(carry, velocity)
+      if sim.trySlideMove(
+        player,
+        step,
+        radius,
+        preferredSlide,
+        horizontal
+      ):
+        carry -= step * sim.config.motionScale
       else:
-        for slideX in [player.x - 1, player.x + 1]:
-          if sim.canOccupy(slideX, ny):
-            player.x = slideX
-            player.y = ny
-            carry -= step * sim.config.motionScale
-            slid = true
-            break
-      if not slid:
         carry = 0
         break
 
@@ -2475,7 +2578,8 @@ proc tryKill*(sim: var SimServer, killerIndex: int) =
     sim.bodies.add Body(
       x: sim.players[bestTarget].x,
       y: sim.players[bestTarget].y,
-      color: sim.players[bestTarget].color
+      color: sim.players[bestTarget].color,
+      slotId: sim.players[bestTarget].joinOrder
     )
     sim.addReward(killerIndex, KillReward)
     sim.recordKill(killerIndex)
@@ -2781,8 +2885,31 @@ proc applyInput*(
   elif inputX > 0:
     player.flipH = false
 
-  sim.applyMomentumAxis(player, player.carryX, player.velX, true)
-  sim.applyMomentumAxis(player, player.carryY, player.velY, false)
+  let
+    preferredSlideY =
+      if inputY != 0:
+        inputY
+      else:
+        signOf(player.velY)
+    preferredSlideX =
+      if inputX != 0:
+        inputX
+      else:
+        signOf(player.velX)
+  sim.applyMomentumAxis(
+    player,
+    player.carryX,
+    player.velX,
+    preferredSlideY,
+    true
+  )
+  sim.applyMomentumAxis(
+    player,
+    player.carryY,
+    player.velY,
+    preferredSlideX,
+    false
+  )
 
   if input.b:
     if player.role == Imposter:
@@ -3603,9 +3730,7 @@ proc initSimServer*(config: GameConfig): SimServer =
 
   let sheet = loadSpriteSheet()
   result.crewSprites = loadCrewSprites()
-  result.bodySprite = spriteFromImage(
-    sheet.subImage(SpriteSize, 0, SpriteSize, SpriteSize)
-  )
+  result.bodySprites = loadCrewBodySprites()
   result.boneSprite = spriteFromImage(
     sheet.subImage(SpriteSize * 2, 0, SpriteSize, SpriteSize)
   )
