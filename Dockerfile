@@ -52,6 +52,5 @@ WORKDIR /workspace/crewrift
 COPY --from=build /workspace/crewrift/crewrift /bin/crewrift
 COPY --from=build /workspace/crewrift/*.json ./
 COPY --from=build /workspace/crewrift/data ./data
-COPY --from=build /workspace/crewrift/client ./client
 
 CMD ["/bin/crewrift"]

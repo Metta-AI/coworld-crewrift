@@ -1,5 +1,5 @@
-import pixie, protocol, framebuffers, sim, texts, votereader,
-  truecrew/protocols
+import pixie, protocol, framebuffers, sim, texts,
+  notsus/[protocols, votereader]
 when defined(profileTracePath):
   import profile
 else:

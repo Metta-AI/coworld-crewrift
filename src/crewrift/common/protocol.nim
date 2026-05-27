@@ -18,7 +18,7 @@ const
   ButtonSelect* = 1'u8 shl 4
   ButtonA* = 1'u8 shl 5
   ButtonB* = 1'u8 shl 6
-  EmbeddedPalettePng = staticRead("../clients/data/pallete.png")
+  EmbeddedPalettePng = staticRead("../../../data/pallete.png")
 
 type
   InputState* = object

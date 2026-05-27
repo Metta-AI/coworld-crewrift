@@ -1,7 +1,7 @@
 import
   std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
-  curly, mummy,
-  crewrift/clients, protocol, sim, global, profile, replays
+  bitworld/client as bitworldClient, curly, mummy,
+  protocol, sim, global, profile, replays
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -63,23 +63,30 @@ proc isWebSocketUpgrade(request: Request): bool =
   ## Returns true when the GET request is a websocket upgrade.
   request.headers["Sec-WebSocket-Key"].len > 0
 
+proc clientStaticBody(route: string): string =
+  ## Returns the embedded Bitworld client body for one route.
+  case bitworldClient.clientRoute(route)
+  of bitworldClient.PlayerClientRoute,
+      bitworldClient.GlobalClientRoute,
+      bitworldClient.AdminClientRoute,
+      bitworldClient.RewardClientRoute:
+    bitworldClient.EmbeddedGlobalClientHtml
+  of bitworldClient.SnappyClientRoute:
+    bitworldClient.EmbeddedSnappyClientJs
+  else:
+    ""
+
 proc serveClientHtml(request: Request, route: string): bool =
   ## Serves one static client file for a known client route.
   if request.httpMethod != "GET":
     return false
-  let filePath = clientStaticPath(route)
-  if filePath.len == 0:
+  let body = clientStaticBody(route)
+  if body.len == 0:
     return false
   var headers: HttpHeaders
-  headers["Content-Type"] = clientStaticContentType(route)
+  headers["Content-Type"] = bitworldClient.clientStaticContentType(route)
   headers["Cache-Control"] = "no-cache"
-  if not fileExists(filePath):
-    request.respond(404, headers, "Missing static client: " & route)
-    return true
-  try:
-    request.respond(200, headers, readFile(filePath))
-  except IOError as e:
-    request.respond(500, headers, "Could not read static client: " & e.msg)
+  request.respond(200, headers, body)
   true
 
 proc serveStaticClientHtml(request: Request): bool =
@@ -481,7 +488,8 @@ proc httpHandler(request: Request) =
           withLock appState.lock:
             appState.kickRequests.add(identity)
         request.respondControl(202, "kick queued\n")
-  elif request.path == ReplayClientRoute and request.httpMethod == "GET":
+  elif request.path == bitworldClient.CoworldReplayClientRoute and
+      request.httpMethod == "GET":
     if replayServerModeEnabled():
       let uri = request.replayRequestUri()
       if uri.len == 0:

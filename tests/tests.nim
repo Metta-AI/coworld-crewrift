@@ -4,7 +4,6 @@ import
   test_imposter_ratio,
   test_max_ticks,
   test_movement_slide,
-  test_replay_controls,
   test_slots,
   test_start_wait,
   test_stats,

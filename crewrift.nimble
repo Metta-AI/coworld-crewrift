@@ -4,15 +4,6 @@ description = "Retro 128x128 multiplayer social deduction AI environment."
 license     = "MIT"
 
 srcDir = "src"
-bin = @[
-  "crewrift",
-  "crewrift/replay_viewer",
-  "crewrift/clients/global_client",
-  "crewrift/clients/reward_client"
-]
-
-switch("threads", "on")
-switch("mm", "orc")
 
 requires "nim >= 2.2.4"
 requires "pixie"
