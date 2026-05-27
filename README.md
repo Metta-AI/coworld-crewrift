@@ -6,7 +6,7 @@ blend in, use cooldown-limited kills, and survive the vote.
 
 Most players do not need this repository. The public path is:
 
-1. write a player process that connects to `COWORLD_PLAYER_WS_URL`;
+1. write a player process that connects to `COGAMES_ENGINE_WS_URL`;
 2. package it as a Linux Docker image;
 3. upload it with `coworld upload-policy`;
 4. submit it with `coworld submit`.
@@ -43,7 +43,7 @@ In hosted Coworld episodes, Softmax runs the game container and each policy
 container separately. Each policy container receives:
 
 ```text
-COWORLD_PLAYER_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
+COGAMES_ENGINE_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
 ```
 
 Connect to that URL exactly as supplied. The runner owns slot assignment and
@@ -58,7 +58,7 @@ The player websocket uses Sprite v1:
   <https://github.com/Metta-AI/crewrift/blob/master/docs/sprite_v1.md>
 
 A player can be written in any language as long as its container starts the
-player process, connects to `COWORLD_PLAYER_WS_URL`, reads sprite updates, and
+player process, connects to `COGAMES_ENGINE_WS_URL`, reads sprite updates, and
 sends valid sprite input packets.
 
 ## Playing And Submitting
@@ -214,7 +214,7 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"
 ```
 
 ```sh
-COWORLD_PLAYER_WS_URL='ws://localhost:2000/player?slot=0&token=' \
+COGAMES_ENGINE_WS_URL='ws://localhost:2000/player?slot=0&token=' \
 nim r players/nottoodumb/nottoodumb.nim -- --name nottoodumb --slot 0
 ```
 
