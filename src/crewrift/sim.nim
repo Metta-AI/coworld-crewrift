@@ -18,7 +18,10 @@ const
   ReplayLeaveRecord* = 0x04'u8
   ReplayFps* = 24
   DefaultMapPath* = "data/croatoan.resources"
-  DarkBgPath* = "darkbg.aseprite"
+  DarkBgPath* = "data/darkbg.aseprite"
+  SpriteSheetAsepritePath = "data/spritesheet.aseprite"
+  SpriteSheetPngPath = "data/spritesheet.png"
+  TinyFontPath = "data/tiny5.aseprite"
   MapWidth* = 1235
   MapHeight* = 659
   SpriteSize* = 12
@@ -484,14 +487,15 @@ proc resolveMapPath*(path: string): string =
 
 proc spriteSheetPath(): string =
   ## Returns the best available sprite sheet path.
-  if fileExists("spritesheet.aseprite"):
-    "spritesheet.aseprite"
-  elif fileExists(gameDir() / "spritesheet.aseprite"):
-    gameDir() / "spritesheet.aseprite"
-  elif fileExists("spritesheet.png"):
-    "spritesheet.png"
+  let
+    asepritePath = gameDir() / SpriteSheetAsepritePath
+    pngPath = gameDir() / SpriteSheetPngPath
+  if fileExists(asepritePath):
+    asepritePath
+  elif fileExists(pngPath):
+    pngPath
   else:
-    gameDir() / "spritesheet.png"
+    pngPath
 
 proc loadSpriteSheet*(): Image =
   ## Loads the sprite sheet from aseprite when available.
@@ -3688,7 +3692,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.config = config
   result.rng = initRand(config.seed)
   loadPalette(clientDataDir() / "pallete.png")
-  result.asciiSprites = loadAsciiSprites(gameDir() / "tiny5.aseprite")
+  result.asciiSprites = loadAsciiSprites(gameDir() / TinyFontPath)
 
   let sheet = loadSpriteSheet()
   result.crewSprites = loadCrewSprites()

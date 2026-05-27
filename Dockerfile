@@ -51,8 +51,6 @@ RUN apt-get update && \
 WORKDIR /workspace/crewrift
 COPY --from=build /workspace/crewrift/crewrift /bin/crewrift
 COPY --from=build /workspace/crewrift/*.json ./
-COPY --from=build /workspace/crewrift/*.aseprite ./
-COPY --from=build /workspace/crewrift/*.png ./
 COPY --from=build /workspace/crewrift/data ./data
 COPY --from=build /workspace/crewrift/client ./client
 
