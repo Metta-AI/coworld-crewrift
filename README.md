@@ -66,7 +66,7 @@ sends valid sprite input packets.
 Use the public play prompt for the current CLI install and submit flow:
 
 ```text
-https://softmax.com/play_crewrift.md
+https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/play_crewrift.md
 ```
 
 The durable command shape is:
