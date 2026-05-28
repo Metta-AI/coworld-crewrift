@@ -1,5 +1,6 @@
-import pixie,
-  ../../src/crewrift/common/[protocol, framebuffers],
+import
+  bitworld/[protocol, server],
+  pixie,
   ../../src/crewrift/[sim, texts],
   notsus/[protocols, votereader]
 when defined(profileTracePath):

@@ -1,6 +1,6 @@
 import
   std/[json, os, unittest],
-  crewrift/common/protocol,
+  bitworld/protocol,
   crewrift/sim
 
 const GameDir = currentSourcePath.parentDir.parentDir

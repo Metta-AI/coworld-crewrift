@@ -1,16 +1,12 @@
 import
   std/[algorithm, options, strutils],
+  bitworld/[protocol, server],
   pixie, supersnappy, whisky,
-  ../../../src/crewrift/common/[protocol, framebuffers],
   ../../../src/crewrift/profile
 
 const
   MaxFrameDrain* = 128
   FrameDropThreshold* = 32
-  ProtocolBytes* = (ScreenWidth * ScreenHeight) div 2
-  PacketInput = 0'u8
-  PacketChat = 1'u8
-  InputPacketBytes = 2
   MapSpriteId = 1
   MapObjectId = 1
 

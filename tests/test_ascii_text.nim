@@ -1,10 +1,8 @@
 import
   std/[os, unittest],
+  bitworld/[pixelfonts, protocol, server],
   crewrift/sim,
-  crewrift/texts,
-  crewrift/common/pixelfonts,
-  crewrift/common/protocol,
-  crewrift/common/framebuffers
+  crewrift/texts
 
 const
   GameDir = currentSourcePath.parentDir.parentDir

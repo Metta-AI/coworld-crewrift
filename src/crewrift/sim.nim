@@ -1,11 +1,10 @@
 import
   std/[json, math, os, random, strutils, tables],
-  bitworld/client as bitworldClient, jsony, pixie,
-  aseprite,
+  bitworld/aseprite, bitworld/client as bitworldClient,
+  bitworld/pixelfonts, bitworld/protocol, bitworld/server,
+  jsony, pixie,
   resources,
-  common/protocol, profile,
-  common/pixelfonts,
-  common/framebuffers
+  profile
 
 const
   GameName* = "crewrift"

@@ -1,7 +1,8 @@
 import
   std/[algorithm, monotimes, os, parseutils, strutils, times],
+  bitworld/[protocol, server],
   pixie,
-  sim, crewrift/common/protocol, crewrift/common/framebuffers
+  crewrift/sim
 
 const
   SampleWidth = ScreenWidth

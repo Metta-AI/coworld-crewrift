@@ -1,5 +1,5 @@
 import crewrift/sim, crewrift/global
-import protocol
+import bitworld/protocol
 
 echo "Testing vote render crash"
 
