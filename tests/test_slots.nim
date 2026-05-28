@@ -1,5 +1,6 @@
 import
   std/[json, os, unittest],
+  zippy,
   crewrift/replays,
   crewrift/server,
   crewrift/sim
@@ -206,7 +207,8 @@ suite "player slots":
     writer.writeJoin(24'u32, 1, "player2", 3, "0xBADA55")
     writer.closeReplayWriter()
 
-    let data = parseReplayBytes(readFile(path))
+    let replayBytes = readFile(path)
+    let data = parseReplayBytes(replayBytes)
     check data.joins.len == 2
     check data.joins[0].name == "player1"
     check data.joins[0].slot == -1
@@ -215,7 +217,31 @@ suite "player slots":
     check data.joins[1].slot == 3
     check data.joins[1].token == "0xBADA55"
 
+    let compressedData = parseReplayBytes(
+      compress(replayBytes, dataFormat = dfZlib)
+    )
+    check compressedData.joins.len == 2
+    check compressedData.joins[1].name == "player2"
+    check compressedData.joins[1].slot == 3
+    check compressedData.joins[1].token == "0xBADA55"
+
     removeFile(path)
+
+  test "replay hash mismatch keeps playback alive":
+    var replay = initReplayPlayer(ReplayData(
+      gameName: GameName,
+      gameVersion: GameVersion,
+      configJson: "{}",
+      joins: @[ReplayJoin(time: 0'u32, player: 0'u8, name: "player1", slot: -1, token: "")],
+      hashes: @[ReplayHash(tick: 1'u32, hash: 0'u64)]
+    ))
+    var sim = initCrewriftForTest(defaultGameConfig())
+
+    replay.stepReplay(sim)
+
+    check sim.tickCount == 1
+    check replay.playing
+    check replay.hashValidationFailed
 
   test "automatic slots wait behind restricted slots":
     var config = defaultGameConfig()

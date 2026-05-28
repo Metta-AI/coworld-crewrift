@@ -1,4 +1,5 @@
-import std/times
+import std/[strutils, times]
+import zippy
 import common/protocol, sim
 
 type
@@ -49,9 +50,17 @@ type
     playing*: bool
     looping*: bool
     speedIndex*: int
+    hashValidationFailed*: bool
 
 const
   PlaybackSpeeds* = [1, 2, 3, 4, 8]
+  CompressedReplayMagicPrefixes = [
+    "\x1f\x8b",
+    "\x78\x01",
+    "\x78\x5e",
+    "\x78\x9c",
+    "\x78\xda"
+  ]
 
 proc tickTime*(tick: int): uint32 =
   ## Converts a simulation tick to replay milliseconds.
@@ -145,6 +154,15 @@ proc readReplayString(bytes: string, offset: var int): string =
   result = bytes[offset ..< offset + length]
   offset += length
 
+proc replayPayloadBytes(bytes: string): string =
+  ## Returns raw replay bytes, decompressing hosted zlib artifacts.
+  if bytes.startsWith(ReplayMagic):
+    return bytes
+  for prefix in CompressedReplayMagicPrefixes:
+    if bytes.startsWith(prefix):
+      return uncompress(bytes)
+  bytes
+
 proc openReplayWriter*(path: string, configJson: string): ReplayWriter =
   ## Opens a replay file and writes the header.
   if path.len == 0:
@@ -218,6 +236,7 @@ proc writeHash*(writer: var ReplayWriter, tick: uint32, hash: uint64) =
 
 proc parseReplayBytes*(bytes: string): ReplayData =
   ## Parses one replay file buffer into memory.
+  let bytes = replayPayloadBytes(bytes)
   var offset = 0
   if bytes.len < ReplayMagic.len:
     raise newException(ReplayError, "Replay file is truncated")
@@ -298,6 +317,7 @@ proc initReplayPlayer*(data: ReplayData): ReplayPlayer =
   result.playing = true
   result.looping = false
   result.speedIndex = 0
+  result.hashValidationFailed = false
 
 proc replaySpeed*(replay: ReplayPlayer): int =
   ## Returns the current integer replay speed.
@@ -315,6 +335,7 @@ proc resetReplay*(replay: var ReplayPlayer) =
   replay.leaveIndex = 0
   replay.inputIndex = 0
   replay.hashIndex = 0
+  replay.hashValidationFailed = false
   replay.masks = @[]
   replay.lastAppliedMasks = @[]
 
@@ -378,20 +399,24 @@ proc replayInputs(
 
 proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
   ## Checks the recorded hash for the current tick.
+  if replay.hashValidationFailed:
+    return
   if replay.hashIndex >= replay.data.hashes.len:
     replay.playing = false
     return
   let expected = replay.data.hashes[replay.hashIndex]
   if int(expected.tick) < sim.tickCount:
-    raise newException(ReplayError, "Replay hash tick is missing")
+    echo "Replay hash tick is missing at tick ", sim.tickCount, "; continuing playback without hash validation"
+    replay.hashValidationFailed = true
+    return
   if int(expected.tick) > sim.tickCount:
     return
   let hash = sim.gameHash()
   if hash != expected.hash:
-    raise newException(
-      ReplayError,
-      "Replay hash mismatch at tick " & $sim.tickCount
-    )
+    echo "Replay hash mismatch at tick ", sim.tickCount,
+      "; continuing playback without hash validation"
+    replay.hashValidationFailed = true
+    return
   inc replay.hashIndex
 
 proc stepReplay*(replay: var ReplayPlayer, sim: var SimServer) =

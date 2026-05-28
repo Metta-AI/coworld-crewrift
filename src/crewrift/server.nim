@@ -479,16 +479,17 @@ proc httpHandler(request: Request) =
       bitworldClient.CoworldReplayClientRoute
     ] and request.httpMethod == "GET":
     if replayServerModeEnabled():
-      let uri = request.replayRequestUri()
-      if uri.len == 0:
+      let replayRequest = request.replayRequestUriOrPending()
+      if replayRequest.uri.len == 0 and not replayRequest.loaded:
         request.respondReplayRequestError(400, "missing replay uri\n")
         return
-      if not uri.readableReplayUri():
+      if replayRequest.uri.len > 0 and not replayRequest.uri.readableReplayUri():
         request.respondReplayRequestError(404, "replay uri is not readable\n")
         return
-      {.gcsafe.}:
-        withLock appState.lock:
-          appState.pendingReplayUri = uri
+      if replayRequest.uri.len > 0:
+        {.gcsafe.}:
+          withLock appState.lock:
+            appState.pendingReplayUri = replayRequest.uri
     discard bitworldClient.serveClientFile(
       request,
       request.path,
