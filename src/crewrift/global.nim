@@ -1,8 +1,8 @@
 import
   std/os,
-  bitworld/pixelfonts, bitworld/protocol, bitworld/server,
+  bitworld/pixelfonts, bitworld/profile, bitworld/protocol, bitworld/server,
   supersnappy,
-  profile, sim
+  sim
 
 const
   ReplayScrubberSpriteId = 4004

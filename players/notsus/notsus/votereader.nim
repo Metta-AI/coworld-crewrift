@@ -1,7 +1,7 @@
 import
   std/strutils,
-  bitworld/[pixelfonts, protocol, server],
-  ../../../src/crewrift/[profile, sim]
+  bitworld/[pixelfonts, profile, protocol, server],
+  ../../../src/crewrift/sim
 
 const
   VoteReaderActorSize* = VoteActorSize

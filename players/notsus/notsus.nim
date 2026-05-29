@@ -4,9 +4,9 @@ import
   ../../src/crewrift/[sim, texts],
   notsus/[protocols, votereader]
 when defined(profileTracePath):
-  import profile
+  import bitworld/profile
 else:
-  import ../../src/crewrift/profile except measure
+  import bitworld/profile except measure
 
   template measure() {.pragma.}
 when not defined(italkalotLibrary):

@@ -1,8 +1,7 @@
 import
   std/[algorithm, options, strutils],
-  bitworld/[protocol, server],
-  pixie, supersnappy, whisky,
-  ../../../src/crewrift/profile
+  bitworld/[profile, protocol, server],
+  pixie, supersnappy, whisky
 
 const
   MaxFrameDrain* = 128
