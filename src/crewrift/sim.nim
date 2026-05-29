@@ -200,10 +200,12 @@ type
 
   TaskStation* = object
     name*: string
+    resourceName*: string
     x*, y*, w*, h*: int
     completed*: seq[bool]
 
   Vent* = object
+    resourceName*: string
     x*, y*, w*, h*: int
     group*: char
     groupIndex*: int
@@ -741,6 +743,7 @@ proc loadResourceCrewriftMap(
       taskRects.add(rect)
     elif rect.name.isVentResource():
       result.vents.add Vent(
+        resourceName: rect.name,
         x: rect.x,
         y: rect.y,
         w: rect.w,
@@ -760,6 +763,7 @@ proc loadResourceCrewriftMap(
   for i, rect in taskRects:
     result.tasks.add TaskStation(
       name: taskNameForResource(result.rooms, rect, i),
+      resourceName: rect.name,
       x: rect.x,
       y: rect.y,
       w: rect.w,

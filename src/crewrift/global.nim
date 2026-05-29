@@ -81,15 +81,20 @@ const
   SpritePlayerVoteSkipCursorSpriteId = 5012
   SpritePlayerVoteProgressSpriteId = 5013
   SpritePlayerVoteChatBgSpriteId = 5014
+  SpritePlayerKillProgressSpriteId = 5015
   SpritePlayerVoteMarkerSpriteBase = 5020
   SpritePlayerVoteDotSpriteBase = 5040
   SpritePlayerVoteCursorObjectId = 10000
   SpritePlayerVoteSelfMarkerObjectId = 10001
   SpritePlayerVoteProgressObjectId = 10002
   SpritePlayerVoteChatBgObjectId = 10003
+  SpritePlayerKillProgressObjectId = 10004
   SpritePlayerVoteDotObjectBase = 10100
   SpritePlayerVoteSkipDotObjectBase = 10400
   SpritePlayerTaskArrowObjectBase = 7000
+  MapMarkerSpriteBase = 20000
+  MapMarkerObjectBase = 20000
+  MapMarkerZ = -32767
   ProtocolTextSpriteBase = 9000
   ProtocolTextObjectBase = 9000
   ProtocolTextZ = 30010
@@ -159,6 +164,11 @@ type
     initialized*: bool
     objectIds*: seq[int]
     spriteDefs: seq[SpriteDefinition]
+    shadowReady: bool
+    shadowCameraX: int
+    shadowCameraY: int
+    shadowOriginMx: int
+    shadowOriginMy: int
 
   ProtocolTextItem = ref object
     spriteId: int
@@ -486,6 +496,10 @@ proc buildSolidSprite(
   for i in 0 ..< width * height:
     result.putRgbaPixel(i, color)
 
+proc buildTransparentBlackSprite(width, height: int): seq[uint8] {.measure.} =
+  ## Builds a fully transparent black protocol sprite.
+  newRgbaPixels(width, height)
+
 proc buildIndexedSpritePixels(
   indices: openArray[uint8],
   width,
@@ -583,6 +597,82 @@ proc buildWalkabilitySpritePixels(sim: SimServer): seq[uint8] {.measure.} =
       result[offset + 1] = 255
       result[offset + 2] = 255
       result[offset + 3] = 255
+
+proc mapMarkerSpriteId(index: int): int =
+  ## Returns the stable sprite id for one static map marker.
+  MapMarkerSpriteBase + index
+
+proc mapMarkerObjectId(index: int): int =
+  ## Returns the stable object id for one static map marker.
+  MapMarkerObjectBase + index
+
+proc markerResourceLabel(name, fallback: string): string =
+  ## Returns the resource label for one static map marker.
+  if name.len > 0:
+    name
+  else:
+    fallback
+
+proc addMapMarker(
+  packet: var seq[uint8],
+  spriteDefs: var seq[SpriteDefinition],
+  index, x, y, width, height: int,
+  label: string
+) {.measure.} =
+  ## Adds one invisible labeled marker object to the map layer.
+  let
+    spriteId = mapMarkerSpriteId(index)
+    objectId = mapMarkerObjectId(index)
+  packet.addSpriteChanged(
+    spriteDefs,
+    spriteId,
+    width,
+    height,
+    buildTransparentBlackSprite(width, height),
+    label
+  )
+  packet.addObject(objectId, x, y, MapMarkerZ, MapLayerId, spriteId)
+
+proc addMapMarkers(
+  sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition],
+  packet: var seq[uint8]
+) {.measure.} =
+  ## Adds invisible task, vent, and room markers for sprite agents.
+  var index = 0
+  for task in sim.tasks:
+    packet.addMapMarker(
+      spriteDefs,
+      index,
+      task.x,
+      task.y,
+      task.w,
+      task.h,
+      markerResourceLabel(task.resourceName, "task")
+    )
+    inc index
+  for vent in sim.vents:
+    packet.addMapMarker(
+      spriteDefs,
+      index,
+      vent.x,
+      vent.y,
+      vent.w,
+      vent.h,
+      markerResourceLabel(vent.resourceName, "vent")
+    )
+    inc index
+  for room in sim.rooms:
+    packet.addMapMarker(
+      spriteDefs,
+      index,
+      room.x,
+      room.y,
+      room.w,
+      room.h,
+      "Room " & room.name
+    )
+    inc index
 
 proc buildPlayerShadowSprite(
   sim: SimServer,
@@ -1431,6 +1521,7 @@ proc buildSpriteProtocolInit(
     "map"
   )
   result.addObject(MapObjectId, 0, 0, low(int16), MapLayerId, MapSpriteId)
+  sim.addMapMarkers(spriteDefs, result)
   let taskPixels = buildSpriteProtocolRawSprite(sim.taskIconSprite)
   result.addSpriteChanged(
     spriteDefs,
@@ -1595,6 +1686,7 @@ proc buildSpriteProtocolPlayerInit(
     mapPixels,
     "map"
   )
+  sim.addMapMarkers(spriteDefs, result)
   result.addSpriteChanged(
     spriteDefs,
     SpritePlayerWalkabilitySpriteId,
@@ -2059,6 +2151,19 @@ proc buildTaskProgressSprite(progress, total: int): seq[uint8] {.measure.} =
     let color = if x < filled: ProgressFilled else: ProgressEmpty
     result.putRgbaPixel(x, color)
 
+proc cooldownReadyProgress(cooldown, maxCooldown: int): int =
+  ## Returns the elapsed cooldown amount for a progress bar.
+  if maxCooldown <= 0 or cooldown <= 0:
+    return max(maxCooldown, 1)
+  maxCooldown - clamp(cooldown, 0, maxCooldown)
+
+proc cooldownReadyPercent(cooldown, maxCooldown: int): int =
+  ## Returns the elapsed cooldown percentage.
+  if maxCooldown <= 0 or cooldown <= 0:
+    return 100
+  let progress = cooldownReadyProgress(cooldown, maxCooldown)
+  clamp(progress * 100 div maxCooldown, 0, 100)
+
 proc addSpritePlayerTaskArrows(
   sim: SimServer,
   playerIndex: int,
@@ -2183,11 +2288,18 @@ proc buildSpriteProtocolPlayerUpdates*(
       cameraX = view.cameraX
       cameraY = view.cameraY
       viewerIsGhost = view.viewerIsGhost
-    let shadowChanged =
-      if viewerIsGhost:
-        false
-      else:
-        sim.usePlayerShadowMask(playerIndex, view)
+    let
+      shadowViewChanged =
+        not nextState.shadowReady or
+        nextState.shadowCameraX != cameraX or
+        nextState.shadowCameraY != cameraY or
+        nextState.shadowOriginMx != view.originMx or
+        nextState.shadowOriginMy != view.originMy
+      shadowChanged =
+        if viewerIsGhost:
+          false
+        else:
+          sim.usePlayerShadowMask(playerIndex, view)
     currentIds.add(MapObjectId)
     result.addObject(
       MapObjectId,
@@ -2199,7 +2311,7 @@ proc buildSpriteProtocolPlayerUpdates*(
     )
     if not viewerIsGhost:
       currentIds.add(SpritePlayerShadowObjectId)
-      if shadowChanged or
+      if shadowChanged or shadowViewChanged or
           nextState.spriteDefs.spriteDefinitionIndex(
             SpritePlayerShadowSpriteId
           ) < 0:
@@ -2210,8 +2322,13 @@ proc buildSpriteProtocolPlayerUpdates*(
           ScreenHeight,
           sim.buildPlayerShadowSprite(cameraX, cameraY),
           "shadow",
-          changed = shadowChanged
+          changed = shadowChanged or shadowViewChanged
         )
+      nextState.shadowReady = true
+      nextState.shadowCameraX = cameraX
+      nextState.shadowCameraY = cameraY
+      nextState.shadowOriginMx = view.originMx
+      nextState.shadowOriginMy = view.originMy
       result.addObject(
         SpritePlayerShadowObjectId,
         0,
@@ -2220,6 +2337,8 @@ proc buildSpriteProtocolPlayerUpdates*(
         MapLayerId,
         SpritePlayerShadowSpriteId
       )
+    else:
+      nextState.shadowReady = false
 
     for i in 0 ..< sim.bodies.len:
       let body = sim.bodies[i]
@@ -2352,17 +2471,45 @@ proc buildSpriteProtocolPlayerUpdates*(
         SpritePlayerGhostIconSpriteId
       )
     elif player.role == Imposter:
+      let
+        killIconX = 1
+        killIconY = ScreenHeight - SpriteSize - 1
       currentIds.add(SpritePlayerRemainingObjectId)
       result.addObject(
         SpritePlayerRemainingObjectId,
-        1,
-        ScreenHeight - SpriteSize - 1,
+        killIconX,
+        killIconY,
         30002,
         MapLayerId,
         if player.killCooldown > 0:
           SpritePlayerKillShadowSpriteId
         else:
           SpritePlayerKillSpriteId
+      )
+      let
+        progressTotal = max(sim.config.killCooldownTicks, 1)
+        progress = cooldownReadyProgress(player.killCooldown, progressTotal)
+        progressPercent = cooldownReadyPercent(
+          player.killCooldown,
+          progressTotal
+        )
+      currentIds.add(SpritePlayerKillProgressObjectId)
+      result.addSpriteChanged(
+        nextState.spriteDefs,
+        SpritePlayerKillProgressSpriteId,
+        TaskBarWidth,
+        1,
+        buildTaskProgressSprite(progress, progressTotal),
+        "progress bar " & $progressPercent & "%",
+        changed = true
+      )
+      result.addObject(
+        SpritePlayerKillProgressObjectId,
+        killIconX + SpriteSize + TaskBarGap,
+        killIconY + SpriteSize div 2,
+        30003,
+        MapLayerId,
+        SpritePlayerKillProgressSpriteId
       )
 
     let

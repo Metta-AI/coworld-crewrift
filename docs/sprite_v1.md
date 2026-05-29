@@ -62,6 +62,15 @@ endpoints also define one sprite labeled `walkability map`; agents may
 decompress that sprite and use its alpha channel as walkable pixels for path
 finding. Other sprite pixels should be treated as presentation data by agents.
 
+Crewrift endpoints also define fully transparent initial map marker sprites for
+tasks, vents, and rooms. Task and vent marker labels match the `.resources`
+names, such as `task` and `vent1`; room marker labels use `Room {name}`.
+Agents can combine each marker object's position with its sprite dimensions to
+recover the marker rectangle.
+
+Crewrift player endpoints label task and imposter cooldown progress sprites as
+`progress bar {percent}%`.
+
 A sprite with width `0` or height `0` is invalid.
 
 ### Define Object

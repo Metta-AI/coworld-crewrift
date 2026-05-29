@@ -144,6 +144,7 @@ const
   BodySuspectRange = 64
   ImposterHuntDelayTicks = 500
   ButtonResetCooldownLeadTicks = 150
+  ProtocolMapName = "sprite protocol map"
   ButtonResetChat = "just resetting imposter cool downs"
   ProwlPointSearchRadius = 24
   ProwlPoints = [
@@ -377,6 +378,7 @@ type
     protocolCameraReady: bool
     protocolCameraX: int
     protocolCameraY: int
+    protocolMapReady: bool
     protocolWalkabilityReady: bool
     protocolInterstitialReady: bool
     protocolInterstitialText: string
@@ -391,6 +393,10 @@ type
     visibleBodies: seq[BodyMatch]
     visibleGhosts: seq[GhostMatch]
 
+  VentGroupCount = object
+    key: string
+    count: int
+
 proc gameDir(): string =
   ## Returns the Crewrift game directory.
   let
@@ -398,7 +404,7 @@ proc gameDir(): string =
     cwd = getCurrentDir()
     candidates = [sourceDir, cwd, cwd.parentDir(), cwd.parentDir().parentDir()]
   for candidate in candidates:
-    if fileExists(candidate / DefaultMapPath):
+    if fileExists(candidate / "src" / "crewrift.nim"):
       return candidate
   sourceDir
 
@@ -476,6 +482,45 @@ proc cameraYForWorld(y: int): int =
   ## Returns the camera Y that centers one world Y on the player.
   clamp(y - PlayerWorldOffY, minCameraY(), maxCameraY())
 
+proc centeredMapRect(centerX, centerY, width, height: int): MapRect =
+  ## Builds a map rectangle centered on one point and clamped to the map.
+  MapRect(
+    x: clamp(centerX - width div 2, 0, max(0, MapWidth - width)),
+    y: clamp(centerY - height div 2, 0, max(0, MapHeight - height)),
+    w: width,
+    h: height
+  )
+
+proc protocolMapHome(rooms: openArray[Room]): tuple[x: int, y: int] =
+  ## Returns the home point derived from protocol room markers.
+  if rooms.len == 0:
+    return (MapWidth div 2, MapHeight div 2)
+  var index = 0
+  for i, room in rooms:
+    if room.name.strip().toLowerAscii() == "bridge":
+      index = i
+      break
+  (
+    rooms[index].x + rooms[index].w div 2,
+    rooms[index].y + rooms[index].h div 2
+  )
+
+proc initialProtocolMap(): CrewriftMap =
+  ## Builds empty map metadata before the sprite protocol dump arrives.
+  let
+    homeX = MapWidth div 2
+    homeY = MapHeight div 2
+  CrewriftMap(
+    name: ProtocolMapName,
+    width: MapWidth,
+    height: MapHeight,
+    mapLayer: 0,
+    walkLayer: 1,
+    wallLayer: 2,
+    button: centeredMapRect(homeX, homeY, 28, 34),
+    home: MapPoint(x: homeX, y: homeY)
+  )
+
 proc inMap(x, y: int): bool =
   ## Returns true when a world pixel is inside the Skeld map.
   x >= 0 and y >= 0 and x < MapWidth and y < MapHeight
@@ -525,6 +570,61 @@ proc chatRoomName(name: string): string =
 proc taskCenter(task: TaskStation): tuple[x: int, y: int] =
   ## Returns the center pixel for a task station.
   (task.x + task.w div 2, task.y + task.h div 2)
+
+proc markerNameKey(value: string): string =
+  ## Returns a normalized protocol marker label.
+  value.strip().toLowerAscii()
+
+proc protocolTaskMarker(label: string): bool =
+  ## Returns true when a sprite label identifies a task marker.
+  label.markerNameKey() == "task"
+
+proc protocolVentMarker(label: string): bool =
+  ## Returns true when a sprite label identifies a vent marker.
+  let key = label.markerNameKey()
+  key.startsWith("vent") and key != "vents"
+
+proc protocolRoomName(label: string): string =
+  ## Returns the room name carried by a sprite map marker.
+  if label.startsWith("Room ") and label.len > "Room ".len:
+    result = label["Room ".len .. ^1].strip()
+
+proc protocolVentGroupChar(label: string): char =
+  ## Returns the compact group id for one protocol vent label.
+  let key = label.markerNameKey()
+  for i in countdown(key.high, 0):
+    if key[i] in {'a' .. 'z', '0' .. '9'}:
+      return key[i]
+  'v'
+
+proc nextProtocolVentGroupIndex(
+  counts: var seq[VentGroupCount],
+  label: string
+): int =
+  ## Returns the next serial index for one repeated vent marker label.
+  let key = label.markerNameKey()
+  for count in counts.mitems:
+    if count.key == key:
+      inc count.count
+      return count.count
+  counts.add(VentGroupCount(key: key, count: 1))
+  1
+
+proc taskNameFromRooms(
+  rooms: openArray[Room],
+  task: TaskStation,
+  index: int
+): string =
+  ## Builds a useful task name from protocol room markers.
+  let room = nearestRoomAt(
+    rooms,
+    task.x + task.w div 2,
+    task.y + task.h div 2
+  )
+  if room.found:
+    "Task near " & room.name
+  else:
+    "Task " & $(index + 1)
 
 proc `<`(a, b: PathNode): bool =
   ## Orders path nodes for Nim heapqueue.
@@ -1006,6 +1106,115 @@ proc clearPath(bot: var Bot) =
   bot.pathGoalX = low(int)
   bot.pathGoalY = low(int)
   bot.pathPlanTick = -1
+
+proc resetTaskKnowledge(bot: var Bot) =
+  ## Resizes task-derived state after protocol map metadata changes.
+  bot.radarTasks = newSeq[bool](bot.sim.tasks.len)
+  bot.checkoutTasks = newSeq[bool](bot.sim.tasks.len)
+  bot.taskStates = newSeq[TaskState](bot.sim.tasks.len)
+  bot.taskIconMisses = newSeq[int](bot.sim.tasks.len)
+  bot.spriteRadarTasks = newSeq[bool](bot.sim.tasks.len)
+  bot.spriteIconTasks = newSeq[bool](bot.sim.tasks.len)
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  bot.goalIndex = -1
+  bot.goalName = ""
+  bot.hasGoal = false
+  bot.clearPath()
+
+proc resetProtocolMap(bot: var Bot) =
+  ## Clears map metadata that must arrive from the sprite protocol.
+  bot.protocolMapReady = false
+  bot.protocolWalkabilityReady = false
+  bot.sim.gameMap = initialProtocolMap()
+  bot.sim.tasks.setLen(0)
+  bot.sim.vents.setLen(0)
+  bot.sim.rooms.setLen(0)
+  bot.sim.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+  bot.sim.walkMask = newSeq[bool](MapWidth * MapHeight)
+  bot.sim.wallMask = newSeq[bool](MapWidth * MapHeight)
+  bot.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
+  bot.resetTaskKnowledge()
+  bot.cameraX = bot.sim.buttonCameraX()
+  bot.cameraY = bot.sim.buttonCameraY()
+  bot.lastCameraX = bot.cameraX
+  bot.lastCameraY = bot.cameraY
+  bot.cameraLock = NoLock
+  bot.localized = false
+
+proc applyProtocolMap(
+  bot: var Bot,
+  tasks: seq[TaskStation],
+  vents: seq[Vent],
+  rooms: seq[Room]
+) =
+  ## Applies map metadata parsed from the initial sprite dump.
+  var gameMap = initialProtocolMap()
+  let home = protocolMapHome(rooms)
+  gameMap.rooms = rooms
+  gameMap.tasks = tasks
+  gameMap.vents = vents
+  gameMap.home = MapPoint(x: home.x, y: home.y)
+  gameMap.button = centeredMapRect(home.x, home.y, 28, 34)
+  bot.sim.gameMap = gameMap
+  bot.sim.tasks = tasks
+  bot.sim.vents = vents
+  bot.sim.rooms = rooms
+  bot.protocolMapReady = true
+  bot.resetTaskKnowledge()
+  if not bot.localized:
+    bot.cameraX = bot.sim.buttonCameraX()
+    bot.cameraY = bot.sim.buttonCameraY()
+    bot.lastCameraX = bot.cameraX
+    bot.lastCameraY = bot.cameraY
+
+proc updateProtocolMap(bot: var Bot, client: ProtocolClient) {.measure.} =
+  ## Parses static map markers and optional map pixels from Sprite v1 state.
+  var
+    tasks: seq[TaskStation]
+    vents: seq[Vent]
+    rooms: seq[Room]
+    ventCounts: seq[VentGroupCount]
+  for item in client.spriteObjectRefs():
+    let label = item.sprite.label
+    if label == "map" and item.sprite.pixels.len == MapWidth * MapHeight:
+      if bot.sim.mapPixels.len != item.sprite.pixels.len:
+        bot.sim.mapPixels.setLen(item.sprite.pixels.len)
+      for i, color in item.sprite.pixels:
+        bot.sim.mapPixels[i] = color
+    elif label.protocolTaskMarker():
+      tasks.add(TaskStation(
+        resourceName: label,
+        x: item.x,
+        y: item.y,
+        w: item.sprite.width,
+        h: item.sprite.height
+      ))
+    elif label.protocolVentMarker():
+      vents.add(Vent(
+        resourceName: label,
+        x: item.x,
+        y: item.y,
+        w: item.sprite.width,
+        h: item.sprite.height,
+        group: label.protocolVentGroupChar(),
+        groupIndex: ventCounts.nextProtocolVentGroupIndex(label)
+      ))
+    else:
+      let roomName = label.protocolRoomName()
+      if roomName.len > 0:
+        rooms.add(Room(
+          name: roomName,
+          x: item.x,
+          y: item.y,
+          w: item.sprite.width,
+          h: item.sprite.height
+        ))
+  if tasks.len == 0 or vents.len == 0 or rooms.len == 0:
+    return
+  for i in 0 ..< tasks.len:
+    tasks[i].name = taskNameFromRooms(rooms, tasks[i], i)
+  bot.applyProtocolMap(tasks, vents, rooms)
 
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
@@ -1693,6 +1902,8 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} 
       bot.spriteIconTasks[i] = false
   if not bot.spriteDetectionsReady:
     return
+  if not bot.protocolMapReady:
+    bot.updateProtocolMap(client)
   if client.walkabilityReady and not bot.protocolWalkabilityReady:
     if client.walkabilityWidth != MapWidth or
         client.walkabilityHeight != MapHeight or
@@ -1703,10 +1914,19 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} 
       )
     if bot.sim.walkMask.len != client.walkabilityMask.len:
       bot.sim.walkMask.setLen(client.walkabilityMask.len)
+    if bot.sim.wallMask.len != client.walkabilityMask.len:
+      bot.sim.wallMask.setLen(client.walkabilityMask.len)
     for i in 0 ..< client.walkabilityMask.len:
       bot.sim.walkMask[i] = client.walkabilityMask[i]
+      bot.sim.wallMask[i] = not client.walkabilityMask[i]
     bot.protocolWalkabilityReady = true
   if client.mapCameraReady:
+    if not bot.protocolMapReady:
+      raise newException(
+        ValueError,
+        "sprite protocol did not include required task, vent, and room " &
+          "map marker sprites"
+      )
     if not bot.protocolWalkabilityReady:
       raise newException(
         ValueError,
@@ -4815,21 +5035,19 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
 
 proc initBotSim(config: GameConfig): SimServer =
   ## Builds only the sim data a headless sprite bot needs.
-  when defined(botHeadless):
-    result.config = config
-    result.gameMap = loadCrewriftMapMetadata(config.mapPath)
-    result.tasks = result.gameMap.tasks
-    result.vents = result.gameMap.vents
-    result.rooms = result.gameMap.rooms
-    result.walkMask = newSeq[bool](MapWidth * MapHeight)
-    result.wallMask = newSeq[bool](MapWidth * MapHeight)
-  else:
-    result = initSimServer(config)
+  result.config = config
+  result.gameMap = initialProtocolMap()
+  result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+  result.walkMask = newSeq[bool](MapWidth * MapHeight)
+  result.wallMask = newSeq[bool](MapWidth * MapHeight)
+  when not defined(botHeadless):
+    loadPalette(clientDataDir() / "pallete.png")
+    result.asciiSprites = loadAsciiSprites(gameDir() / "data/tiny5.aseprite")
 
 proc botGameDir(): string =
   ## Returns the game asset directory used by the private bot.
   for candidate in [CrewriftGameDir, AmongThemGameDir]:
-    if fileExists(candidate / DefaultMapPath):
+    if dirExists(candidate):
       return candidate
   gameDir()
 
@@ -5561,6 +5779,7 @@ when not defined(italkalotLibrary):
         notifiedFailure = false
         var lastMask = 0xff'u8
         client.reset()
+        bot.resetProtocolMap()
         bot.frameBufferLen = 0
         bot.framesDropped = 0
         connected = true

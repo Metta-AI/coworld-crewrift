@@ -19,7 +19,7 @@ type
     width*: int
     height*: int
     label*: string
-    pixels: seq[uint8]
+    pixels*: seq[uint8]
 
   ObjectState = object
     present: bool
