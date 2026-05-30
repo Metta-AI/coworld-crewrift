@@ -9,12 +9,10 @@ const
   ReplayScrubberWidth = 84
   ReplayScrubberHeight = 5
   ReplayScrubberTrackY = 2
-  ReplayScrubberY = 8
-  ReplayPanelHeight = 20
-  ReplayCenterBottomLayerId = 8
-  ReplayBottomLeftLayerId = 9
-  ReplayCenterBottomLayerType = 8
-  ReplayBottomLeftLayerType = 4
+  ReplayScrubberY = 15
+  ReplayPanelHeight = 22
+  ReplayControlLayerId = 8
+  ReplayControlLayerType = 8
   ReplayTickSpriteId = 4002
   ReplayControlsSpriteId = 4003
   ReplayTickObjectId = 4002
@@ -2397,7 +2395,7 @@ proc buildSpriteProtocolPlayerUpdates*(
 
 proc replayCommandAt(layer, x, y: int): char =
   ## Returns the replay transport command under a UI coordinate.
-  if layer != ReplayBottomLeftLayerId:
+  if layer != ReplayControlLayerId:
     return '\0'
   let
     localX = x - TransportX
@@ -2434,7 +2432,7 @@ proc replayScrubTickAt(
   requireInside = true
 ): int =
   ## Returns the replay tick under the scrubber pointer.
-  if layer != ReplayCenterBottomLayerId or maxTick < 0:
+  if layer != ReplayControlLayerId or maxTick < 0:
     return -1
   let
     scrubberX = max(0, (ScreenWidth - ReplayScrubberWidth) div 2)
@@ -2672,17 +2670,11 @@ proc buildSpriteProtocolUpdates*(
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit(nextState.spriteDefs)
     result.addLayer(
-      ReplayCenterBottomLayerId,
-      ReplayCenterBottomLayerType,
+      ReplayControlLayerId,
+      ReplayControlLayerType,
       UiLayerFlag
     )
-    result.addViewport(ReplayCenterBottomLayerId, ScreenWidth, ReplayPanelHeight)
-    result.addLayer(
-      ReplayBottomLeftLayerId,
-      ReplayBottomLeftLayerType,
-      UiLayerFlag
-    )
-    result.addViewport(ReplayBottomLeftLayerId, ScreenWidth, ReplayPanelHeight)
+    result.addViewport(ReplayControlLayerId, ScreenWidth, ReplayPanelHeight)
     nextState.initialized = true
 
   nextState.updateTrails(sim)
@@ -2868,7 +2860,7 @@ proc buildSpriteProtocolUpdates*(
     max(0, (ScreenWidth - tickText.width) div 2),
     0,
     0,
-    ReplayCenterBottomLayerId,
+    ReplayControlLayerId,
     ReplayTickSpriteId
   )
   result.addSpriteChanged(
@@ -2885,7 +2877,7 @@ proc buildSpriteProtocolUpdates*(
     max(0, (ScreenWidth - ReplayScrubberWidth) div 2),
     ReplayScrubberY,
     0,
-    ReplayCenterBottomLayerId,
+    ReplayControlLayerId,
     ReplayScrubberSpriteId
   )
   result.addSpriteChanged(
@@ -2902,7 +2894,7 @@ proc buildSpriteProtocolUpdates*(
     TransportX,
     TransportY,
     0,
-    ReplayBottomLeftLayerId,
+    ReplayControlLayerId,
     ReplayControlsSpriteId
   )
 
