@@ -458,9 +458,11 @@ suite "stats":
     config.autoImposterCount = false
     config.tasksPerPlayer = 1
     config.roleRevealTicks = 0
-    config.update("""{"tokens":["crew-token","imposter-token"],"slots":[
-      {"name":"crew","token":"crew-token","role":"crew"},
-      {"name":"imposter","token":"imposter-token","role":"imposter"}
+    config.update("""{"tokens":["crew-token","imposter-token"],
+      "players":[{"name":"crew"},{"name":"imposter"}],
+      "slots":[
+      {"token":"crew-token","role":"crew"},
+      {"token":"imposter-token","role":"imposter"}
     ]}""")
     var sim = initCrewriftForTest(config)
 

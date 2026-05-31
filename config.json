@@ -1,5 +1,5 @@
 {
-  "maxGames":0,
+  "maxGames":1,
   "killCooldownTicks":100,
   "tokens":[
     "0xBADA55_0",
@@ -11,14 +11,24 @@
     "0xBADA55_6",
     "0xBADA55_7"
   ],
+  "players":[
+    {"name":"player1"},
+    {"name":"player2"},
+    {"name":"player3"},
+    {"name":"player4"},
+    {"name":"player5"},
+    {"name":"player6"},
+    {"name":"player7"},
+    {"name":"player8"}
+  ],
   "slots":[
-    {"name":"player1","role":"crew","color":"red"},
-    {"name":"player2","role":"crew","color":"blue"},
-    {"name":"player3","role":"crew","color":"green"},
-    {"name":"player4","role":"crew","color":"yellow"},
-    {"name":"player5","role":"crew","color":"lime"},
-    {"name":"player6","role":"crew","color":"cyan"},
-    {"name":"player7","role":"imposter","color":"pink"},
-    {"name":"player8","role":"imposter","color":"orange"}
+    {"role":"crew","color":"red"},
+    {"role":"crew","color":"blue"},
+    {"role":"crew","color":"green"},
+    {"role":"crew","color":"yellow"},
+    {"role":"crew","color":"lime"},
+    {"role":"crew","color":"cyan"},
+    {"role":"imposter","color":"pink"},
+    {"role":"imposter","color":"orange"}
   ]
 }

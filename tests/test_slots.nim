@@ -16,15 +16,24 @@ const
     "0xBADA55_5",
     "0xBADA55_6",
     "0xBADA55_7"
+  ],"players":[
+    {"name":"player1"},
+    {"name":"player2"},
+    {"name":"player3"},
+    {"name":"player4"},
+    {"name":"player5"},
+    {"name":"player6"},
+    {"name":"player7"},
+    {"name":"player8"}
   ],"slots":[
-    {"name":"player1","role":"crew","color":"red"},
-    {"name":"player2","role":"crew","color":"blue"},
-    {"name":"player3","role":"crew","color":"green"},
-    {"name":"player4","role":"crew","color":"yellow"},
-    {"name":"player5","role":"crew","color":"lime"},
-    {"name":"player6","role":"crew","color":"cyan"},
-    {"name":"player7","role":"imposter","color":"pink"},
-    {"name":"player8","role":"imposter","color":"orange"}
+    {"role":"crew","color":"red"},
+    {"role":"crew","color":"blue"},
+    {"role":"crew","color":"green"},
+    {"role":"crew","color":"yellow"},
+    {"role":"crew","color":"lime"},
+    {"role":"crew","color":"cyan"},
+    {"role":"imposter","color":"pink"},
+    {"role":"imposter","color":"orange"}
   ]}"""
 
 proc initCrewriftForTest(config: GameConfig): SimServer =
@@ -87,7 +96,10 @@ suite "player slots":
     let serialized = parseJson(config.configJson())
     check serialized["tokens"].len == 8
     check serialized["tokens"][6].getStr() == "0xBADA55_6"
+    check serialized["players"][0]["name"].getStr() == "player1"
+    check serialized["players"][7]["name"].getStr() == "player8"
     check serialized["slots"].len == 8
+    check not serialized["slots"][6].hasKey("name")
     check not serialized["slots"][6].hasKey("token")
     check serialized["slots"][5]["color"].getStr() == "light blue"
 
@@ -163,7 +175,7 @@ suite "player slots":
 
     var nameOnly = defaultGameConfig()
     nameOnly.minPlayers = 1
-    nameOnly.update("""{"slots":[{"name":"Player1"}],"closedRoster":true}""")
+    nameOnly.update("""{"players":[{"name":"Player1"}],"closedRoster":true}""")
     check nameOnly.playerJoinAllowed("Player1", -1, "")
 
     var unrestricted = defaultGameConfig()
@@ -175,7 +187,11 @@ suite "player slots":
     var config = defaultGameConfig()
 
     expect CrewriftError:
-      config.update("""{"slots":[{"name":"same"},{"name":"same"}]}""")
+      config.update("""{"player_names":["same"]}""")
+    expect CrewriftError:
+      config.update("""{"players":[{"name":"same"},{"name":"same"}]}""")
+    expect CrewriftError:
+      config.update("""{"slots":[{"name":"same"}]}""")
     expect CrewriftError:
       config.update("""{"slots":[{"token":"same"},{"token":"same"}]}""")
     expect CrewriftError:
@@ -247,9 +263,11 @@ suite "player slots":
 
     var config = defaultGameConfig()
     config.minPlayers = 2
-    config.update("""{"tokens":["crew-token","imp-token"],"slots":[
-      {"name":"crew-policy:v3","role":"crew"},
-      {"name":"imp-policy:v7","role":"imposter"}
+    config.update("""{"tokens":["crew-token","imp-token"],
+      "players":[{"name":"crew-policy:v3"},{"name":"imp-policy:v7"}],
+      "slots":[
+      {"role":"crew"},
+      {"role":"imposter"}
     ],"closedRoster":true}""")
     var sim = initCrewriftForTest(config)
     var writer = openReplayWriter(path, config.configJson())
@@ -298,7 +316,7 @@ suite "player slots":
 
   test "automatic slots wait behind restricted slots":
     var config = defaultGameConfig()
-    config.update("""{"slots":[{"name":"reserved","token":"secret"}]}""")
+    config.update("""{"players":[{"name":"reserved"}],"slots":[{"token":"secret"}]}""")
     var sim = initCrewriftForTest(config)
 
     expect CrewriftError:
@@ -368,9 +386,9 @@ suite "player slots":
     config.minPlayers = 2
     config.roleRevealTicks = 0
     config.tasksPerPlayer = 1
-    config.update("""{"slots":[
-      {"name":"crew","token":"crew-token","role":"crew"},
-      {"name":"imp","token":"imp-token","role":"imposter"}
+    config.update("""{"players":[{"name":"crew"},{"name":"imp"}],"slots":[
+      {"token":"crew-token","role":"crew"},
+      {"token":"imp-token","role":"imposter"}
     ]}""")
     var sim = initCrewriftForTest(config)
 

@@ -248,8 +248,8 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"data/
 
 ### Slot Config For Source Tests
 
-The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
-`slots[0]`.
+The `tokens`, `players`, and `slots` arrays match by index, so `tokens[0]`
+and `players[0].name` belong to `slots[0]`.
 
 ```json
 {
@@ -265,15 +265,25 @@ The `tokens` array matches `slots` by index, so `tokens[0]` belongs to
     "0xBADA55_6",
     "0xBADA55_7"
   ],
+  "players": [
+    { "name": "player1" },
+    { "name": "player2" },
+    { "name": "player3" },
+    { "name": "player4" },
+    { "name": "player5" },
+    { "name": "player6" },
+    { "name": "player7" },
+    { "name": "player8" }
+  ],
   "slots": [
-    { "name": "player1", "role": "crew", "color": "red" },
-    { "name": "player2", "role": "crew", "color": "blue" },
-    { "name": "player3", "role": "crew", "color": "green" },
-    { "name": "player4", "role": "crew", "color": "yellow" },
-    { "name": "player5", "role": "crew", "color": "lime" },
-    { "name": "player6", "role": "crew", "color": "pale blue" },
-    { "name": "player7", "role": "imposter", "color": "pink" },
-    { "name": "player8", "role": "imposter", "color": "orange" }
+    { "role": "crew", "color": "red" },
+    { "role": "crew", "color": "blue" },
+    { "role": "crew", "color": "green" },
+    { "role": "crew", "color": "yellow" },
+    { "role": "crew", "color": "lime" },
+    { "role": "crew", "color": "pale blue" },
+    { "role": "imposter", "color": "pink" },
+    { "role": "imposter", "color": "orange" }
   ]
 }
 ```
