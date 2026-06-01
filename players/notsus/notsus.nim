@@ -1789,20 +1789,7 @@ proc protocolVoteMarkerColorIndex(label: string): int =
 
 proc protocolVoteCellAt(count, x, y: int): int =
   ## Returns the voting slot containing one protocol object point.
-  if count <= 0:
-    return VoteUnknown
-  let
-    cols = min(count, VoteColsMax)
-    totalW = cols * VoteCellW
-    startX = (ScreenWidth - totalW) div 2
-  for i in 0 ..< count:
-    let
-      cellX = startX + (i mod cols) * VoteCellW
-      cellY = VoteStartY + (i div cols) * VoteCellH
-    if x >= cellX - 2 and x < cellX + VoteCellW + 2 and
-        y >= cellY - 3 and y < cellY + VoteCellH + 2:
-      return i
-  VoteUnknown
+  voteReaderCellAtPoint(count, x, y)
 
 proc protocolInterstitialLabel(label: string): bool =
   ## Returns true when a text sprite label identifies a modal screen.

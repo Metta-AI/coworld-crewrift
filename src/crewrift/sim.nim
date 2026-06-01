@@ -3898,10 +3898,17 @@ proc step*(
         else: InputState()
       if sim.voteState.votes[i] != -1:
         continue
-      if (input.up and not prev.up) or (input.left and not prev.left):
-        sim.moveCursor(i, -1)
-      if (input.down and not prev.down) or (input.right and not prev.right):
-        sim.moveCursor(i, 1)
+      let
+        backward = input.up or input.left
+        forward = input.down or input.right
+      if backward != forward:
+        sim.moveCursor(
+          i,
+          if backward:
+            -1
+          else:
+            1
+        )
       if input.attack and not prev.attack:
         let cur = sim.voteState.cursor[i]
         if cur == sim.players.len:

@@ -11,5 +11,7 @@ import
   test_slots,
   test_start_wait,
   test_stats,
-  test_vote_cooldown
+  test_vote_cooldown,
+  test_vote_cursor_input,
+  test_vote_reader_cursor
 {.warning[UnusedImport]: on.}

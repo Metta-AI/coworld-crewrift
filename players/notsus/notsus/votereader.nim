@@ -283,6 +283,28 @@ proc voteReaderCellOrigin*(
     VoteReaderStartY + (index div layout.cols) * VoteReaderCellH
   )
 
+proc voteReaderCellAtPoint*(count, x, y: int): int =
+  ## Returns the nearest voting slot for one point in the vote grid.
+  if count <= 0:
+    return VoteReaderUnknown
+  let
+    layout = voteReaderGridLayout(count)
+    col = clamp(
+      (x - layout.startX + VoteReaderCellW div 2) div VoteReaderCellW,
+      0,
+      layout.cols - 1
+    )
+    row = clamp(
+      (y - (VoteReaderStartY - 1) + VoteReaderCellH div 2) div
+        VoteReaderCellH,
+      0,
+      layout.rows - 1
+    )
+    index = row * layout.cols + col
+  if index >= 0 and index < count:
+    return index
+  VoteReaderUnknown
+
 proc skipTextMatches(
   frame: openArray[uint8],
   font: PixelFont,
