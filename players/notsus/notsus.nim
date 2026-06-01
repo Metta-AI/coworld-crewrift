@@ -5856,7 +5856,7 @@ when not defined(italkalotLibrary):
 
 when isMainModule and not defined(italkalotLibrary):
   let
-    url = getEnv("COGAMES_ENGINE_WS_URL")
+    url = getEnv("COWORLD_PLAYER_WS_URL")
     address = DefaultHost
     port = PlayerDefaultPort
     gui = false

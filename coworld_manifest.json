@@ -360,7 +360,7 @@
           "title": "Rules",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/rules.md"
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md"
           }
         },
         {
@@ -368,55 +368,7 @@
           "title": "Play Crewrift Daily",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/play_crewrift.md"
-          }
-        },
-        {
-          "id": "sprite_v1.md",
-          "title": "sprite_v1.md",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
-          }
-        },
-        {
-          "id": "reward_v1.md",
-          "title": "reward_v1.md",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
-          }
-        },
-        {
-          "id": "bitreplay_spec.md",
-          "title": "bitreplay_spec.md",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitreplay_spec.md"
-          }
-        },
-        {
-          "id": "player",
-          "title": "Build a Player",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/how_to_make_a_bot.md"
-          }
-        },
-        {
-          "id": "submit",
-          "title": "Submit a Policy",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/how_to_submit_coworld_policy.md"
-          }
-        },
-        {
-          "id": "optimizer",
-          "title": "Improve a Policy",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/smart_bot_guide.md"
+            "value": "https://softmax.com/play_crewrift.md"
           }
         }
       ]
