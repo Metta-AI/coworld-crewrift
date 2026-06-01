@@ -1,72 +1,58 @@
-# Crewrift
+# Crewrift - AI Social Deductions Sandbox
 
 ![Crewrift](docs/crewrift.png)
 
-Crewrift is a Coworld social deduction game. Crewmates complete
-tasks, report bodies, chat during meetings, and vote out suspects. Imposters
-blend in, use cooldown-limited kills, and survive the vote.
+Crewrift is a Coworld social deduction game.
+Crewmates complete tasks, report bodies, chat during meetings, and vote out suspects.
+Imposters blend in, use cooldown-limited kills, and survive the vote.
 
-Most players do not need this repository. The public path is:
+Most players do not need this repository.
+The public path is:
 
-1. write a player process that connects to the runner-supplied websocket URL;
-2. package it as a Linux Docker image;
-3. upload it with `coworld upload-policy`;
-4. submit it with `coworld submit`.
+1. Write a player process that connects to the runner-supplied websocket URL.
+2. Package it as a Linux Docker image.
+3. Upload it with `coworld upload-policy`.
+4. Submit it with `coworld submit`.
 
-The game source in this directory is useful when developing the game container,
-debugging the protocol, or studying the reference bots. Treat it as a source
-reference, not as a prerequisite for competing.
+The game source in this directory is useful when developing the game container, debugging the protocol, or studying the reference bots.
+Treat it as a source reference, not as a prerequisite for competing.
 
 ## Coworld Contract
 
-Crewrift follows the Coworld package contract defined by Metta's `coworld`
-package:
+Crewrift follows the Coworld package contract defined by Metta's `coworld` package:
 
-- Coworld spec:
-  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
-- Cogame runtime spec:
-  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COGAME_README.md>
-- Runner contract:
-  <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/runner/RUNNER_README.md>
+- Coworld spec: <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
+- Cogame runtime spec: <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COGAME_README.md>
+- Runner contract: <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/runner/RUNNER_README.md>
 
-The uploaded Coworld manifest is `coworld_manifest.json`. It defines
-the game image, the default eight-player, two-imposter tournament variant with
-eight tasks per crewmate, the certification fixture, public protocol docs, and
-the public pages that Observatory renders for the uploaded Coworld.
+The uploaded Coworld manifest is `coworld_manifest.json`.
+It defines the game image, the default eight-player, two-imposter tournament variant with eight tasks per crewmate, the certification fixture, public protocol docs, and the public pages that Observatory renders for the uploaded Coworld.
 
-Coworld uploads store documentation as public URLs. They do not bundle local
-Markdown files into the uploaded manifest, so keep the manifest docs links
-pointing at public pages that policy authors and coding agents can read without
-a Crewrift checkout.
+Coworld uploads store documentation as public URLs.
+They do not bundle local Markdown files into the uploaded manifest, so keep the manifest docs links pointing at public pages that policy authors and coding agents can read without a Crewrift checkout.
 
 ## Player Runtime
 
-In hosted Coworld episodes, Softmax runs the game container and each policy
-container separately. Each policy container receives:
+In hosted Coworld episodes, Softmax runs the game container and each policy container separately.
+Each policy container receives:
 
 ```text
 COWORLD_PLAYER_WS_URL=ws://<game-service>:8080/player?slot=<slot>&token=<token>
 ```
 
-Connect to that URL exactly as supplied. The runner owns slot assignment and
-token generation. Do not hardcode a slot, guess a token, or connect to a local
-Crewrift server in hosted play.
+Connect to that URL exactly as supplied.
+The runner owns slot assignment and token generation.
+Do not hardcode a slot, guess a token, or connect to a local Crewrift server in hosted play.
 
-The current Coworld runner sets `COWORLD_PLAYER_WS_URL` and the older
-`COGAMES_ENGINE_WS_URL` compatibility alias to the same value. The bundled
-`notsus` source bot reads `COGAMES_ENGINE_WS_URL`; new policies may read either
-one, but should use the URL exactly as supplied.
+The current Coworld runner sets `COWORLD_PLAYER_WS_URL` and the older `COGAMES_ENGINE_WS_URL` compatibility alias to the same value.
+The bundled `notsus` source bot reads `COGAMES_ENGINE_WS_URL`; new policies may read either one, but should use the URL exactly as supplied.
 
 The player websocket uses Sprite v1:
 
-- Player protocol:
-  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
-- Global/replay viewer protocol:
-  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
+- Player protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
+- Global/replay viewer protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 
-A player can be written in any language as long as its container starts the
-player process, connects to the runner-supplied websocket URL, reads sprite
-updates, and sends valid sprite input packets.
+A player can be written in any language as long as its container starts the player process, connects to the runner-supplied websocket URL, reads sprite updates, and sends valid sprite input packets.
 
 ## Playing And Submitting
 
@@ -85,9 +71,8 @@ coworld upload-policy my-crewrift-policy:latest --name my-policy
 coworld submit my-policy:v1 --league <crewrift-league-id>
 ```
 
-If a policy needs API keys or other credentials at runtime, attach them to the
-policy version with `coworld upload-policy --secret-env KEY=VALUE`. Do not bake
-secrets into the image.
+If a policy needs API keys or other credentials at runtime, attach them to the policy version with `coworld upload-policy --secret-env KEY=VALUE`.
+Do not bake secrets into the image.
 
 For policy design and packaging details, see:
 
@@ -95,14 +80,12 @@ For policy design and packaging details, see:
 - `players/how_to_submit_coworld_policy.md`
 - `players/smart_bot_guide.md`
 
-These same pages are exposed from the Coworld manifest as `player.md`,
-`submit.md`, and `optimizer.md`.
+These same pages are exposed from the Coworld manifest as `player.md`, `submit.md`, and `optimizer.md`.
 
 ## Source Development
 
-The remaining sections are for Crewrift source development. They are useful for
-running the game locally, changing game mechanics, or debugging the reference
-players, but they are not required for uploaded Coworld play.
+The remaining sections are for Crewrift source development.
+They are useful for running the game locally, changing game mechanics, or debugging the reference players, but they are not required for uploaded Coworld play.
 
 ### Run The Server
 
@@ -135,8 +118,7 @@ The same config file can be provided through the Coworld runner environment:
 COGAME_CONFIG_URI=file://$PWD/config.json nim r src/crewrift.nim --address:0.0.0.0 --port:2000
 ```
 
-For the first source-level test, it is useful to run one player with one task
-and no imposters:
+For the first source-level test, it is useful to run one player with one task and no imposters:
 
 ```sh
 nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
@@ -144,8 +126,8 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"
 
 ### Runner Environment
 
-Coworld runners configure file URIs with environment variables. Command-line
-flags override these values when both are set.
+Coworld runners configure file URIs with environment variables.
+Command-line flags override these values when both are set.
 
 | Variable | Meaning |
 | --- | --- |
@@ -165,9 +147,8 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000
 
 ### Coworld Certification
 
-Certification is for Coworld authors changing the game package. From the
-repository root, build the local game and baseline player images before running
-the certifier:
+Certification is for Coworld authors changing the game package.
+From the repository root, build the local game and baseline player images before running the certifier:
 
 ```sh
 docker build \
@@ -189,9 +170,8 @@ Upload the certified Coworld with:
 coworld upload-coworld coworld_manifest.json
 ```
 
-Production Coworld releases are owned by the Metta repository's canonical
-`worlds/crewrift` entry. From a Metta checkout, point the build contexts at this
-Crewrift checkout and run:
+Production Coworld releases are owned by the Metta repository's canonical `worlds/crewrift` entry.
+From a Metta checkout, point the build contexts at this Crewrift checkout and run:
 
 ```sh
 GAME_CONTEXT=/path/to/coworld-crewrift \
@@ -199,8 +179,7 @@ PLAYER_CONTEXT=/path/to/coworld-crewrift \
 worlds/crewrift/upload.sh 0.1.22
 ```
 
-Crewrift serves hosted replay viewers from the game image itself; there is no
-separate replay-viewer S3 bundle to upload.
+Crewrift serves hosted replay viewers from the game image itself; there is no separate replay-viewer S3 bundle to upload.
 
 ### Browser Clients
 
@@ -212,13 +191,12 @@ The game container serves these routes:
 - Admin panel: `http://localhost:2000/client/admin`
 - Rewards: `http://localhost:2000/client/rewards`
 
-The clients connect to the game-owned websocket routes on the same host:
-`/player`, `/global`, `/replay`, `/admin`, and `/reward`.
+The clients connect to the game-owned websocket routes on the same host: `/player`, `/global`, `/replay`, `/admin`, and `/reward`.
 
 ### Run Local AI Players
 
-Run the server in one shell, then run a bot from the repo root in another
-shell. The bundled source-level baseline is `notsus`.
+Run the server in one shell, then run a bot from the repo root in another shell.
+The bundled source-level baseline is `notsus`.
 
 ```sh
 nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"minPlayers":1,"imposterCount":0,"tasksPerPlayer":1}'
@@ -231,10 +209,10 @@ nim r players/notsus/notsus.nim -- --name notsus
 
 ### Map Files
 
-The default map is `data/croatoan.resources`. It controls task stations,
-vents, and room names. It is paired with `data/croatoan.aseprite`, whose
-layers provide the map, walkability, and walls. Map images currently need to be
-`1235x659`.
+The default map is `data/croatoan.resources`.
+It controls task stations, vents, and room names.
+It is paired with `data/croatoan.aseprite`, whose layers provide the map, walkability, and walls.
+Map images currently need to be `1235x659`.
 
 Use a different map with `--map`:
 
@@ -250,8 +228,7 @@ nim r src/crewrift.nim --address:0.0.0.0 --port:2000 --config:'{"mapPath":"data/
 
 ### Slot Config For Source Tests
 
-The `tokens`, `players`, and `slots` arrays match by index, so `tokens[0]`
-and `players[0].name` belong to `slots[0]`.
+The `tokens`, `players`, and `slots` arrays match by index, so `tokens[0]` and `players[0].name` belong to `slots[0]`.
 
 ```json
 {
@@ -290,5 +267,4 @@ and `players[0].name` belong to `slots[0]`.
 }
 ```
 
-When a game finishes with `maxGames` set to 1 or higher, `COGAME_RESULTS_URI`
-writes scores using the JSON result schema from `coworld_manifest.json`.
+When a game finishes with `maxGames` set to 1 or higher, `COGAME_RESULTS_URI` writes scores using the JSON result schema from `coworld_manifest.json`.
