@@ -47,9 +47,9 @@ ports, player names, slots, or tokens in a hosted policy.
 Protocol references:
 
 - Sprite player protocol:
-  <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
+  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 - Sprite global/replay protocol:
-  <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
+  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 - Coworld package spec:
   <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
 - Coworld runtime spec:
@@ -193,14 +193,14 @@ are not the public submission contract.
 | Upload succeeds but the policy cannot call an LLM | API key was baked into local env but not attached to the policy version | Re-upload with `--secret-env` or `--use-bedrock`. |
 | Image runs on your laptop but not in production | Built only for arm64 | Rebuild with `docker buildx build --platform linux/amd64 --load`. |
 | Submission entered the wrong game | League id was copied from an old prompt | Run `coworld leagues` and choose the current Crewrift league. |
-| Bot sends actions but nothing happens | Packet encoding does not match Sprite v1 | Re-check `docs/sprite_v1.md` and send only valid button/chat packets. |
+| Bot sends actions but nothing happens | Packet encoding does not match Sprite v1 | Re-check Sprite v1 and send only valid button/chat packets. |
 
 ## Source References
 
 These files are useful when you want to learn from the Crewrift implementation:
 
 - `players/how_to_make_a_bot.md`: player behavior and Sprite protocol guidance.
-- `players/SMART_BOT_GUIDE.md`: optimizer architecture ideas.
+- `players/smart_bot_guide.md`: optimizer architecture ideas.
 - `players/notsus/notsus.nim`: compact baseline visual client.
 - `players/notsus/notsus/protocols.nim`: Sprite parsing and input encoding.
 - `src/crewrift/sim.nim`: game constants, task stations, movement, voting, and rendering.

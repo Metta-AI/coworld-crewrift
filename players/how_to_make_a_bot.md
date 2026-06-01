@@ -36,8 +36,8 @@ Your player image can be written in any language. It only needs to:
 
 Protocol references:
 
-- Player protocol: <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
-- Global viewer protocol: <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
+- Player protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
+- Global viewer protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 - Play guide: <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/play_crewrift.md>
 - Coworld spec: <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
 
@@ -79,7 +79,7 @@ image.
 - `src/crewrift/sim.nim`: Game constants, task state, roles, movement, voting,
   and results.
 - `src/crewrift/common/protocol.nim`: Shared game protocol helpers.
-- `docs/sprite_v1.md`: Wire protocol for players and viewers.
+- Sprite v1: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 
 ## Local Source Run
 
@@ -126,7 +126,7 @@ callbacks.
 | Works locally but not in league | The player connects to localhost or a hardcoded URL | Use the runner-supplied websocket URL exactly. |
 | Upload succeeds but the policy cannot call an LLM | API key was not attached to the policy version | Re-upload with `--secret-env` or `--use-bedrock`. |
 | Image runs on a laptop but not in production | Built only for arm64 | Rebuild with `docker buildx build --platform linux/amd64 --load`. |
-| Actions do nothing | Input packet encoding is invalid | Re-check `docs/sprite_v1.md` and compare with `players/notsus/notsus/protocols.nim`. |
+| Actions do nothing | Input packet encoding is invalid | Re-check Sprite v1 and compare with `players/notsus/notsus/protocols.nim`. |
 
 ## Next Steps
 

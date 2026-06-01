@@ -58,9 +58,9 @@ one, but should use the URL exactly as supplied.
 The player websocket uses Sprite v1:
 
 - Player protocol:
-  <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
+  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 - Global/replay viewer protocol:
-  <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
+  <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 
 A player can be written in any language as long as its container starts the
 player process, connects to the runner-supplied websocket URL, reads sprite
@@ -91,7 +91,7 @@ For policy design and packaging details, see:
 
 - `players/how_to_make_a_bot.md`
 - `players/how_to_submit_coworld_policy.md`
-- `players/SMART_BOT_GUIDE.md`
+- `players/smart_bot_guide.md`
 
 These same pages are exposed from the Coworld manifest as `player.md`,
 `submit.md`, and `optimizer.md`.

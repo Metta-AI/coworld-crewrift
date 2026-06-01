@@ -29,7 +29,7 @@ league policy.
 
 Useful references:
 
-- Sprite protocol: <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md>
+- Sprite protocol: <https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md>
 - Play guide: <https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/play_crewrift.md>
 - Coworld package contract: <https://github.com/Metta-AI/metta/blob/main/packages/coworld/src/coworld/COWORLD_README.md>
 

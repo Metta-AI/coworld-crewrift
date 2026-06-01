@@ -342,11 +342,11 @@
     "protocols": {
       "player": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md"
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
       },
       "global": {
         "type": "uri",
-        "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/docs/sprite_v1.md"
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
       }
     },
     "docs": {
@@ -372,6 +372,30 @@
           }
         },
         {
+          "id": "sprite_v1.md",
+          "title": "sprite_v1.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+          }
+        },
+        {
+          "id": "reward_v1.md",
+          "title": "reward_v1.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
+          }
+        },
+        {
+          "id": "bitreplay_spec.md",
+          "title": "bitreplay_spec.md",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitreplay_spec.md"
+          }
+        },
+        {
           "id": "player",
           "title": "Build a Player",
           "content": {
@@ -392,7 +416,7 @@
           "title": "Improve a Policy",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/SMART_BOT_GUIDE.md"
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/smart_bot_guide.md"
           }
         }
       ]
