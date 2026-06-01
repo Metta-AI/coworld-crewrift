@@ -1795,13 +1795,16 @@ proc protocolVoteCellAt(count, x, y: int): int =
     cols = min(count, VoteColsMax)
     totalW = cols * VoteCellW
     startX = (ScreenWidth - totalW) div 2
-  for i in 0 ..< count:
-    let
-      cellX = startX + (i mod cols) * VoteCellW
-      cellY = VoteStartY + (i div cols) * VoteCellH
-    if x >= cellX - 2 and x < cellX + VoteCellW + 2 and
-        y >= cellY - 3 and y < cellY + VoteCellH + 2:
-      return i
+    rows = (count + cols - 1) div cols
+    col = clamp((x - startX + VoteCellW div 2) div VoteCellW, 0, cols - 1)
+    row = clamp(
+      (y - (VoteStartY - 1) + VoteCellH div 2) div VoteCellH,
+      0,
+      rows - 1
+    )
+    index = row * cols + col
+  if index >= 0 and index < count:
+    return index
   VoteUnknown
 
 proc protocolInterstitialLabel(label: string): bool =
