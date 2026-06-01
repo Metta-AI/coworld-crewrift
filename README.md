@@ -1,6 +1,8 @@
 # Crewrift
 
-Crewrift is an uploaded Coworld social deduction game. Crewmates complete
+![Crewrift](docs/crewrift.png)
+
+Crewrift is a Coworld social deduction game. Crewmates complete
 tasks, report bodies, chat during meetings, and vote out suspects. Imposters
 blend in, use cooldown-limited kills, and survive the vote.
 
