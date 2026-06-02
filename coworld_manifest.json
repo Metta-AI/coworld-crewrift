@@ -356,7 +356,7 @@
       },
       "pages": [
         {
-          "id": "rules.md",
+          "id": "rules",
           "title": "Rules",
           "content": {
             "type": "uri",
@@ -364,7 +364,15 @@
           }
         },
         {
-          "id": "play_crewrift.md",
+          "id": "notsus",
+          "title": "Notsus Bot Player",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/notsus/README.md"
+          }
+        },
+        {
+          "id": "play",
           "title": "Play Crewrift Daily",
           "content": {
             "type": "uri",
