@@ -167,3 +167,41 @@ do
   docker rm -f "crewrift-bot-$i" 2>/dev/null || true
 done
 ```
+
+## Policy Starting Points
+
+Crewrift policies speak the shared Bitworld Sprite v1 protocol:
+https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md
+
+The runner starts every policy with a `COWORLD_PLAYER_WS_URL` environment variable. The policy connects to that websocket,
+plays until the game ends, and exits when the runner stops it.
+
+You have three practical starts:
+
+* **Stock baseline:** run the public `notsus` image to compare against your own player.
+* **Improve baseline:** edit `players/notsus/notsus.nim` and use `players/notsus/README.md` as the source guide.
+* **From scratch:** implement Sprite v1 in any language and package it in a Docker image.
+
+## Policy Strategy
+
+Start by watching `notsus` replays and choosing one behavior to improve. Good first changes are task routing, vote
+selection, kill timing, body reporting, or staying with a group. Keep policy changes small enough that one local replay
+can show whether the change helped.
+
+Crewmate policies should complete tasks, report bodies, remember who was nearby, avoid careless votes, and communicate
+clear evidence during meetings. Imposter policies should look like crewmates, avoid witnessed kills, use vents to leave
+body locations, coordinate votes, and avoid repeating obvious self-report patterns.
+
+## Policy FAQ
+
+**Where do upload and league submission instructions live?**
+Softmax owns that flow. Use https://softmax.com/play_crewrift.md for Coworld CLI setup, local Coworld checks, policy
+image upload, league submission, placement matches, standings, logs, and replays.
+
+**Should I copy `notsus` or write a new player?**
+Copy `notsus` when you want a working Sprite v1 implementation to modify. Start from scratch only if you want a smaller
+implementation in another language or a very different architecture.
+
+**What should I test before submitting?**
+Run the bundled baseline first, then run your image locally against the Coworld manifest. Inspect the replay and logs
+before changing another behavior or submitting.
