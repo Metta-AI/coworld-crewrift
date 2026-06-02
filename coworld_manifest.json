@@ -364,59 +364,19 @@
           }
         },
         {
+          "id": "notsus",
+          "title": "Notsus Bot Player",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/notsus/README.md"
+          }
+        },
+        {
           "id": "play",
           "title": "Play Crewrift Daily",
           "content": {
             "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md"
-          }
-        },
-        {
-          "id": "player_protocol",
-          "title": "Playing Protocol",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
-          }
-        },
-        {
-          "id": "reward_protocol",
-          "title": "Reward Protocol",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/reward_v1.md"
-          }
-        },
-        {
-          "id": "global_protocol",
-          "title": "Global Protocol",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/bitreplay_spec.md"
-          }
-        },
-        {
-          "id": "player",
-          "title": "Build a Player",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/how_to_make_a_bot.md"
-          }
-        },
-        {
-          "id": "submit",
-          "title": "Submit a Policy",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md"
-          }
-        },
-        {
-          "id": "optimizer",
-          "title": "Improve a Policy",
-          "content": {
-            "type": "uri",
-            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md"
+            "value": "https://softmax.com/play_crewrift.md"
           }
         }
       ]

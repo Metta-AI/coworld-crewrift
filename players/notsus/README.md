@@ -5,13 +5,15 @@ Notsus is an example bot that can do a lot of the tasks, can be an imposter, and
 Run the bot headless:
 
 ```sh
-nim r players/notsus/notsus.nim -- --address:127.0.0.1 --port:8080 --name:notsus
+COWORLD_PLAYER_WS_URL='ws://127.0.0.1:8080/player?slot=0&token=' \
+nim r players/notsus/notsus.nim
 ```
 
 Run one bot with the visual debugger:
 
 ```sh
-nim r -d:notsusGui players/notsus/notsus.nim -- --gui --address:127.0.0.1 --port:8080 --name:notsus-debug
+COWORLD_PLAYER_WS_URL='ws://127.0.0.1:8080/player?slot=0&token=' \
+nim r -d:notsusGui players/notsus/notsus.nim
 ```
 
 The debugger shows the sprite viewport, the decompressed walkability mask, the

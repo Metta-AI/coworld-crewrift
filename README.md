@@ -103,7 +103,7 @@ with matching `0xBADA55_*` tokens.
 for i in 0 1 2 3 4 5 6 7; do
   token="0xBADA55_$i"
   url="ws://localhost:2000/player?slot=$i&token=$token"
-  COGAMES_ENGINE_WS_URL="$url" ./players/notsus/notsus.out &
+  COWORLD_PLAYER_WS_URL="$url" ./players/notsus/notsus.out &
 done
 wait
 ```
@@ -151,7 +151,7 @@ do
   docker run --rm -d \
     --name "crewrift-bot-$i" \
     --network crewrift-local \
-    -e COGAMES_ENGINE_WS_URL="$url" \
+    -e COWORLD_PLAYER_WS_URL="$url" \
     public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest
 done
 ```
