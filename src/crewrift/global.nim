@@ -13,10 +13,21 @@ const
   ReplayPanelHeight = 22
   ReplayControlLayerId = 8
   ReplayControlLayerType = 8
+  ReplayMismatchLayerId = 9
+  ReplayMismatchLayerType = 5
   ReplayTickSpriteId = 4002
   ReplayControlsSpriteId = 4003
+  ReplayMismatchSpriteId = 4006
   ReplayTickObjectId = 4002
   ReplayControlsObjectId = 4003
+  ReplayMismatchObjectId = 4006
+  ReplayMismatchMinWidth = 128
+  ReplayMismatchPadX = 4
+  ReplayMismatchPadY = 3
+  ReplayMismatchBgR = 220'u8
+  ReplayMismatchBgG = 20'u8
+  ReplayMismatchBgB = 20'u8
+  ReplayMismatchBgA = 255'u8
   ScoreboardWidth = 160
   ScoreboardHeight = 130
   ScoreboardY = 2
@@ -2716,6 +2727,74 @@ proc buildReplayControlsSprite(
     )
     x += TransportSpeedGap
 
+proc buildReplayMismatchSprite(
+  sim: SimServer,
+  tick: int
+): tuple[width, height: int, pixels: seq[uint8], label: string] {.measure.} =
+  ## Builds the top-center replay hash mismatch warning sprite.
+  result.label = "hash mismatch at tick " & $tick
+  let textWidth = sim.asciiSprites.textWidth(result.label)
+  result.width = max(ReplayMismatchMinWidth, textWidth + ReplayMismatchPadX * 2)
+  result.height = TextLineHeight + ReplayMismatchPadY * 2
+  result.pixels = newRgbaPixels(result.width, result.height)
+  for i in 0 ..< result.width * result.height:
+    result.pixels.putRawRgbaPixel(
+      i,
+      ReplayMismatchBgR,
+      ReplayMismatchBgG,
+      ReplayMismatchBgB,
+      ReplayMismatchBgA
+    )
+  sim.blitSmallText(
+    result.pixels,
+    result.width,
+    result.height,
+    result.label,
+    (result.width - textWidth) div 2,
+    ReplayMismatchPadY,
+    2'u8
+  )
+
+proc addReplayMismatchWarning(
+  sim: SimServer,
+  spriteDefs: var seq[SpriteDefinition],
+  currentIds: var seq[int],
+  packet: var seq[uint8],
+  tick: int
+) {.measure.} =
+  ## Adds a fixed top-center replay hash mismatch warning.
+  if tick < 0:
+    return
+  let warning = sim.buildReplayMismatchSprite(tick)
+  packet.addLayer(
+    ReplayMismatchLayerId,
+    ReplayMismatchLayerType,
+    UiLayerFlag
+  )
+  packet.addViewport(
+    ReplayMismatchLayerId,
+    warning.width,
+    warning.height
+  )
+  currentIds.add(ReplayMismatchObjectId)
+  packet.addSpriteChanged(
+    spriteDefs,
+    ReplayMismatchSpriteId,
+    warning.width,
+    warning.height,
+    warning.pixels,
+    warning.label,
+    changed = true
+  )
+  packet.addObject(
+    ReplayMismatchObjectId,
+    0,
+    0,
+    0,
+    ReplayMismatchLayerId,
+    ReplayMismatchSpriteId
+  )
+
 proc buildSpriteProtocolUpdates*(
   sim: var SimServer,
   state: GlobalViewerState,
@@ -2725,7 +2804,8 @@ proc buildSpriteProtocolUpdates*(
   replaySpeed = 1,
   replayMaxTick = -1,
   replayLooping = false,
-  replayEnabled = false
+  replayEnabled = false,
+  replayMismatchTick = -1
 ): seq[uint8] {.measure.} =
   ## Builds global viewer object updates for the current tick.
   result = @[]
@@ -2807,6 +2887,12 @@ proc buildSpriteProtocolUpdates*(
       currentIds,
       result,
       nextState.selectedJoinOrder
+    )
+    sim.addReplayMismatchWarning(
+      nextState.spriteDefs,
+      currentIds,
+      result,
+      replayMismatchTick
     )
     if not povClearsObjects:
       for objectId in state.objectIds:
@@ -3043,6 +3129,12 @@ proc buildSpriteProtocolUpdates*(
     0,
     ReplayControlLayerId,
     ReplayControlsSpriteId
+  )
+  sim.addReplayMismatchWarning(
+    nextState.spriteDefs,
+    currentIds,
+    result,
+    replayMismatchTick
   )
 
   for objectId in state.objectIds:

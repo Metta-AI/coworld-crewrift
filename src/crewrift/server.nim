@@ -703,6 +703,7 @@ proc runServerLoop*(
         initReplayPlayer(replayData)
       else:
         ReplayPlayer()
+  replayPlayer.mismatchQuit = runtimeConfig.mismatchQuit
   startProfileTrace()
   defer:
     finishProfileTrace()
@@ -760,6 +761,7 @@ proc runServerLoop*(
       config = replayConfig
       sim = initSimServer(config)
       replayPlayer = initReplayPlayer(replayData)
+      replayPlayer.mismatchQuit = runtimeConfig.mismatchQuit
       replayLoaded = true
       {.gcsafe.}:
         withLock appState.lock:
@@ -1098,7 +1100,8 @@ proc runServerLoop*(
         if replayLoaded: replayPlayer.replayMaxTick()
         else: liveProgressMaxTick(config),
         replayPlayer.looping,
-        replayLoaded
+        replayLoaded,
+        if replayLoaded: replayPlayer.hashMismatchTick else: -1
       )
       if packet.len == 0:
         continue

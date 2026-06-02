@@ -1,10 +1,12 @@
 import
   std/[os, unittest],
+  bitworld/spriteprotocol,
   crewrift/[global, sim]
 
 const
   GameDir = currentSourcePath.parentDir.parentDir
   ReplayControlLayerId = 8
+  ReplayMismatchLayerId = 9
 
 proc initCrewriftForTest(config: GameConfig): SimServer =
   ## Initializes Crewrift from the game directory.
@@ -54,6 +56,36 @@ suite "replay controls":
     )
     check next.replayCommands == @[' ']
     check next.replaySeekTick == -1
+
+  test "hash mismatch warning is shown in the top center layer":
+    var game = initCrewriftForTest(defaultGameConfig())
+    var state = initGlobalViewerState()
+    var next: GlobalViewerState
+
+    let packet = game.buildSpriteProtocolUpdates(
+      state,
+      next,
+      replayTick = 1208,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 2000,
+      replayLooping = false,
+      replayEnabled = true,
+      replayMismatchTick = 1208
+    )
+    var
+      foundSprite = false
+      foundObject = false
+    for message in packet.parseSpritePacket():
+      if message.kind == spkSprite and
+          message.sprite.label == "hash mismatch at tick 1208":
+        foundSprite = true
+      if message.kind == spkObject and
+          message.objectDef.layer == ReplayMismatchLayerId:
+        foundObject = true
+
+    check foundSprite
+    check foundObject
 
     state = next
     state.replayCommands.setLen(0)

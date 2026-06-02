@@ -15,7 +15,9 @@ type
     playing*: bool
     looping*: bool
     speedIndex*: int
+    mismatchQuit*: bool
     hashValidationFailed*: bool
+    hashMismatchTick*: int
 
 const
   PlaybackSpeeds* = [1, 2, 3, 4, 8]
@@ -58,7 +60,7 @@ proc initReplayPlayer*(data: ReplayData): ReplayPlayer =
   result.playing = true
   result.looping = true
   result.speedIndex = 0
-  result.hashValidationFailed = false
+  result.hashMismatchTick = -1
 
 proc replaySpeed*(replay: ReplayPlayer): int =
   ## Returns the current integer replay speed.
@@ -77,6 +79,7 @@ proc resetReplay*(replay: var ReplayPlayer) =
   replay.inputIndex = 0
   replay.hashIndex = 0
   replay.hashValidationFailed = false
+  replay.hashMismatchTick = -1
   replay.masks = @[]
   replay.lastAppliedMasks = @[]
 
@@ -149,16 +152,25 @@ proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
     return
   let expected = replay.data.hashes[replay.hashIndex]
   if int(expected.tick) < sim.tickCount:
-    echo "Replay hash tick is missing at tick ", sim.tickCount, "; continuing playback without hash validation"
+    let message = "Replay hash tick is missing at tick " & $sim.tickCount & "."
+    if replay.mismatchQuit:
+      raise newException(ReplayError, message)
+    echo message
     replay.hashValidationFailed = true
+    replay.hashMismatchTick = sim.tickCount
     return
   if int(expected.tick) > sim.tickCount:
     return
   let hash = sim.gameHash()
   if hash != expected.hash:
-    echo "Replay hash mismatch at tick ", sim.tickCount,
-      "; continuing playback without hash validation"
+    let message =
+      "Replay hash mismatch at tick " & $sim.tickCount &
+        "; expected " & $expected.hash & ", got " & $hash & "."
+    if replay.mismatchQuit:
+      raise newException(ReplayError, message)
+    echo message
     replay.hashValidationFailed = true
+    replay.hashMismatchTick = sim.tickCount
     return
   inc replay.hashIndex
 
