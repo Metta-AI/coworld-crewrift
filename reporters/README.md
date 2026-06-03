@@ -25,7 +25,9 @@ Crewrift simulator to recover a tick-aligned event timeline.
 
 ```
 reporters/scribe/
-  scribe.nim            entry point (provisional; see "Interface" below)
+  scribe.nim            local developer CLI: print one bundle's timeline
+  service.nim           persistent websocket reporter service
+  Dockerfile            container image for the service entry point
   scribe/
     bundle.nim          open an episode-bundle zip, parse manifest.json,
                         extract artifact entries
@@ -36,7 +38,10 @@ reporters/scribe/
     probes.nim          sim-backed attribution probes
     detect.nim          per-tick event detection
     timeline.nim        extraction orchestration and text rendering
-  README.md
+    event_log.nim       EpisodeTimeline -> event-log rows
+    csv.nim             CSV escaping/rendering
+    protocol.nim        websocket request/response JSON envelopes
+    uri_io.nim          file:// and https:// bundle reads
 ```
 
 ### What it does today
@@ -50,9 +55,12 @@ reporters/scribe/
    the replay header.
 4. Re-simulates the decoded replay tick by tick with `initSimServer` and
    `step`, validating every recorded `gameHash`.
-5. Emits a human-readable event timeline with stable player identities for game
+5. Builds an in-memory `EpisodeTimeline` with stable player identities for game
    start, playing start, kills, task completions, meetings, votes, ejections,
    voting chat messages, stuck penalties, vents, game over, and replay leaves.
+6. Exposes a persistent websocket service at `/report` that accepts
+   `file://` or `https://` episode-bundle URIs and returns a binary CSV event
+   log using the Coworld event-log columns: `ts,player,key,value`.
 
 The replay format is **game-owned**, so the reporter reuses the game's codec
 instead of reimplementing the byte layout. That is the only way to stay correct
@@ -65,17 +73,49 @@ report attribution probes a cloned post-step `SimServer` with the exported
 `tryReport` proc and the real pre-step body limit. Kill attribution uses the
 simulator's persisted reward-account kill counters and appended body order.
 
+### Service interface
+
+`service.nim` is a long-running service rather than the short-lived
+`COGAME_EPISODE_BUNDLE_URI` / `COGAME_REPORT_URI` process described by the
+current upstream reporter role docs. It listens on port `8100` by default and
+accepts websocket upgrades on `/report`.
+
+Request text frame:
+
+```json
+{
+  "type": "report.generate",
+  "request_id": "req-1",
+  "episode_bundle_uri": "file:///path/to/episode-bundle.zip",
+  "format": "csv"
+}
+```
+
+Response frames:
+
+1. Text `report.accepted`.
+2. Text `report.csv` metadata with `content_type: "text/csv"`,
+   `filename: "events.csv"`, `schema: "coworld.event_log.csv.v1"`, and
+   `columns: ["ts", "player", "key", "value"]`.
+3. Binary CSV payload.
+4. Text `report.done`.
+
+Errors are sent as text `report.error` messages with `request_id`, `code`, and
+`message`.
+
+The service allows two concurrent report jobs by default. Additional requests
+receive a `busy` error. Configure with `--max-concurrency`, or
+`SCRIBE_MAX_CONCURRENCY`.
+
 ### What is deliberately not built yet
 
-- **Report artifact contents.** The timeline is printed to stdout for now. The
-  real Coworld report zip contents — narrative, highlights, statistics, and
-  machine-readable event logs — are the next design step.
-- **The interface.** The Coworld contract hands a reporter an episode bundle via
-  `COGAME_EPISODE_BUNDLE_URI` and expects a report zip at `COGAME_REPORT_URI`.
-  That wiring is intentionally stubbed. For now `scribe.nim` takes a bundle zip
-  path on the command line so the core can be exercised end to end. When the
-  real interface lands, only `scribe.nim` should need to change — `bundle.nim`
-  and `report.nim` operate on bytes and decoded state, not URIs.
+- **Canonical Coworld report zip output.** This service returns raw CSV over
+  websocket, not a `manifest.json` report zip written to `COGAME_REPORT_URI`.
+- **Parquet event logs.** The service uses CSV for now to avoid adding a Parquet
+  writer dependency. The columns match the Coworld event-log schema, so this can
+  be upgraded later.
+- **Multi-game segmentation** beyond stop-after-first and any narrative/stats
+  layered on top of the timeline.
 
 ## Build and run
 
@@ -91,8 +131,23 @@ nim c reporters/scribe/scribe.nim
 reporters/scribe/scribe.out path/to/episode-bundle.zip
 ```
 
+Build and run the persistent service with:
+
+```sh
+nim c reporters/scribe/service.nim
+reporters/scribe/service --port:8100 --max-concurrency:2
+```
+
+Build the service image with:
+
+```sh
+docker build -f reporters/scribe/Dockerfile -t crewrift-scribe .
+docker run --rm -p 8100:8100 crewrift-scribe
+```
+
 Run the focused reporter tests with:
 
 ```sh
 nim c -r reporters/scribe/test_timeline.nim
+nim c -r reporters/scribe/test_service.nim
 ```

@@ -39,7 +39,8 @@ player identities (slot, name, color, role).
   `manifest.json`, extracts entries.
 - `reporters/scribe/scribe/report.nim` — `decodeEpisode` returns an
   `EpisodeReport { manifest, config: GameConfig, replay: ReplayData }`.
-- `reporters/scribe/scribe.nim` — provisional CLI entry point.
+- `reporters/scribe/scribe.nim` — local CLI entry point that prints a timeline.
+- `reporters/scribe/service.nim` — persistent websocket service entry point.
 
 This plan adds the event-extraction layer on top of `decodeEpisode`.
 
@@ -179,9 +180,14 @@ All new files under `reporters/scribe/scribe/`:
 | `probes.nim` | `findBodyReport` via cloned `SimServer` + exported `tryReport`, using the real tick's `bodyLimit`. |
 | `detect.nim` | Pure per-tick detection: takes pre/post sim + inputs + identity, returns `seq[GameEvent]`. Calls into `probes.nim`. |
 | `timeline.nim` | Orchestration: `extractTimeline(EpisodeReport): EpisodeTimeline` — runs the driver to the end, calls `detect` each tick, accumulates events. |
+| `event_log.nim` | Converts `EpisodeTimeline` events to Coworld event-log rows with `ts,player,key,value`. |
+| `csv.nim` | Renders event-log rows as CSV for the websocket service response. |
+| `protocol.nim` | Parses `/report` websocket requests and builds response envelopes. |
+| `uri_io.nim` | Reads `file://` and `https://` episode-bundle URIs. |
 
 `report.nim` gains nothing structural; `timeline.nim` consumes its
-`EpisodeReport`. `scribe.nim` is updated to print/emit the timeline.
+`EpisodeReport`. `scribe.nim` prints the timeline for local debugging; the
+service entry point wakes on websocket requests and returns CSV event logs.
 
 ---
 
@@ -620,11 +626,10 @@ reporter modules by relative path). Build standalone with `nim c` like the bots.
 
 ## Out of scope (deferred)
 
-- The report artifact format (`render`/`event_log`/`trace` zip per
-  `packages/coworld/.../artifacts/REPORT.md`) — the in-memory `EpisodeTimeline`
-  is deliberately the boundary for now, so future output formats can be layered
-  on without changing event extraction.
-- The production reporter interface (`COGAME_EPISODE_BUNDLE_URI` /
-  `COGAME_REPORT_URI`); `scribe.nim` stays CLI-driven.
+- The canonical Coworld report zip format (`render`/`event_log`/`trace` zip per
+  `packages/coworld/.../artifacts/REPORT.md`). The service currently returns a
+  raw CSV event log over websocket rather than writing a report zip.
+- Parquet output. The service uses CSV with the same `ts,player,key,value`
+  columns until a Parquet writer dependency is worth carrying.
 - Multi-game segmentation beyond stop-after-first and any narrative/stats layered
   on top of the timeline.
