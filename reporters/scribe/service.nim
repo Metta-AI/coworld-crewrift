@@ -16,7 +16,7 @@ type
 
 const
   DefaultHost = "0.0.0.0"
-  DefaultPort = 8100
+  DefaultPort = 8080
   DefaultMaxConcurrency = 2
   ReportPath = "/report"
   HealthPath = "/healthz"
@@ -42,7 +42,7 @@ Crewrift scribe reporter service
 
 Options:
   --host:<host>              Bind host. Default: 0.0.0.0
-  --port:<port>              Bind port. Default: 8100
+  --port:<port>              Bind port. Default: 8080
   --max-concurrency:<count>  Concurrent report jobs. Default: 2
   --help, -h                 Show this help.
 """

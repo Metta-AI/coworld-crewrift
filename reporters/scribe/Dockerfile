@@ -53,6 +53,6 @@ COPY --from=build /workspace/crewrift/scribe-service /bin/scribe-service
 COPY --from=build /workspace/crewrift/*.json ./
 COPY --from=build /workspace/crewrift/data ./data
 
-EXPOSE 8100
+EXPOSE 8080
 
 CMD ["/bin/scribe-service"]

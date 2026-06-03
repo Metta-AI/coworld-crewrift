@@ -77,7 +77,7 @@ simulator's persisted reward-account kill counters and appended body order.
 
 `service.nim` is a long-running service rather than the short-lived
 `COGAME_EPISODE_BUNDLE_URI` / `COGAME_REPORT_URI` process described by the
-current upstream reporter role docs. It listens on port `8100` by default and
+current upstream reporter role docs. It listens on port `8080` by default and
 accepts websocket upgrades on `/report`.
 
 Request text frame:
@@ -135,14 +135,14 @@ Build and run the persistent service with:
 
 ```sh
 nim c reporters/scribe/service.nim
-reporters/scribe/service --port:8100 --max-concurrency:2
+reporters/scribe/service --port:8080 --max-concurrency:2
 ```
 
 Build the service image with:
 
 ```sh
 docker build -f reporters/scribe/Dockerfile -t crewrift-scribe .
-docker run --rm -p 8100:8100 crewrift-scribe
+docker run --rm -p 8080:8080 crewrift-scribe
 ```
 
 Run the focused reporter tests with:
