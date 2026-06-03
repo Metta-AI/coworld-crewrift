@@ -105,15 +105,15 @@ proc errorCode(error: ref Exception): string =
   if error of ProtocolError:
     "invalid_request"
   elif error of ReporterUriError:
-    "bundle_fetch_failed"
+    "replay_fetch_failed"
   else:
     "report_failed"
 
 proc runReportJob(websocket: WebSocket, request: ReportRequest) =
   try:
     let
-      bundleBytes = request.episodeBundleUri.readEpisodeBundleUri()
-      report = bundleBytes.decodeEpisodeBytes()
+      replayBytes = request.replayUri.readReplayUri()
+      report = replayBytes.decodeReplayBytes()
       timeline = report.extractTimeline()
       rows = timeline.eventLogRows()
       csv = rows.renderEventLogCsv()

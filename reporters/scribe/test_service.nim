@@ -4,31 +4,31 @@ import
   scribe/[event_log, events, identity, protocol, uri_io]
 
 suite "scribe reporter service helpers":
-  test "parses report requests for file and https bundle URIs":
+  test "parses report requests for file and https replay URIs":
     let fileRequest = parseReportRequest($(%*{
       "type": RequestType,
       "request_id": "req-1",
-      "episode_bundle_uri": "file:///tmp/episode.zip",
+      "replay_uri": "file:///tmp/replay.bitreplay",
       "format": "csv"
     }))
     check fileRequest.requestId == "req-1"
-    check fileRequest.episodeBundleUri == "file:///tmp/episode.zip"
+    check fileRequest.replayUri == "file:///tmp/replay.bitreplay"
 
     let httpsRequest = parseReportRequest($(%*{
       "type": RequestType,
       "request_id": "req-2",
-      "episode_bundle_uri": "https://example.test/episode.zip"
+      "replay_uri": "https://example.test/replay.bitreplay"
     }))
     check httpsRequest.requestId == "req-2"
-    check httpsRequest.episodeBundleUri.startsWith("https://")
+    check httpsRequest.replayUri.startsWith("https://")
 
-  test "rejects unsupported bundle URI schemes":
-    check not supportedEpisodeBundleUri("http://example.test/episode.zip")
+  test "rejects unsupported replay URI schemes":
+    check not supportedReplayUri("http://example.test/replay.bitreplay")
     expect ProtocolError:
       discard parseReportRequest($(%*{
         "type": RequestType,
         "request_id": "req-1",
-        "episode_bundle_uri": "http://example.test/episode.zip"
+        "replay_uri": "http://example.test/replay.bitreplay"
       }))
 
   test "builds CSV event log with canonical columns and escaped JSON values":

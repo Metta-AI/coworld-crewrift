@@ -6,10 +6,9 @@ statistics, event logs. Reporters are post-episode and on-demand: they are
 **not** run by the episode runner. An episode produces its artifacts whether or
 not any reporter ever runs against them.
 
-See the upstream contract in the `coworld` package:
+See the upstream artifact docs in the `coworld` package:
 
 - Role: `packages/coworld/src/coworld/docs/roles/REPORTER.md`
-- Input bundle: `packages/coworld/src/coworld/docs/artifacts/EPISODE_BUNDLE.md`
 - Replay artifact: `packages/coworld/src/coworld/docs/artifacts/REPLAY.md`
 - Output report: `packages/coworld/src/coworld/docs/artifacts/REPORT.md`
 
@@ -19,19 +18,17 @@ a same-named submodule folder for its parts.
 
 ## scribe
 
-`scribe` is the Crewrift reporter. It is being built bottom-up: first unbundle
-the episode and decode its replay, then re-simulate that replay through the real
-Crewrift simulator to recover a tick-aligned event timeline.
+`scribe` is the Crewrift reporter. It is being built bottom-up: first decode the
+episode replay, then re-simulate that replay through the real Crewrift simulator
+to recover a tick-aligned event timeline.
 
 ```
 reporters/scribe/
-  scribe.nim            local developer CLI: print one bundle's timeline
+  scribe.nim            local developer CLI: print one replay's timeline
   service.nim           persistent websocket reporter service
   Dockerfile            container image for the service entry point
   scribe/
-    bundle.nim          open an episode-bundle zip, parse manifest.json,
-                        extract artifact entries
-    report.nim          core: bundle -> decoded EpisodeReport (config + replay)
+    report.nim          core: replay -> decoded EpisodeReport (config + replay)
     driver.nim          replay re-simulation driver with hash validation
     identity.nim        stable player identity table
     events.nim          timeline event model
@@ -41,26 +38,24 @@ reporters/scribe/
     event_log.nim       EpisodeTimeline -> event-log rows
     csv.nim             CSV escaping/rendering
     protocol.nim        websocket request/response JSON envelopes
-    uri_io.nim          file:// and https:// bundle reads
+    uri_io.nim          file:// and https:// replay reads
 ```
 
 ### What it does today
 
-1. Reads the episode-bundle zip into memory (`bundle.nim`).
-2. Parses the bundle's root `manifest.json` and resolves the `replay` entry
-   through the manifest (rather than hard-coding a path).
-3. Decodes the replay bytes with Crewrift's own codec
+1. Reads a replay artifact from a `file://` or `https://` URI.
+2. Decodes the replay bytes with Crewrift's own codec
    (`src/crewrift/replays.nim`) into a `ReplayData` — joins, leaves, inputs,
    and tick hashes — plus the `GameConfig` the episode ran with, recovered from
    the replay header.
-4. Re-simulates the decoded replay tick by tick with `initSimServer` and
+3. Re-simulates the decoded replay tick by tick with `initSimServer` and
    `step`, validating every recorded `gameHash`.
-5. Builds an in-memory `EpisodeTimeline` with stable player identities for game
+4. Builds an in-memory `EpisodeTimeline` with stable player identities for game
    start, playing start, kills, task completions, meetings, votes, ejections,
    voting chat messages, stuck penalties, vents, game over, and replay leaves.
-6. Exposes a persistent websocket service at `/report` that accepts
-   `file://` or `https://` episode-bundle URIs and returns a binary CSV event
-   log using the Coworld event-log columns: `ts,player,key,value`.
+5. Exposes a persistent websocket service at `/report` that accepts
+   `file://` or `https://` replay URIs and returns a binary CSV event log using
+   the Coworld event-log columns: `ts,player,key,value`.
 
 The replay format is **game-owned**, so the reporter reuses the game's codec
 instead of reimplementing the byte layout. That is the only way to stay correct
@@ -75,10 +70,9 @@ simulator's persisted reward-account kill counters and appended body order.
 
 ### Service interface
 
-`service.nim` is a long-running service rather than the short-lived
-`COGAME_EPISODE_BUNDLE_URI` / `COGAME_REPORT_URI` process described by the
-current upstream reporter role docs. It listens on port `8080` by default and
-accepts websocket upgrades on `/report`.
+`service.nim` is a long-running service rather than the short-lived report
+writer process described by the current upstream reporter role docs. It listens
+on port `8080` by default and accepts websocket upgrades on `/report`.
 
 Request text frame:
 
@@ -86,7 +80,7 @@ Request text frame:
 {
   "type": "report.generate",
   "request_id": "req-1",
-  "episode_bundle_uri": "file:///path/to/episode-bundle.zip",
+  "replay_uri": "file:///path/to/replay.bitreplay",
   "format": "csv"
 }
 ```
@@ -110,7 +104,7 @@ receive a `busy` error. Configure with `--max-concurrency`, or
 ### What is deliberately not built yet
 
 - **Canonical Coworld report zip output.** This service returns raw CSV over
-  websocket, not a `manifest.json` report zip written to `COGAME_REPORT_URI`.
+  websocket, not a `manifest.json` report zip.
 - **Parquet event logs.** The service uses CSV for now to avoid adding a Parquet
   writer dependency. The columns match the Coworld event-log schema, so this can
   be upgraded later.
@@ -128,7 +122,7 @@ nimby use 2.2.10
 nimby sync -g nimby.lock
 
 nim c reporters/scribe/scribe.nim
-reporters/scribe/scribe.out path/to/episode-bundle.zip
+reporters/scribe/scribe.out path/to/replay.bitreplay
 ```
 
 Build and run the persistent service with:
