@@ -35,14 +35,12 @@ player identities (slot, name, color, role).
 
 ## What already exists (starting point)
 
-- `reporters/scribe/scribe/bundle.nim` — opens the episode-bundle zip, parses
-  `manifest.json`, extracts entries.
-- `reporters/scribe/scribe/report.nim` — `decodeEpisode` returns an
-  `EpisodeReport { manifest, config: GameConfig, replay: ReplayData }`.
+- `reporters/scribe/scribe/report.nim` — `decodeReplayBytes` returns an
+  `EpisodeReport { config: GameConfig, replay: ReplayData }`.
 - `reporters/scribe/scribe.nim` — local CLI entry point that prints a timeline.
 - `reporters/scribe/service.nim` — persistent websocket service entry point.
 
-This plan adds the event-extraction layer on top of `decodeEpisode`.
+This plan adds the event-extraction layer on top of `decodeReplayBytes`.
 
 ---
 
@@ -183,7 +181,7 @@ All new files under `reporters/scribe/scribe/`:
 | `event_log.nim` | Converts `EpisodeTimeline` events to Coworld event-log rows with `ts,player,key,value`. |
 | `csv.nim` | Renders event-log rows as CSV for the websocket service response. |
 | `protocol.nim` | Parses `/report` websocket requests and builds response envelopes. |
-| `uri_io.nim` | Reads `file://` and `https://` episode-bundle URIs. |
+| `uri_io.nim` | Reads `file://` and `https://` replay URIs. |
 
 `report.nim` gains nothing structural; `timeline.nim` consumes its
 `EpisodeReport`. `scribe.nim` prints the timeline for local debugging; the
@@ -582,10 +580,9 @@ reporter modules by relative path). Build standalone with `nim c` like the bots.
 1. **Fixture-driven smoke.** A helper that drives `SimServer` and uses the
    exported `openReplayWriter`/`writeJoin`/`writeInput`/`writeHash`
    (`src/crewrift/replays.nim`) to synthesize a replay with a known scripted
-   sequence (joins, role assignment, a kill, a later body report, votes), wraps
-   it plus a root `manifest.json` into a zip, then asserts the extracted timeline
-   contains the expected stable `PlayerRef`s and ticks. Minimal manifest:
-   `{"ereq_id":"local","status":"success","include":["replay"],"files":{"replay":"replay.bitreplay"}}`.
+   sequence (joins, role assignment, a kill, a later body report, votes), then
+   asserts the extracted timeline contains the expected stable `PlayerRef`s and
+   ticks.
 2. **Hash-validation test.** Assert `hashValidated == true` on a fixture replay
    whose hashes were produced by the sim, and `false` plus a warning on a
    deliberately corrupted hash.
@@ -619,10 +616,10 @@ reporter modules by relative path). Build standalone with `nim c` like the bots.
      nim r src/crewrift.nim
    ```
 
-   Bundle the written replay with the manifest shape above, then eyeball the
-   timeline against the server's prose `logGameEvent` stdout. The prose lines
-   (`sim.nim` kill / vote / win logs) are a useful cross-check, but the hash
-   check remains the determinism proof.
+   Feed the written replay directly to `scribe`, then eyeball the timeline
+   against the server's prose `logGameEvent` stdout. The prose lines (`sim.nim`
+   kill / vote / win logs) are a useful cross-check, but the hash check remains
+   the determinism proof.
 
 ## Out of scope (deferred)
 

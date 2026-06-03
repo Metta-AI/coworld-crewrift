@@ -18,7 +18,7 @@ type
 
   ReportRequest* = object
     requestId*: string
-    episodeBundleUri*: string
+    replayUri*: string
 
 proc stringField(node: JsonNode, name: string): string =
   if not node.hasKey(name) or node[name].kind != JString:
@@ -52,11 +52,11 @@ proc parseReportRequest*(message: string): ReportRequest =
   result.requestId = node.stringField("request_id")
   if result.requestId.len == 0:
     raise newException(ProtocolError, "request_id must not be empty")
-  result.episodeBundleUri = node.stringField(EpisodeBundleUriField)
-  if not result.episodeBundleUri.supportedEpisodeBundleUri():
+  result.replayUri = node.stringField(ReplayUriField)
+  if not result.replayUri.supportedReplayUri():
     raise newException(
       ProtocolError,
-      EpisodeBundleUriField & " must use file:// or https://"
+      ReplayUriField & " must use file:// or https://"
     )
   if node.hasKey("format"):
     if node["format"].kind != JString or node["format"].getStr() != "csv":
