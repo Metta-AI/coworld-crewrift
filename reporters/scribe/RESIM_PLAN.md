@@ -179,13 +179,15 @@ All new files under `reporters/scribe/scribe/`:
 | `detect.nim` | Pure per-tick detection: takes pre/post sim + inputs + identity, returns `seq[GameEvent]`. Calls into `probes.nim`. |
 | `timeline.nim` | Orchestration: `extractTimeline(EpisodeReport): EpisodeTimeline` — runs the driver to the end, calls `detect` each tick, accumulates events. |
 | `event_log.nim` | Converts `EpisodeTimeline` events to Coworld event-log rows with `ts,player,key,value`. |
-| `csv.nim` | Renders event-log rows as CSV for the websocket service response. |
+| `csv.nim` | Renders event-log rows as CSV for the websocket service's debug/compat mode. |
+| `parquet.nim` | Renders the fixed Coworld event-log schema as Parquet for the default websocket response. |
 | `protocol.nim` | Parses `/report` websocket requests and builds response envelopes. |
 | `uri_io.nim` | Reads `file://` and `https://` replay URIs. |
 
 `report.nim` gains nothing structural; `timeline.nim` consumes its
 `EpisodeReport`. `scribe.nim` prints the timeline for local debugging; the
-service entry point wakes on websocket requests and returns CSV event logs.
+service entry point wakes on websocket requests and returns event logs as
+Parquet by default, with CSV available by explicit request.
 
 ---
 
@@ -625,8 +627,6 @@ reporter modules by relative path). Build standalone with `nim c` like the bots.
 
 - The canonical Coworld report zip format (`render`/`event_log`/`trace` zip per
   `packages/coworld/.../artifacts/REPORT.md`). The service currently returns a
-  raw CSV event log over websocket rather than writing a report zip.
-- Parquet output. The service uses CSV with the same `ts,player,key,value`
-  columns until a Parquet writer dependency is worth carrying.
+  raw event-log payload over websocket rather than writing a report zip.
 - Multi-game segmentation beyond stop-after-first and any narrative/stats layered
   on top of the timeline.

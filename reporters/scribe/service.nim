@@ -1,7 +1,7 @@
 import
   std/[locks, nativesockets, os, parseopt, strutils],
   mummy,
-  scribe/[event_log, protocol, report, timeline, uri_io]
+  scribe/[event_log, parquet, protocol, report, timeline, uri_io]
 
 type
   ServiceConfig = object
@@ -116,17 +116,31 @@ proc runReportJob(websocket: WebSocket, request: ReportRequest) =
       report = replayBytes.decodeReplayBytes()
       timeline = report.extractTimeline()
       rows = timeline.eventLogRows()
-      csv = rows.renderEventLogCsv()
-    websocket.send(
-      csvMetadataMessage(
-        request.requestId,
-        rows.len,
-        timeline.hashValidated,
-        timeline.warnings.len
-      ),
-      TextMessage
-    )
-    websocket.send(csv, BinaryMessage)
+    let
+      metadata =
+        case request.format
+        of rfCsv:
+          csvMetadataMessage(
+            request.requestId,
+            rows.len,
+            timeline.hashValidated,
+            timeline.warnings.len
+          )
+        of rfParquet:
+          parquetMetadataMessage(
+            request.requestId,
+            rows.len,
+            timeline.hashValidated,
+            timeline.warnings.len
+          )
+      payload =
+        case request.format
+        of rfCsv:
+          rows.renderEventLogCsv()
+        of rfParquet:
+          rows.renderEventLogParquet()
+    websocket.send(metadata, TextMessage)
+    websocket.send(payload, BinaryMessage)
     websocket.send(doneMessage(request.requestId), TextMessage)
   except CatchableError as e:
     websocket.send(errorMessage(request.requestId, e.errorCode(), e.msg), TextMessage)

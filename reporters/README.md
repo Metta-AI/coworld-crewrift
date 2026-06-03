@@ -37,6 +37,7 @@ reporters/scribe/
     timeline.nim        extraction orchestration and text rendering
     event_log.nim       EpisodeTimeline -> event-log rows
     csv.nim             CSV escaping/rendering
+    parquet.nim         fixed-schema Coworld event-log Parquet writer
     protocol.nim        websocket request/response JSON envelopes
     uri_io.nim          file:// and https:// replay reads
 ```
@@ -54,8 +55,9 @@ reporters/scribe/
    start, playing start, kills, task completions, meetings, votes, ejections,
    voting chat messages, stuck penalties, vents, game over, and replay leaves.
 5. Exposes a persistent websocket service at `/report` that accepts
-   `file://` or `https://` replay URIs and returns a binary CSV event log using
-   the Coworld event-log columns: `ts,player,key,value`.
+   `file://` or `https://` replay URIs and returns a binary Parquet event log
+   using the Coworld event-log columns: `ts,player,key,value`. CSV remains
+   available by requesting `format: "csv"`.
 
 The replay format is **game-owned**, so the reporter reuses the game's codec
 instead of reimplementing the byte layout. That is the only way to stay correct
@@ -81,18 +83,27 @@ Request text frame:
   "type": "report.generate",
   "request_id": "req-1",
   "replay_uri": "file:///path/to/replay.bitreplay",
-  "format": "csv"
+  "format": "parquet"
 }
 ```
+
+If `format` is omitted, the service defaults to `parquet`. Explicit `format`
+values are `parquet` and `csv`.
 
 Response frames:
 
 1. Text `report.accepted`.
-2. Text `report.csv` metadata with `content_type: "text/csv"`,
-   `filename: "events.csv"`, `schema: "coworld.event_log.csv.v1"`, and
+2. Text `report.parquet` metadata with
+   `content_type: "application/vnd.apache.parquet"`,
+   `filename: "events.parquet"`,
+   `schema: "coworld.event_log.parquet.v1"`, and
    `columns: ["ts", "player", "key", "value"]`.
-3. Binary CSV payload.
+3. Binary Parquet payload.
 4. Text `report.done`.
+
+For `format: "csv"`, step 2 uses `report.csv` metadata,
+`content_type: "text/csv"`, `filename: "events.csv"`, and
+`schema: "coworld.event_log.csv.v1"`, followed by a binary CSV payload.
 
 Errors are sent as text `report.error` messages with `request_id`, `code`, and
 `message`.
@@ -103,11 +114,8 @@ receive a `busy` error. Configure with `--max-concurrency`, or
 
 ### What is deliberately not built yet
 
-- **Canonical Coworld report zip output.** This service returns raw CSV over
-  websocket, not a `manifest.json` report zip.
-- **Parquet event logs.** The service uses CSV for now to avoid adding a Parquet
-  writer dependency. The columns match the Coworld event-log schema, so this can
-  be upgraded later.
+- **Canonical Coworld report zip output.** This service returns raw event-log
+  payloads over websocket, not a `manifest.json` report zip.
 - **Multi-game segmentation** beyond stop-after-first and any narrative/stats
   layered on top of the timeline.
 
