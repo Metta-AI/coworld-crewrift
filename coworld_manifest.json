@@ -393,7 +393,7 @@
       "type": "commissioner",
       "description": "Social-deduction commissioner shared with Among Them. It schedules seat-rotated episodes, computes rankings, and supports promotion-style leagues for Crewrift Daily.",
       "source_url": "https://github.com/Metta-AI/commissioners/tree/main/commissioners/among_them/among_them_commissioner",
-      "image": "ghcr.io/metta-ai/commissioners-among-them-commissioner@sha256:24762319afa89a4a24d2d7bcee392a80bc0ccf3399701dca2962b2f1b879017b"
+      "image": "ghcr.io/metta-ai/commissioners-among-them-commissioner@sha256:833ad827ae1c64d6e8beaca86090393e86866db966b67297dfa182dac73aa340"
     }
   ],
   "reporter": [
