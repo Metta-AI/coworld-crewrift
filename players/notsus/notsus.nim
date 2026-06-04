@@ -142,6 +142,7 @@ const
   VoteListenJitterTicks = VoteDeadlineTicks div 16
   VoteImposterSkipTicks = VoteListenBaseTicks + VoteListenJitterTicks
   BodySuspectRange = 64
+  CrewSpacingRiskRange = 64
   ImposterHuntDelayTicks = 500
   ButtonResetCooldownLeadTicks = 150
   ProtocolMapName = "sprite protocol map"
@@ -1123,16 +1124,10 @@ proc resetTaskKnowledge(bot: var Bot) =
   bot.clearPath()
 
 proc resetProtocolMap(bot: var Bot) =
-  ## Clears map metadata that must arrive from the sprite protocol.
+  ## Resets protocol map overlays while preserving static map metadata.
   bot.protocolMapReady = false
   bot.protocolWalkabilityReady = false
-  bot.sim.gameMap = initialProtocolMap()
-  bot.sim.tasks.setLen(0)
-  bot.sim.vents.setLen(0)
-  bot.sim.rooms.setLen(0)
   bot.sim.mapPixels = newSeq[uint8](MapWidth * MapHeight)
-  bot.sim.walkMask = newSeq[bool](MapWidth * MapHeight)
-  bot.sim.wallMask = newSeq[bool](MapWidth * MapHeight)
   bot.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
   bot.resetTaskKnowledge()
   bot.cameraX = bot.sim.buttonCameraX()
@@ -1924,18 +1919,6 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} 
       bot.sim.wallMask[i] = not client.walkabilityMask[i]
     bot.protocolWalkabilityReady = true
   if client.mapCameraReady:
-    if not bot.protocolMapReady:
-      raise newException(
-        ValueError,
-        "sprite protocol did not include required task, vent, and room " &
-          "map marker sprites"
-      )
-    if not bot.protocolWalkabilityReady:
-      raise newException(
-        ValueError,
-        "sprite protocol did not include required sprite labeled " &
-          "\"walkability map\""
-      )
     bot.protocolCameraReady = true
     bot.protocolCameraX = client.mapCameraX
     bot.protocolCameraY = client.mapCameraY
@@ -3860,6 +3843,109 @@ proc nearestVisibleCrewmate(
       bestDistance = distance
       result = (true, crewmate)
 
+proc visibleCrewmateCenter(
+  bot: Bot,
+  crewmate: CrewmateMatch
+): tuple[x: int, y: int] =
+  ## Converts one visible actor match into a world-center point.
+  let world = bot.visibleCrewmateWorld(crewmate)
+  (world.x + CollisionW div 2, world.y + CollisionH div 2)
+
+proc distanceSq(ax, ay, bx, by: int): int =
+  ## Returns squared Euclidean distance for local spacing checks.
+  let
+    dx = ax - bx
+    dy = ay - by
+  dx * dx + dy * dy
+
+proc crewSpacingThreat(
+  bot: Bot
+): tuple[found: bool, x: int, y: int, distanceSq: int] =
+  ## Detects the diagnosed lone close-contact state for crewmates.
+  if bot.role != RoleCrewmate or bot.isGhost or not bot.localized:
+    return
+  let
+    px = bot.playerWorldX() + CollisionW div 2
+    py = bot.playerWorldY() + CollisionH div 2
+    riskSq = CrewSpacingRiskRange * CrewSpacingRiskRange
+  var
+    closeActors = 0
+    bestDistance = high(int)
+    bestX = 0
+    bestY = 0
+  for crewmate in bot.visibleCrewmates:
+    if crewmate.colorIndex == bot.selfColorIndex:
+      continue
+    let center = bot.visibleCrewmateCenter(crewmate)
+    let distance = distanceSq(px, py, center.x, center.y)
+    if distance > riskSq:
+      continue
+    inc closeActors
+    if distance < bestDistance:
+      bestDistance = distance
+      bestX = center.x
+      bestY = center.y
+  if closeActors == 1:
+    result = (true, bestX, bestY, bestDistance)
+
+proc crewSpacingEscapeGoal(
+  bot: Bot,
+  threatX,
+  threatY,
+  currentDistanceSq: int
+): tuple[found: bool, index: int, x: int, y: int, name: string, state: TaskState] =
+  ## Picks a nearby passable point that increases distance from a lone contact.
+  let
+    px = bot.playerWorldX()
+    py = bot.playerWorldY()
+    pcx = px + CollisionW div 2
+    pcy = py + CollisionH div 2
+  var
+    bestScore = low(int)
+    bestX = 0
+    bestY = 0
+    bestName = ""
+
+  proc consider(x, y: int, name: string, bonus = 0) =
+    if not bot.isGhost and not bot.passable(x, y):
+      return
+    let candidateDistance = distanceSq(
+      x + CollisionW div 2,
+      y + CollisionH div 2,
+      threatX,
+      threatY
+    )
+    if candidateDistance <= currentDistanceSq:
+      return
+    let score = candidateDistance + bonus - heuristic(pcx, pcy, x, y)
+    if score > bestScore:
+      bestScore = score
+      bestX = x
+      bestY = y
+      bestName = name
+
+  let home = bot.homeGoal()
+  if home.found:
+    consider(
+      home.x,
+      home.y,
+      "spacing gate toward " & home.name,
+      CrewSpacingRiskRange * CrewSpacingRiskRange
+    )
+  for scale in 1 .. 2:
+    let step = (CrewSpacingRiskRange div 2) * scale
+    for dy in -1 .. 1:
+      for dx in -1 .. 1:
+        if dx == 0 and dy == 0:
+          continue
+        consider(
+          clamp(px + dx * step, 0, MapWidth - CollisionW - 1),
+          clamp(py + dy * step, 0, MapHeight - CollisionH - 1),
+          "spacing gate"
+        )
+  if bestName.len > 0:
+    result = (true, -1, bestX, bestY, bestName, TaskMaybe)
+
 proc visibleBodyWorld(bot: Bot, body: BodyMatch): tuple[x: int, y: int] =
   ## Converts one visible body match into world coordinates.
   (
@@ -4745,6 +4831,19 @@ proc navigateToPoint(
   )
   mask
 
+proc crewSpacingGateAction(bot: var Bot): tuple[active: bool, mask: uint8] =
+  ## Keeps crew moving when a lone nearby actor has no close witness.
+  let threat = bot.crewSpacingThreat()
+  if not threat.found:
+    return
+  let goal = bot.crewSpacingEscapeGoal(threat.x, threat.y, threat.distanceSq)
+  if not goal.found:
+    return
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  bot.goalIndex = -1
+  result = (true, bot.navigateToPoint(goal.x, goal.y, goal.name))
+
 proc hardChaseMask(bot: Bot, targetX, targetY: int): uint8 =
   ## Returns direct movement toward an on-screen target.
   let
@@ -4938,6 +5037,9 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
         "reset kill cool downs at button"
       )
   if bot.taskHoldTicks > 0:
+    let spacingGate = bot.crewSpacingGateAction()
+    if spacingGate.active:
+      return spacingGate.mask
     return bot.holdTaskAction(
       if bot.goalName.len > 0:
         bot.goalName
@@ -4962,6 +5064,9 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
         goal.state == TaskMandatory or
         bot.taskHasFreshClue(goal.index)
       ):
+    let spacingGate = bot.crewSpacingGateAction()
+    if spacingGate.active:
+      return spacingGate.mask
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.taskHoldIndex = goal.index
     return bot.holdTaskAction(goal.name)
@@ -5038,12 +5143,17 @@ proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
 
 proc initBotSim(config: GameConfig): SimServer =
   ## Builds only the sim data a headless sprite bot needs.
-  result.config = config
-  result.gameMap = initialProtocolMap()
-  result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
-  result.walkMask = newSeq[bool](MapWidth * MapHeight)
-  result.wallMask = newSeq[bool](MapWidth * MapHeight)
-  when not defined(botHeadless):
+  when defined(botHeadless):
+    result.config = config
+    result.gameMap = loadCrewriftMapMetadata(config.mapPath)
+    result.tasks = result.gameMap.tasks
+    result.vents = result.gameMap.vents
+    result.rooms = result.gameMap.rooms
+    result.mapPixels = newSeq[uint8](MapWidth * MapHeight)
+    result.walkMask = newSeq[bool](MapWidth * MapHeight)
+    result.wallMask = newSeq[bool](MapWidth * MapHeight)
+  else:
+    result = initSimServer(config)
     loadPalette(clientDataDir() / "pallete.png")
     result.asciiSprites = loadAsciiSprites(gameDir() / "data/tiny5.aseprite")
 

@@ -51,5 +51,6 @@ RUN apt-get update && \
 
 WORKDIR /workspace/crewrift
 COPY --from=build /workspace/crewrift/notsus /bin/notsus
+COPY --from=build /workspace/crewrift/data/croatoan.resources ./data/croatoan.resources
 
 CMD ["/bin/notsus"]
