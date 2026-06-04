@@ -174,16 +174,17 @@ suite "player slots":
     config.minPlayers = 1
     config.update("""{"tokens":["secret"],"closedRoster":true}""")
 
-    check config.slots[0].name == ""
+    check config.slots[0].name == "Player1"
     check config.slots[0].token == "secret"
-    check config.playerJoinAllowed("notsus", -1, "secret")
-    check not config.playerJoinAllowed("notsus", -1, "bad")
+    check config.playerJoinAllowed("Player1", -1, "secret")
+    check not config.playerJoinAllowed("Player1", -1, "bad")
+    check not config.playerJoinAllowed("intruder", -1, "secret")
     check not config.playerJoinAllowed("extra", -1, "")
 
-    var nameOnly = defaultGameConfig()
-    nameOnly.minPlayers = 1
-    nameOnly.update("""{"players":[{"name":"Player1"}],"closedRoster":true}""")
-    check nameOnly.playerJoinAllowed("Player1", -1, "")
+    var missingToken = defaultGameConfig()
+    missingToken.minPlayers = 1
+    expect CrewriftError:
+      missingToken.update("""{"players":[{"name":"Player1"}],"closedRoster":true}""")
 
     var unrestricted = defaultGameConfig()
     unrestricted.minPlayers = 1
@@ -394,14 +395,16 @@ suite "player slots":
     let extraIndex = sim.addPlayer("extra")
     check sim.players[extraIndex].joinOrder == 2
 
-  test "automatic slots can use open token slots":
+  test "automatic slots wait behind token slots":
     var config = defaultGameConfig()
     config.minPlayers = 2
     config.update("""{"tokens":["crew-token","imp-token"]}""")
     var sim = initCrewriftForTest(config)
 
-    let firstIndex = sim.addPlayer("browser")
-    let secondIndex = sim.addPlayer("guest")
+    expect CrewriftError:
+      discard sim.addPlayer("browser")
+    let firstIndex = sim.addPlayer("crew", -1, "crew-token")
+    let secondIndex = sim.addPlayer("imp", -1, "imp-token")
     check sim.players[firstIndex].joinOrder == 0
     check sim.players[secondIndex].joinOrder == 1
 
@@ -411,8 +414,8 @@ suite "player slots":
     config.update("""{"tokens":["crew-token","imp-token"],"closedRoster":true}""")
     var sim = initCrewriftForTest(config)
 
-    discard sim.addPlayer("crew", -1, "crew-token")
-    discard sim.addPlayer("imp", -1, "imp-token")
+    discard sim.addPlayer("Player1", -1, "crew-token")
+    discard sim.addPlayer("Player2", -1, "imp-token")
     check not sim.canAddPlayer()
     expect CrewriftError:
       discard sim.addPlayer("extra")
