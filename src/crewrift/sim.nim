@@ -1220,7 +1220,15 @@ proc readConfigPlayers(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
       )
     slots[i].name = name
 
-proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
+proc defaultSlotName(slotIndex: int): string =
+  ## Returns the canonical name for one generated tournament slot.
+  "Player" & $(slotIndex + 1)
+
+proc readConfigTokens(
+  node: JsonNode,
+  slots: var seq[PlayerSlotConfig],
+  closedRoster: bool
+) =
   ## Reads optional fixed player slot tokens.
   if not node.hasKey("tokens"):
     return
@@ -1248,6 +1256,8 @@ proc readConfigTokens(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
           "].token."
       )
     slots[i].token = token
+    if closedRoster and slots[i].name.len == 0:
+      slots[i].name = defaultSlotName(i)
 
 proc validate(config: GameConfig) =
   ## Raises if a gameplay config has invalid values.
@@ -1291,11 +1301,15 @@ proc validate(config: GameConfig) =
     )
   if config.closedRoster:
     for i, slot in config.slots:
-      if slot.name.len == 0 and slot.token.len == 0:
+      if slot.name.len == 0:
         raise newException(
           CrewriftError,
-          "Config field closedRoster requires slots[" & $i &
-            "] to have players[" & $i & "].name or a token."
+          "Config field closedRoster requires players[" & $i & "].name."
+        )
+      if slot.token.len == 0:
+        raise newException(
+          CrewriftError,
+          "Config field closedRoster requires slots[" & $i & "].token."
         )
   for i in 0 ..< config.slots.len:
     for j in i + 1 ..< config.slots.len:
@@ -1365,9 +1379,9 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigString("map", config.mapPath)
   node.readConfigString("mapPath", config.mapPath)
   node.readConfigSlots(config.slots)
-  node.readConfigTokens(config.slots)
-  node.readConfigPlayers(config.slots)
   node.readConfigBool("closedRoster", config.closedRoster)
+  node.readConfigTokens(config.slots, config.closedRoster)
+  node.readConfigPlayers(config.slots)
   config.validate()
 
 proc slotRoleText(slot: PlayerSlotConfig): string =
@@ -1693,8 +1707,6 @@ proc slotConfig(config: GameConfig, slotIndex: int): PlayerSlotConfig =
 proc slotRestricted(config: GameConfig, slotIndex: int): bool =
   ## Returns true when a slot has identity restrictions.
   let slot = config.slotConfig(slotIndex)
-  if not config.closedRoster and slot.name.len == 0:
-    return false
   slot.name.len > 0 or slot.token.len > 0
 
 proc slotAuthMatches(
