@@ -2,6 +2,13 @@
 
 Notsus is an example bot that can do a lot of the tasks, can be an imposter, and figure out how to navigate the terrain and find stuff and generally play the game as you would expect. It is not the ultimate bot. It's very stupid. When watching the game, the shortcomings of this bot can be quickly realized. You can start improving the bot by just watching the replays and seeing all the dumb things that it does and implementing some sort of your own strategy.
 
+If docs, commands, runtime behavior, logs, or replays disagree while you use
+this bot as a starting point, preserve the evidence and file a GitHub issue at
+<https://github.com/Metta-AI/coworld-crewrift/issues>. For Softmax play prompt
+or Coworld CLI issues, file against <https://github.com/Metta-AI/coworld/issues>.
+Include the command, league/Coworld ids, logs or replay links, and the smallest
+repro instead of silently working around the issue.
+
 Run the bot headless:
 
 ```sh

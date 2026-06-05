@@ -6,6 +6,14 @@ Crewrift is a Coworld social deduction game.
 Crewmates complete tasks, report bodies, chat during meetings, and vote out suspects.
 Imposters blend in, use cooldown-limited kills, and survive the vote.
 
+If docs, commands, runtime behavior, logs, or replays disagree while you are
+building or submitting a Crewrift policy, preserve the evidence and file a
+GitHub issue at <https://github.com/Metta-AI/coworld-crewrift/issues>. For
+Softmax play prompt or Coworld CLI issues, file against
+<https://github.com/Metta-AI/coworld/issues>. Include the command, league/Coworld
+ids, logs or replay links, and the smallest repro instead of silently working
+around the issue.
+
 ## Crewrift Rules
 
 Crewrift is a multiplayer social deduction Coworld used for social AI benchmarks. Sandbox to make the AI learn and grow in a confined game environment.
