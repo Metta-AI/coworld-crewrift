@@ -39,6 +39,8 @@ const
   MovementSlideMaxScan = 3
   TargetFps* = 24
   StuckPenaltyTicks* = TargetFps * 20
+  ConnectTimeoutTicks* = TargetFps * 30
+  DisconnectTimeoutTicks* = TargetFps * 30
   SpaceColor* = 0'u8
   MapVoidColor* = 12'u8
   TintColor* = 3'u8
@@ -88,6 +90,7 @@ const
   WinReward* = 100
   VoteTimeoutPenalty* = -10
   StuckPenalty* = -1
+  ConnectionTimeoutPenalty* = -100
   MapSpriteId* = 1
   MapObjectId* = 1
   MapLayerId* = 0
@@ -256,6 +259,8 @@ type
     hasRole*: bool
     won*: bool
     abandoned*: bool
+    connectTimeout*: int
+    disconnectTimeout*: int
     reward*: int
     winsImposter*: int
     winsCrewmate*: int
@@ -291,6 +296,8 @@ type
     ventRange*: int
     reportRange*: int
     voteResultTicks*: int
+    connectTimeoutTicks*: int
+    disconnectTimeoutTicks*: int
     minPlayers*: int
     imposterCount*: int
     autoImposterCount*: bool
@@ -318,6 +325,8 @@ type
     flipH*: bool
     role*: PlayerRole
     alive*: bool
+    connected*: bool
+    disconnectTick*: int
     killCooldown*: int
     joinOrder*: int
     address*: string
@@ -1016,6 +1025,8 @@ proc defaultGameConfig*(): GameConfig =
     ventRange: VentRange,
     reportRange: ReportRange,
     voteResultTicks: VoteResultTicks,
+    connectTimeoutTicks: ConnectTimeoutTicks,
+    disconnectTimeoutTicks: DisconnectTimeoutTicks,
     minPlayers: MinPlayers,
     imposterCount: ImposterCount,
     autoImposterCount: AutoImposterCount,
@@ -1282,6 +1293,16 @@ proc validate(config: GameConfig) =
     raise newException(CrewriftError, "Config field roleRevealTicks must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(CrewriftError, "Config field voteTimerTicks must be positive.")
+  if config.connectTimeoutTicks < 0:
+    raise newException(
+      CrewriftError,
+      "Config field connectTimeoutTicks must be non-negative."
+    )
+  if config.disconnectTimeoutTicks < 0:
+    raise newException(
+      CrewriftError,
+      "Config field disconnectTimeoutTicks must be non-negative."
+    )
   if config.messageCooldownTicks < 0:
     raise newException(CrewriftError, "Config field messageCooldownTicks must be non-negative.")
   if config.killCooldownTicks < 0 or config.gameOverTicks < 0 or
@@ -1348,6 +1369,8 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("ventRange", config.ventRange)
   node.readConfigInt("reportRange", config.reportRange)
   node.readConfigInt("voteResultTicks", config.voteResultTicks)
+  node.readConfigInt("connectTimeoutTicks", config.connectTimeoutTicks)
+  node.readConfigInt("disconnectTimeoutTicks", config.disconnectTimeoutTicks)
   node.readConfigInt("minPlayers", config.minPlayers)
   let
     hasImposterCount = node.hasKey("imposterCount")
@@ -1430,6 +1453,8 @@ proc configJson*(config: GameConfig): string =
     "ventRange": config.ventRange,
     "reportRange": config.reportRange,
     "voteResultTicks": config.voteResultTicks,
+    "connectTimeoutTicks": config.connectTimeoutTicks,
+    "disconnectTimeoutTicks": config.disconnectTimeoutTicks,
     "minPlayers": config.minPlayers,
     "imposterCount": config.imposterCount,
     "autoImposterCount": config.autoImposterCount,
@@ -1510,6 +1535,12 @@ proc taskIdsText(tasks: openArray[int]): string =
       result.add ","
     result.add $task
 
+proc requiredLobbyPlayers(sim: SimServer): int =
+  ## Returns the player count required before the lobby can start.
+  if sim.config.closedRoster and sim.config.slots.len > 0:
+    return sim.config.slots.len
+  sim.config.minPlayers
+
 proc logGameEvent(sim: SimServer, text: string) =
   ## Writes one game event to stdout for Docker logs.
   if sim.gameEventLoggingEnabled:
@@ -1546,7 +1577,8 @@ proc voteTargetText(sim: SimServer, vote: int): string =
 proc logLobbyWaiting(sim: var SimServer) =
   ## Logs waiting-for-player state when it changes.
   let
-    needed = max(0, sim.config.minPlayers - sim.players.len)
+    required = sim.requiredLobbyPlayers()
+    needed = max(0, required - sim.players.len)
     players = sim.players.len
   if players == sim.lastLobbyPlayersLogged and
       needed == sim.lastLobbyNeededLogged:
@@ -1556,7 +1588,7 @@ proc logLobbyWaiting(sim: var SimServer) =
   sim.lastLobbySecondsLogged = -1
   sim.logGameEvent(
     "waiting for players: " & $players & "/" &
-      $sim.config.minPlayers & ", need " & $needed & " more"
+      $required & ", need " & $needed & " more"
   )
 
 proc logLobbyCountdown(sim: var SimServer) =
@@ -1614,6 +1646,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashBool(player.flipH)
     result.mixHashInt(ord(player.role))
     result.mixHashBool(player.alive)
+    result.mixHashBool(player.connected)
+    result.mixHashInt(player.disconnectTick)
     result.mixHashInt(player.killCooldown)
     result.mixHashInt(player.joinOrder)
     result.mixHashInt(int(player.color))
@@ -2002,12 +2036,30 @@ proc rewardAccountIndexForSlot(sim: SimServer, slotIndex: int): int =
       return i
   -1
 
-proc playerIndexForSlot(sim: SimServer, slotIndex: int): int =
+proc playerIndexForSlot*(sim: SimServer, slotIndex: int): int =
   ## Returns the live player index for a player slot.
   for i in 0 ..< sim.players.len:
     if sim.players[i].joinOrder == slotIndex:
       return i
   -1
+
+proc resultSlotName(sim: SimServer, slotIndex: int): string =
+  ## Returns the stable result name for one player slot.
+  let slot = sim.config.slotConfig(slotIndex)
+  if slot.name.len > 0:
+    return slot.name
+  "player-" & $slotIndex
+
+proc ensureRewardAccountForSlot(
+  sim: var SimServer,
+  slotIndex: int
+): int =
+  ## Returns the reward account index for one result slot.
+  result = sim.rewardAccountIndexForSlot(slotIndex)
+  if result >= 0:
+    return
+  result = sim.ensureRewardAccount(sim.resultSlotName(slotIndex))
+  sim.bindRewardAccountSlot(result, slotIndex)
 
 proc playerResultSlotCount(sim: SimServer): int =
   ## Returns the number of player slots represented in final results.
@@ -2102,6 +2154,8 @@ proc addPlayer*(
     homeY: spawn.y,
     role: Crewmate,
     alive: true,
+    connected: true,
+    disconnectTick: -1,
     killCooldown: sim.config.killCooldownTicks,
     joinOrder: order,
     address: address,
@@ -2218,6 +2272,76 @@ proc recordVoteTimeout*(sim: var SimServer, playerIndex: int) =
     return
   inc sim.rewardAccounts[index].voteTimeout
 
+proc recordConnectTimeout*(sim: var SimServer, slotIndex: int) =
+  ## Marks one slot as missing the initial connection deadline.
+  if slotIndex < 0 or slotIndex >= sim.config.playerSlotLimit():
+    return
+  let index = sim.ensureRewardAccountForSlot(slotIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].connectTimeout
+  sim.rewardAccounts[index].reward = ConnectionTimeoutPenalty
+  sim.rewardAccounts[index].won = false
+
+proc recordDisconnectTimeout*(sim: var SimServer, playerIndex: int) =
+  ## Marks one player as missing the reconnect deadline.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index < 0:
+    return
+  inc sim.rewardAccounts[index].disconnectTimeout
+  sim.rewardAccounts[index].reward = ConnectionTimeoutPenalty
+  sim.rewardAccounts[index].won = false
+  sim.players[playerIndex].reward = ConnectionTimeoutPenalty
+
+proc canGraceDisconnect*(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when one socket close should start reconnect grace.
+  playerIndex >= 0 and playerIndex < sim.players.len and
+    sim.phase in {RoleReveal, Playing, Voting, VoteResult} and
+    sim.config.disconnectTimeoutTicks > 0
+
+proc markPlayerDisconnected*(sim: var SimServer, playerIndex: int) =
+  ## Starts the reconnect grace timer for one live player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if not sim.players[playerIndex].connected:
+    return
+  sim.players[playerIndex].connected = false
+  sim.players[playerIndex].disconnectTick = sim.tickCount
+  sim.recordGameAbandon(playerIndex)
+  sim.logGameEvent("disconnected: " & sim.playerText(playerIndex))
+
+proc markPlayerConnected*(sim: var SimServer, playerIndex: int) =
+  ## Clears the reconnect grace timer for one live player.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  sim.players[playerIndex].connected = true
+  sim.players[playerIndex].disconnectTick = -1
+  let index = sim.rewardAccountForPlayer(playerIndex)
+  if index >= 0:
+    sim.rewardAccounts[index].abandoned = false
+  sim.logGameEvent("reconnected: " & sim.playerText(playerIndex))
+
+proc reconnectPlayerIndex*(
+  sim: SimServer,
+  address,
+  token: string,
+  requestedSlot: int
+): int =
+  ## Returns the disconnected player index matching one reconnect request.
+  for i, player in sim.players:
+    if player.connected:
+      continue
+    if requestedSlot >= 0 and requestedSlot != player.joinOrder:
+      continue
+    if requestedSlot < 0 and player.address != address:
+      continue
+    if not sim.config.slotAuthMatches(player.joinOrder, address, token):
+      continue
+    return i
+  -1
+
 proc playerResultsJson*(sim: SimServer): string =
   ## Returns final player rewards and win states as JSON.
   var
@@ -2232,6 +2356,8 @@ proc playerResultsJson*(sim: SimServer): string =
     votePlayersList = newJArray()
     voteSkipList = newJArray()
     voteTimeoutList = newJArray()
+    connectTimeoutList = newJArray()
+    disconnectTimeoutList = newJArray()
     results = newJObject()
   for slotIndex in 0 ..< sim.playerResultSlotCount():
     resultSlots.add(slotIndex)
@@ -2259,6 +2385,8 @@ proc playerResultsJson*(sim: SimServer): string =
       votePlayers = 0
       voteSkip = 0
       voteTimeout = 0
+      connectTimeout = 0
+      disconnectTimeout = 0
     if accountIndex >= 0:
       let account = sim.rewardAccounts[accountIndex]
       name = account.address
@@ -2271,6 +2399,8 @@ proc playerResultsJson*(sim: SimServer): string =
       votePlayers = account.votePlayers
       voteSkip = account.voteSkip
       voteTimeout = account.voteTimeout
+      connectTimeout = account.connectTimeout
+      disconnectTimeout = account.disconnectTimeout
     if playerIndex >= 0:
       let player = sim.players[playerIndex]
       name = player.address
@@ -2292,6 +2422,8 @@ proc playerResultsJson*(sim: SimServer): string =
     votePlayersList.add(%votePlayers)
     voteSkipList.add(%voteSkip)
     voteTimeoutList.add(%voteTimeout)
+    connectTimeoutList.add(%connectTimeout)
+    disconnectTimeoutList.add(%disconnectTimeout)
   results["names"] = names
   results["scores"] = scores
   results["win"] = win
@@ -2302,6 +2434,8 @@ proc playerResultsJson*(sim: SimServer): string =
   results["vote_players"] = votePlayersList
   results["vote_skip"] = voteSkipList
   results["vote_timeout"] = voteTimeoutList
+  results["connect_timeout"] = connectTimeoutList
+  results["disconnect_timeout"] = disconnectTimeoutList
   $results
 
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =
@@ -3350,6 +3484,8 @@ proc shouldAbortFiniteMatch*(sim: SimServer): bool =
   if sim.config.maxGames <= 0:
     return false
   if sim.phase == Lobby:
+    if sim.config.closedRoster and sim.config.connectTimeoutTicks > 0:
+      return false
     return sim.startWaitTimer > 0 and sim.players.len < sim.config.minPlayers
   sim.phase in {RoleReveal, Playing, Voting, VoteResult} and sim.players.len == 0
 
@@ -3897,9 +4033,54 @@ proc resetToLobby*(sim: var SimServer) =
     account.won = false
     account.abandoned = false
 
+proc connectTimeoutSlots(sim: SimServer): seq[int] =
+  ## Returns closed-roster slots that missed the initial connect deadline.
+  if not sim.config.closedRoster:
+    return
+  for slotIndex in 0 ..< sim.config.slots.len:
+    let playerIndex = sim.playerIndexForSlot(slotIndex)
+    if playerIndex < 0 or not sim.players[playerIndex].connected:
+      result.add(slotIndex)
+
+proc checkConnectTimeout(sim: var SimServer): bool =
+  ## Ends the match as a draw if required slots do not connect in time.
+  if sim.phase != Lobby or sim.config.connectTimeoutTicks <= 0:
+    return false
+  if sim.tickCount < sim.config.connectTimeoutTicks:
+    return false
+  let slots = sim.connectTimeoutSlots()
+  if slots.len == 0:
+    return false
+  for slotIndex in slots:
+    sim.recordConnectTimeout(slotIndex)
+  sim.logGameEvent("connect timeout: slots " & slots.taskIdsText())
+  sim.finishGame(Crewmate, timeLimitReached = true)
+  true
+
+proc checkDisconnectTimeout(sim: var SimServer): bool =
+  ## Ends the match as a draw if disconnected players miss reconnect grace.
+  if sim.phase notin {RoleReveal, Playing, Voting, VoteResult} or
+      sim.config.disconnectTimeoutTicks <= 0:
+    return false
+  var playerIndices: seq[int]
+  for i, player in sim.players:
+    if player.connected or player.disconnectTick < 0:
+      continue
+    if sim.tickCount - player.disconnectTick >=
+        sim.config.disconnectTimeoutTicks:
+      playerIndices.add(i)
+  if playerIndices.len == 0:
+    return false
+  for playerIndex in playerIndices:
+    sim.recordDisconnectTimeout(playerIndex)
+  sim.logGameEvent("disconnect timeout: players " & playerIndices.taskIdsText())
+  sim.finishGame(Crewmate, timeLimitReached = true)
+  true
+
 proc stepLobby(sim: var SimServer) {.measure.} =
   ## Advances the lobby start countdown.
-  if sim.players.len < sim.config.minPlayers:
+  let required = sim.requiredLobbyPlayers()
+  if sim.players.len < required:
     sim.startWaitTimer = 0
     sim.logLobbyWaiting()
     return
@@ -3922,7 +4103,12 @@ proc step*(
   inc sim.tickCount
 
   if sim.phase == Lobby:
+    if sim.checkConnectTimeout():
+      return
     sim.stepLobby()
+    return
+
+  if sim.checkDisconnectTimeout():
     return
 
   if sim.phase == RoleReveal:

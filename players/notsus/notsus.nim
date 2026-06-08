@@ -5987,7 +5987,7 @@ when isMainModule and not defined(italkalotLibrary):
         discard
     if not urlSet and (addressSet or portSet):
       result.url = ""
-    result.exitOnDisconnect = result.url.len > 0
+    result.exitOnDisconnect = false
 
   let config = readBotRunConfig()
   let target =

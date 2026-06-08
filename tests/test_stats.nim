@@ -40,6 +40,12 @@ proc buildRewardPacketCopy(sim: SimServer): string =
       result.addStatLine("vote_players", identity, account.votePlayers)
       result.addStatLine("vote_skip", identity, account.voteSkip)
       result.addStatLine("vote_timeout", identity, account.voteTimeout)
+      result.addStatLine("connect_timeout", identity, account.connectTimeout)
+      result.addStatLine(
+        "disconnect_timeout",
+        identity,
+        account.disconnectTimeout
+      )
 
 proc initCrewriftForTest(config: GameConfig): SimServer =
   ## Initializes Crewrift from the game directory.
@@ -70,6 +76,15 @@ proc configuredSlots(count: int): seq[PlayerSlotConfig] =
 proc roleSlot(name: string, role: PlayerRole): PlayerSlotConfig =
   ## Returns one named slot with a fixed role.
   PlayerSlotConfig(name: name, role: role, hasRole: true)
+
+proc tokenSlot(name, token: string, role: PlayerRole): PlayerSlotConfig =
+  ## Returns one closed-roster slot with a fixed role.
+  PlayerSlotConfig(
+    name: name,
+    token: token,
+    role: role,
+    hasRole: true
+  )
 
 suite "stats":
   test "crew win increments crewmate stats":
@@ -131,6 +146,126 @@ suite "stats":
     check sim.phase == GameOver
     check sim.players[playerIndex].reward == TaskReward + WinReward
     check sim.accountFor("last-task").tasks == 1
+
+  test "connect timeout draws and penalizes missing slot":
+    var config = defaultGameConfig()
+    config.minPlayers = 2
+    config.connectTimeoutTicks = 2
+    config.disconnectTimeoutTicks = 0
+    config.startWaitTicks = 0
+    config.maxGames = 1
+    config.closedRoster = true
+    config.slots = @[
+      tokenSlot("p1", "t1", Crewmate),
+      tokenSlot("p2", "t2", Crewmate)
+    ]
+
+    var sim = initCrewriftForTest(config)
+    discard sim.addPlayer("p1", 0, "t1")
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+    check sim.phase == Lobby
+
+    sim.step(inputs, inputs)
+    check sim.phase == GameOver
+    check sim.timeLimitReached
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["scores"][0].getInt() == 0
+    check results["scores"][1].getInt() == ConnectionTimeoutPenalty
+    check results["connect_timeout"][0].getInt() == 0
+    check results["connect_timeout"][1].getInt() == 1
+    check results["disconnect_timeout"][0].getInt() == 0
+    check results["disconnect_timeout"][1].getInt() == 0
+    check not results["win"][0].getBool()
+    check not results["win"][1].getBool()
+
+  test "disconnect timeout keeps scores and penalizes disconnected slot":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.tasksPerPlayer = 1
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.connectTimeoutTicks = 0
+    config.disconnectTimeoutTicks = 2
+    config.maxGames = 1
+    config.closedRoster = true
+    config.slots = @[
+      tokenSlot("imp", "t1", Imposter),
+      tokenSlot("crew1", "t2", Crewmate),
+      tokenSlot("crew2", "t3", Crewmate)
+    ]
+
+    var sim = initCrewriftForTest(config)
+    let
+      impIndex = sim.addPlayer("imp", 0, "t1")
+      crew1Index = sim.addPlayer("crew1", 1, "t2")
+      crew2Index = sim.addPlayer("crew2", 2, "t3")
+    sim.startGame()
+    check sim.phase == Playing
+    check sim.players[crew1Index].assignedTasks.len == 1
+
+    sim.addReward(crew2Index, 4)
+    sim.markPlayerDisconnected(crew1Index)
+    check sim.totalTasksRemaining() >= 1
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+    check sim.phase == Playing
+
+    sim.step(inputs, inputs)
+    check sim.phase == GameOver
+    check sim.timeLimitReached
+
+    let results = parseJson(sim.playerResultsJson())
+    check results["scores"][impIndex].getInt() == 0
+    check results["scores"][crew1Index].getInt() == ConnectionTimeoutPenalty
+    check results["scores"][crew2Index].getInt() == 4
+    check results["connect_timeout"][crew1Index].getInt() == 0
+    check results["disconnect_timeout"][crew1Index].getInt() == 1
+    check not results["win"][crew1Index].getBool()
+
+  test "reconnect clears disconnect timeout":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.tasksPerPlayer = 1
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.connectTimeoutTicks = 0
+    config.disconnectTimeoutTicks = 2
+    config.maxGames = 1
+    config.closedRoster = true
+    config.slots = @[
+      tokenSlot("imp", "t1", Imposter),
+      tokenSlot("crew1", "t2", Crewmate),
+      tokenSlot("crew2", "t3", Crewmate)
+    ]
+
+    var sim = initCrewriftForTest(config)
+    discard sim.addPlayer("imp", 0, "t1")
+    let crew1Index = sim.addPlayer("crew1", 1, "t2")
+    discard sim.addPlayer("crew2", 2, "t3")
+    sim.startGame()
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.markPlayerDisconnected(crew1Index)
+    sim.step(inputs, inputs)
+    check sim.phase == Playing
+
+    sim.markPlayerConnected(crew1Index)
+    sim.step(inputs, inputs)
+    sim.step(inputs, inputs)
+
+    let results = parseJson(sim.playerResultsJson())
+    check sim.phase == Playing
+    check sim.players[crew1Index].connected
+    check results["disconnect_timeout"][crew1Index].getInt() == 0
+    check results["scores"][crew1Index].getInt() == 0
 
   test "active disconnect removes task burden and keeps role win":
     var config = defaultGameConfig()

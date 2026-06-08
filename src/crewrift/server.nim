@@ -756,6 +756,12 @@ proc buildRewardPacket(sim: SimServer): string {.measure.} =
       result.addStatLine("vote_players", identity, account.votePlayers)
       result.addStatLine("vote_skip", identity, account.voteSkip)
       result.addStatLine("vote_timeout", identity, account.voteTimeout)
+      result.addStatLine("connect_timeout", identity, account.connectTimeout)
+      result.addStatLine(
+        "disconnect_timeout",
+        identity,
+        account.disconnectTimeout
+      )
 
 proc runServerLoop*(
   host = DefaultHost,
@@ -870,12 +876,24 @@ proc runServerLoop*(
           if not replayLoaded and websocket in appState.playerIndices:
             let playerIndex = appState.playerIndices[websocket]
             if playerIndex >= 0 and playerIndex < sim.players.len:
-              sim.recordGameAbandon(playerIndex)
-              replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
-              if playerIndex < replayWriter.lastMasks.len:
-                replayWriter.lastMasks.delete(playerIndex)
-              if playerIndex < prevInputs.len:
-                prevInputs.delete(playerIndex)
+              if sim.canGraceDisconnect(playerIndex):
+                sim.markPlayerDisconnected(playerIndex)
+                replayWriter.writeInputMaskChange(
+                  tickTime(sim.tickCount),
+                  playerIndex,
+                  0
+                )
+                if playerIndex < prevInputs.len:
+                  prevInputs[playerIndex] = InputState()
+                discard removeWebSocketState(websocket)
+                continue
+              else:
+                sim.recordGameAbandon(playerIndex)
+                replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
+                if playerIndex < replayWriter.lastMasks.len:
+                  replayWriter.lastMasks.delete(playerIndex)
+                if playerIndex < prevInputs.len:
+                  prevInputs.delete(playerIndex)
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
         if not replayLoaded and appState.kickRequests.len > 0:
@@ -942,6 +960,21 @@ proc runServerLoop*(
               let
                 slot = appState.playerSlots.getOrDefault(websocket, -1)
                 token = appState.playerTokens.getOrDefault(websocket, "")
+                reconnectIndex = sim.reconnectPlayerIndex(
+                  address,
+                  token,
+                  slot
+                )
+              if reconnectIndex >= 0:
+                appState.playerIndices[websocket] = reconnectIndex
+                appState.playerSlots[websocket] =
+                  sim.players[reconnectIndex].joinOrder
+                appState.inputMasks[websocket] = 0
+                appState.inputPressedMasks[websocket] = 0
+                appState.lastAppliedMasks[websocket] = 0
+                sim.markPlayerConnected(reconnectIndex)
+                progressed = true
+                continue
               if sim.phase == Lobby and
                   (sim.canAddPlayer() or slot >= 0 or token.len > 0):
                 try:
