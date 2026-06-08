@@ -26,6 +26,7 @@ type
     inputIndex*: int
     hashIndex*: int
     masks*: seq[uint8]
+    pressedMasks*: seq[uint8]
     lastAppliedMasks*: seq[uint8]
     playing*: bool
     looping*: bool
@@ -81,6 +82,7 @@ proc initReplayPlayer*(data: ReplayData): ReplayPlayer =
   ## Builds replay playback state.
   result.data = data
   result.masks = @[]
+  result.pressedMasks = @[]
   result.lastAppliedMasks = @[]
   result.playing = true
   result.looping = true
@@ -107,6 +109,7 @@ proc resetReplay*(replay: var ReplayPlayer) =
   replay.hashValidationFailed = false
   replay.hashMismatchTick = -1
   replay.masks = @[]
+  replay.pressedMasks = @[]
   replay.lastAppliedMasks = @[]
 
 proc saveReplayKeyframe(
@@ -143,6 +146,7 @@ proc restoreReplayKeyframe(
   replay.inputIndex = keyframe.inputIndex
   replay.hashIndex = keyframe.hashIndex
   replay.masks = keyframe.masks
+  replay.pressedMasks = newSeq[uint8](replay.masks.len)
   replay.lastAppliedMasks = keyframe.lastAppliedMasks
   replay.hashValidationFailed = keyframe.hashValidationFailed
   replay.hashMismatchTick = keyframe.hashMismatchTick
@@ -158,7 +162,13 @@ proc ensureReplayPlayer(replay: var ReplayPlayer, player: int) =
   ## Expands replay input tables for one player.
   while replay.masks.len <= player:
     replay.masks.add(0)
+    replay.pressedMasks.add(0)
     replay.lastAppliedMasks.add(0)
+
+proc clearReplayPressedMasks(replay: var ReplayPlayer) =
+  ## Clears per-step replay press events.
+  for mask in replay.pressedMasks.mitems:
+    mask = 0
 
 proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
   ## Applies replay joins and inputs for the current tick.
@@ -171,6 +181,8 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     sim.removePlayerAt(int(leave.player))
     if int(leave.player) < replay.masks.len:
       replay.masks.delete(int(leave.player))
+    if int(leave.player) < replay.pressedMasks.len:
+      replay.pressedMasks.delete(int(leave.player))
     if int(leave.player) < replay.lastAppliedMasks.len:
       replay.lastAppliedMasks.delete(int(leave.player))
     inc replay.leaveIndex
@@ -188,6 +200,9 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
       replay.data.inputs[replay.inputIndex].time <= time:
     let input = replay.data.inputs[replay.inputIndex]
     replay.ensureReplayPlayer(int(input.player))
+    replay.pressedMasks[int(input.player)] =
+      replay.pressedMasks[int(input.player)] or
+        (input.keys and not replay.masks[int(input.player)])
     replay.masks[int(input.player)] = input.keys
     inc replay.inputIndex
 
@@ -205,7 +220,10 @@ proc replayPrevInputs(
   result = newSeq[InputState](playerCount)
   for playerIndex in 0 ..< playerCount:
     replay.ensureReplayPlayer(playerIndex)
-    result[playerIndex] = decodeInputMask(replay.lastAppliedMasks[playerIndex])
+    let mask =
+      replay.lastAppliedMasks[playerIndex] and
+        not replay.pressedMasks[playerIndex]
+    result[playerIndex] = decodeInputMask(mask)
 
 proc replayInputs(
   replay: var ReplayPlayer,
@@ -215,8 +233,9 @@ proc replayInputs(
   result = newSeq[InputState](playerCount)
   for playerIndex in 0 ..< playerCount:
     replay.ensureReplayPlayer(playerIndex)
-    result[playerIndex] = decodeInputMask(replay.masks[playerIndex])
-    replay.lastAppliedMasks[playerIndex] = replay.masks[playerIndex]
+    let mask = replay.masks[playerIndex] or replay.pressedMasks[playerIndex]
+    result[playerIndex] = decodeInputMask(mask)
+    replay.lastAppliedMasks[playerIndex] = mask
 
 proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
   ## Checks the recorded hash for the current tick.
@@ -253,10 +272,12 @@ proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
 
 proc stepReplay*(replay: var ReplayPlayer, sim: var SimServer) =
   ## Advances replay by one simulation tick.
+  replay.clearReplayPressedMasks()
   replay.applyReplayEvents(sim)
   let prevInputs = replay.replayPrevInputs(sim.players.len)
   let inputs = replay.replayInputs(sim.players.len)
   sim.step(inputs, prevInputs)
+  replay.clearReplayPressedMasks()
   replay.checkReplayHash(sim)
 
 proc buildReplayKeyframes*(

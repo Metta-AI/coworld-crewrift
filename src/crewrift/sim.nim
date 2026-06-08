@@ -45,7 +45,7 @@ const
   ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
   KillRange* = 20
-  KillCooldownTicks* = 900
+  KillCooldownTicks* = 500
   RoleRevealTicks* = 120
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
@@ -2899,7 +2899,8 @@ proc applyInput*(
     false
   )
 
-  if input.b:
+  let freshB = input.b and not prevInput.b
+  if freshB:
     if player.role == Imposter:
       sim.tryVent(playerIndex)
 
@@ -3927,8 +3928,12 @@ proc step*(
       if sim.voteState.votes[i] != -1:
         continue
       let
-        backward = input.up or input.left
-        forward = input.down or input.right
+        backward =
+          (input.up and not prev.up) or
+          (input.left and not prev.left)
+        forward =
+          (input.down and not prev.down) or
+          (input.right and not prev.right)
       if backward != forward:
         sim.moveCursor(
           i,

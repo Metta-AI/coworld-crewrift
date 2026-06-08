@@ -18,6 +18,10 @@ suite "max ticks":
   test "default vote timer is ten seconds":
     check defaultGameConfig().voteTimerTicks == TargetFps * 10
 
+  test "default kill cooldown is five hundred ticks":
+    check KillCooldownTicks == 500
+    check defaultGameConfig().killCooldownTicks == 500
+
   test "config json":
     var config = defaultGameConfig()
     config.maxTicks = 123

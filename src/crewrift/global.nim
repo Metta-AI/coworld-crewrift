@@ -374,6 +374,7 @@ proc applyPlayerViewerMessage*(
   state: var PlayerViewerState,
   message: string,
   inputMask: var uint8,
+  pressedMask: var uint8,
   chatText: var string
 ) =
   ## Applies sprite player protocol input messages.
@@ -382,6 +383,7 @@ proc applyPlayerViewerMessage*(
     of SpriteClientChatMessage:
       chatText.add(item.text)
     of SpriteClientInputMessage:
+      pressedMask = pressedMask or (item.mask and not inputMask)
       inputMask = item.mask
     of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage:
       discard

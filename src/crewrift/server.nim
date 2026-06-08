@@ -23,6 +23,7 @@ type
     kickRequests: seq[string]
     kickedIdentities: Table[string, bool]
     inputMasks: Table[WebSocket, uint8]
+    inputPressedMasks: Table[WebSocket, uint8]
     lastAppliedMasks: Table[WebSocket, uint8]
     chatMessages: Table[WebSocket, string]
     playerIndices: Table[WebSocket, int]
@@ -120,6 +121,7 @@ proc initAppState() =
   appState.kickRequests = @[]
   appState.kickedIdentities = initTable[string, bool]()
   appState.inputMasks = initTable[WebSocket, uint8]()
+  appState.inputPressedMasks = initTable[WebSocket, uint8]()
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.chatMessages = initTable[WebSocket, string]()
   appState.playerIndices = initTable[WebSocket, int]()
@@ -167,6 +169,7 @@ proc removePlayerWebSocketState(websocket: WebSocket): int =
     result = appState.playerIndices[websocket]
     appState.playerIndices.del(websocket)
   appState.inputMasks.del(websocket)
+  appState.inputPressedMasks.del(websocket)
   appState.lastAppliedMasks.del(websocket)
   appState.chatMessages.del(websocket)
   appState.playerAddresses.del(websocket)
@@ -200,6 +203,7 @@ proc registerPlayerWebSocket(
     else:
       0x7fffffff
   appState.inputMasks[websocket] = 0
+  appState.inputPressedMasks[websocket] = 0
   appState.lastAppliedMasks[websocket] = 0
   true
 
@@ -593,6 +597,7 @@ proc websocketHandler(
               else:
                 0x7fffffff
             appState.inputMasks[websocket] = 0
+            appState.inputPressedMasks[websocket] = 0
             appState.lastAppliedMasks[websocket] = 0
     if closeKickedSocket:
       websocket.disconnectWebSocket()
@@ -610,13 +615,19 @@ proc websocketHandler(
               not appState.replayLoaded:
             var
               mask = appState.inputMasks.getOrDefault(websocket, 0)
+              pressedMask = appState.inputPressedMasks.getOrDefault(
+                websocket,
+                0
+              )
               chatText = ""
             appState.playerViewers[websocket].applyPlayerViewerMessage(
               message.data,
               mask,
+              pressedMask,
               chatText
             )
             appState.inputMasks[websocket] = mask
+            appState.inputPressedMasks[websocket] = pressedMask
             if chatText.len > 0:
               appState.chatMessages[websocket] = chatText
   of ErrorEvent, CloseEvent:
@@ -645,6 +656,74 @@ proc rewardAccountFor(sim: SimServer, address: string): int =
     if sim.rewardAccounts[i].address == address:
       return i
   -1
+
+proc writeInputMaskChange(
+  replayWriter: var ReplayWriter,
+  time: uint32,
+  playerIndex: int,
+  mask: uint8
+) =
+  ## Writes one replay input event when a player's applied mask changes.
+  if playerIndex < 0 or playerIndex >= replayWriter.lastMasks.len:
+    return
+  if replayWriter.lastMasks[playerIndex] == mask:
+    return
+  replayWriter.writeInput(ReplayInput(
+    time: time,
+    player: uint8(playerIndex),
+    keys: mask
+  ))
+  replayWriter.lastMasks[playerIndex] = mask
+
+proc writeInputFrameMasks(
+  replayWriter: var ReplayWriter,
+  time: uint32,
+  playerIndex: int,
+  appliedMask,
+  pressedMask: uint8
+) =
+  ## Writes replay input changes for one sampled player frame.
+  if playerIndex < 0 or playerIndex >= replayWriter.lastMasks.len:
+    return
+  let repeatedPressedMask = pressedMask and replayWriter.lastMasks[playerIndex]
+  if repeatedPressedMask != 0:
+    replayWriter.writeInputMaskChange(
+      time,
+      playerIndex,
+      replayWriter.lastMasks[playerIndex] and not repeatedPressedMask
+    )
+  replayWriter.writeInputMaskChange(time, playerIndex, appliedMask)
+
+proc clearPressedInputMask(input: var InputState, mask: uint8) =
+  ## Clears previous input bits that were pressed this frame.
+  if (mask and ButtonUp) != 0:
+    input.up = false
+  if (mask and ButtonDown) != 0:
+    input.down = false
+  if (mask and ButtonLeft) != 0:
+    input.left = false
+  if (mask and ButtonRight) != 0:
+    input.right = false
+  if (mask and ButtonSelect) != 0:
+    input.select = false
+  if (mask and ButtonA) != 0:
+    input.attack = false
+  if (mask and ButtonB) != 0:
+    input.b = false
+
+proc clearPressedInputMasks(
+  inputs: var seq[InputState],
+  masks: openArray[uint8]
+) =
+  ## Clears previous input bits for each per-frame pressed mask.
+  for playerIndex, mask in masks:
+    if playerIndex < inputs.len:
+      inputs[playerIndex].clearPressedInputMask(mask)
+
+proc resetInputMasks(masks: var seq[uint8]) =
+  ## Clears all per-frame pressed masks.
+  for mask in masks.mitems:
+    mask = 0
 
 proc addStatLine(
   packet: var string,
@@ -750,6 +829,9 @@ proc runServerLoop*(
       socketsToClose: seq[WebSocket] = @[]
       playerIndices: seq[int] = @[]
       inputs: seq[InputState]
+      downInputs: seq[InputState]
+      downInputMasks: seq[uint8]
+      pressedInputMasks: seq[uint8]
       globalViewers: seq[WebSocket] = @[]
       globalStates: seq[GlobalViewerState] = @[]
       rewardViewers: seq[WebSocket] = @[]
@@ -898,6 +980,9 @@ proc runServerLoop*(
 
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
+          downInputs = newSeq[InputState](sim.players.len)
+          downInputMasks = newSeq[uint8](sim.players.len)
+          pressedInputMasks = newSeq[uint8](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
           if not websocket.isPlayerWebSocket():
             continue
@@ -906,19 +991,26 @@ proc runServerLoop*(
           playerViewerStates.add(appState.playerViewers[websocket])
           if replayLoaded:
             continue
+          let pressedMask = appState.inputPressedMasks.getOrDefault(
+            websocket,
+            0
+          )
+          appState.inputPressedMasks[websocket] = 0
           if playerIndex < 0 or playerIndex >= inputs.len:
             continue
           let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
-          inputs[playerIndex] = decodeInputMask(currentMask)
-          if playerIndex < replayWriter.lastMasks.len and
-              currentMask != replayWriter.lastMasks[playerIndex]:
-            replayWriter.writeInput(ReplayInput(
-              time: tickTime(sim.tickCount),
-              player: uint8(playerIndex),
-              keys: currentMask
-            ))
-            replayWriter.lastMasks[playerIndex] = currentMask
-          appState.lastAppliedMasks[websocket] = currentMask
+          let appliedMask = currentMask or pressedMask
+          inputs[playerIndex] = decodeInputMask(appliedMask)
+          downInputs[playerIndex] = decodeInputMask(currentMask)
+          downInputMasks[playerIndex] = currentMask
+          pressedInputMasks[playerIndex] = pressedMask
+          replayWriter.writeInputFrameMasks(
+            tickTime(sim.tickCount),
+            playerIndex,
+            appliedMask,
+            pressedMask
+          )
+          appState.lastAppliedMasks[websocket] = appliedMask
         if not replayLoaded:
           for websocket, message in appState.chatMessages.pairs:
             let playerIndex = appState.playerIndices.getOrDefault(
@@ -1004,6 +1096,7 @@ proc runServerLoop*(
               appState.playerSlots[join.websocket] =
                 sim.players[appState.playerIndices[join.websocket]].joinOrder
               appState.inputMasks[join.websocket] = 0
+              appState.inputPressedMasks[join.websocket] = 0
               appState.lastAppliedMasks[join.websocket] = 0
               sockets.add(join.websocket)
               playerIndices.add(appState.playerIndices[join.websocket])
@@ -1049,21 +1142,36 @@ proc runServerLoop*(
     else:
       for command in replayCommands:
         liveSpeedIndex.applySpeedCommand(command)
-      var stepPrevInputs = prevInputs
+      var
+        stepPrevInputs = prevInputs
+        stepInputs = inputs
+        stepPressedInputMasks = pressedInputMasks
+        lastStepInputs = prevInputs
       for _ in 0 ..< playbackSpeed(liveSpeedIndex):
         let phaseBeforeStep = sim.phase
-        sim.step(inputs, stepPrevInputs)
-        stepPrevInputs = inputs
+        stepPrevInputs.clearPressedInputMasks(stepPressedInputMasks)
+        sim.step(stepInputs, stepPrevInputs)
+        lastStepInputs = stepInputs
+        stepPrevInputs = stepInputs
+        stepPressedInputMasks.resetInputMasks()
         replayWriter.writeHash(uint32(sim.tickCount), sim.gameHash())
+        if stepInputs.len > 0 and stepInputs != downInputs:
+          for playerIndex, mask in downInputMasks:
+            replayWriter.writeInputMaskChange(
+              tickTime(sim.tickCount),
+              playerIndex,
+              mask
+            )
+          stepInputs = downInputs
         if config.maxGames > 0 and phaseBeforeStep != GameOver and
             sim.phase == GameOver:
           inc gamesPlayed
-          if gamesPlayed >= config.maxGames:
-            quitAfterFrame = true
-            break
+        if config.maxGames > 0 and gamesPlayed >= config.maxGames:
+          quitAfterFrame = true
+          break
         if sim.needsReregister:
           break
-      prevInputs = inputs
+      prevInputs = lastStepInputs
 
     let rewardPacket = sim.buildRewardPacket()
 

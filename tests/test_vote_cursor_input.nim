@@ -29,7 +29,35 @@ proc stepVote(
   prevInputs = inputs
 
 suite "vote cursor input":
-  test "held direction can reach and commit a target slot":
+  test "pressed direction can reach and commit a target slot":
+    var config = defaultGameConfig()
+    config.minPlayers = 4
+    config.imposterCount = 0
+    config.autoImposterCount = false
+    config.tasksPerPlayer = 1
+    config.voteTimerTicks = 120
+
+    var sim = initCrewriftForTest(config)
+    sim.addPlayers(4)
+    sim.startVote()
+
+    var
+      inputs = newSeq[InputState](sim.players.len)
+      prevInputs = inputs
+
+    for _ in 0 ..< 3:
+      inputs[0].right = true
+      sim.stepVote(inputs, prevInputs)
+      inputs[0].right = false
+      sim.stepVote(inputs, prevInputs)
+
+    inputs[0].attack = true
+    sim.stepVote(inputs, prevInputs)
+
+    check sim.voteState.cursor[0] == 3
+    check sim.voteState.votes[0] == 3
+
+  test "held direction only moves one target slot":
     var config = defaultGameConfig()
     config.minPlayers = 4
     config.imposterCount = 0
@@ -49,11 +77,4 @@ suite "vote cursor input":
     for _ in 0 ..< 3:
       sim.stepVote(inputs, prevInputs)
 
-    inputs[0].right = false
-    sim.stepVote(inputs, prevInputs)
-
-    inputs[0].attack = true
-    sim.stepVote(inputs, prevInputs)
-
-    check sim.voteState.cursor[0] == 3
-    check sim.voteState.votes[0] == 3
+    check sim.voteState.cursor[0] == 1

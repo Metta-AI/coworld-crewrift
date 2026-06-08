@@ -141,6 +141,7 @@ const
   VoteListenBaseTicks = VoteDeadlineTicks div 4
   VoteListenJitterTicks = VoteDeadlineTicks div 16
   VoteImposterSkipTicks = VoteListenBaseTicks + VoteListenJitterTicks
+  VoteRetryTicks = sim.TargetFps div 2
   BodySuspectRange = 64
   ImposterHuntDelayTicks = 500
   ButtonResetCooldownLeadTicks = 150
@@ -341,6 +342,8 @@ type
     voteTarget: int
     voteStartTick: int
     voteDelayTicks: int
+    voteRetryTarget: int
+    lastVoteRetryTick: int
     voteChatSusColor: int
     voteQueuedSusColor: int
     voteImposterChatDecided: bool
@@ -1085,6 +1088,8 @@ proc clearVotingState(bot: var Bot) =
   bot.voteTarget = VoteUnknown
   bot.voteStartTick = -1
   bot.voteDelayTicks = -1
+  bot.voteRetryTarget = VoteUnknown
+  bot.lastVoteRetryTick = -1
   bot.voteChatSusColor = VoteUnknown
   bot.voteQueuedSusColor = VoteUnknown
   bot.voteImposterChatDecided = false
@@ -1830,6 +1835,8 @@ proc applyProtocolVotingState(
     previousDelay = bot.voteDelayTicks
     previousQueuedSusColor = bot.voteQueuedSusColor
     previousImposterChatDecided = bot.voteImposterChatDecided
+    previousRetryTarget = bot.voteRetryTarget
+    previousRetryTick = bot.lastVoteRetryTick
     previousLoggedTarget = bot.voteLoggedTarget
     previousLoggedReason = bot.voteLoggedReason
   bot.clearVotingState()
@@ -1843,6 +1850,8 @@ proc applyProtocolVotingState(
       bot.randomVoteDelay()
   bot.voteQueuedSusColor = previousQueuedSusColor
   bot.voteImposterChatDecided = previousImposterChatDecided
+  bot.voteRetryTarget = previousRetryTarget
+  bot.lastVoteRetryTick = previousRetryTick
   bot.voteLoggedTarget = previousLoggedTarget
   bot.voteLoggedReason = previousLoggedReason
   bot.voteCursor = cursor
@@ -2702,6 +2711,8 @@ proc parseVotingCandidate(
     previousDelay = bot.voteDelayTicks
     previousQueuedSusColor = bot.voteQueuedSusColor
     previousImposterChatDecided = bot.voteImposterChatDecided
+    previousRetryTarget = bot.voteRetryTarget
+    previousRetryTick = bot.lastVoteRetryTick
     previousLoggedTarget = bot.voteLoggedTarget
     previousLoggedReason = bot.voteLoggedReason
   bot.clearVotingState()
@@ -2715,6 +2726,8 @@ proc parseVotingCandidate(
       bot.randomVoteDelay()
   bot.voteQueuedSusColor = previousQueuedSusColor
   bot.voteImposterChatDecided = previousImposterChatDecided
+  bot.voteRetryTarget = previousRetryTarget
+  bot.lastVoteRetryTick = previousRetryTick
   bot.voteLoggedTarget = previousLoggedTarget
   bot.voteLoggedReason = previousLoggedReason
   bot.voteCursor = VoteUnknown
@@ -2767,6 +2780,8 @@ proc parseVotingScreen(bot: var Bot): bool {.measure.} =
       previousDelay = bot.voteDelayTicks
       previousQueuedSusColor = bot.voteQueuedSusColor
       previousImposterChatDecided = bot.voteImposterChatDecided
+      previousRetryTarget = bot.voteRetryTarget
+      previousRetryTick = bot.lastVoteRetryTick
       previousLoggedTarget = bot.voteLoggedTarget
       previousLoggedReason = bot.voteLoggedReason
     bot.clearVotingState()
@@ -2780,6 +2795,8 @@ proc parseVotingScreen(bot: var Bot): bool {.measure.} =
         bot.randomVoteDelay()
     bot.voteQueuedSusColor = previousQueuedSusColor
     bot.voteImposterChatDecided = previousImposterChatDecided
+    bot.voteRetryTarget = previousRetryTarget
+    bot.lastVoteRetryTick = previousRetryTick
     bot.voteLoggedTarget = previousLoggedTarget
     bot.voteLoggedReason = previousLoggedReason
     bot.voteCursor = read.cursor
@@ -4098,6 +4115,31 @@ proc selfVoteChoice(bot: Bot): int =
       return bot.voteChoices[colorIndex]
   VoteUnknown
 
+proc voteConfirmMask(bot: Bot): uint8 =
+  ## Returns a one-frame voting confirmation button press.
+  if bot.lastMask == ButtonA:
+    0
+  else:
+    ButtonA
+
+proc retryVotedMask(bot: var Bot, ownVote: int): uint8 =
+  ## Retries a parsed vote when the voting screen keeps running.
+  if ownVote == VoteUnknown:
+    return 0
+  if bot.voteCursor != ownVote:
+    bot.voteRetryTarget = ownVote
+    bot.lastVoteRetryTick = bot.frameTick
+    return 0
+  if bot.voteRetryTarget != ownVote:
+    bot.voteRetryTarget = ownVote
+    bot.lastVoteRetryTick = bot.frameTick
+    return 0
+  if bot.frameTick - bot.lastVoteRetryTick < VoteRetryTicks:
+    return 0
+  result = bot.voteConfirmMask()
+  if result == ButtonA:
+    bot.lastVoteRetryTick = bot.frameTick
+
 proc nextVoteSelectable(bot: Bot, cursor, direction: int): int =
   ## Returns the next selectable voting cursor slot.
   let total = bot.votePlayerCount + 1
@@ -4340,11 +4382,15 @@ proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
   bot.voteTarget = decision.target
   bot.printVotingFrame()
   if ownVote != VoteUnknown:
-    bot.desiredMask = 0
-    bot.controllerMask = 0
-    bot.intent = "voted " & bot.voteTargetName(ownVote)
+    bot.desiredMask = bot.retryVotedMask(ownVote)
+    bot.controllerMask = bot.desiredMask
+    bot.intent =
+      if bot.desiredMask == ButtonA:
+        "confirming vote " & bot.voteTargetName(ownVote)
+      else:
+        "voted " & bot.voteTargetName(ownVote)
     bot.thought(bot.intent)
-    return 0
+    return bot.desiredMask
   if bot.voteCursor != bot.voteTarget:
     let direction = bot.voteMoveDirection(bot.voteTarget)
     let mask =
@@ -4373,11 +4419,7 @@ proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
       $listenedTicks & "/" & $waitTicks
     bot.thought(bot.intent)
     return 0
-  bot.desiredMask =
-    if bot.lastMask == ButtonA:
-      0
-    else:
-      ButtonA
+  bot.desiredMask = bot.voteConfirmMask()
   bot.controllerMask = bot.desiredMask
   bot.intent = "voting for " & bot.voteTargetName(bot.voteTarget)
   if bot.desiredMask == ButtonA:
