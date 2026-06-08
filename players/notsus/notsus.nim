@@ -1,5 +1,5 @@
 import
-  bitworld/[spriteprotocol, server],
+  bitworld/[pixelfonts, spriteprotocol, server],
   pixie,
   ../../src/crewrift/[sim, texts],
   notsus/[protocols, votereader]
@@ -5071,12 +5071,12 @@ proc initBotSim(config: GameConfig): SimServer =
   result.wallMask = newSeq[bool](MapWidth * MapHeight)
   when not defined(botHeadless):
     loadPalette(clientDataDir() / "pallete.png")
-    result.asciiSprites = loadAsciiSprites(gameDir() / "data/tiny5.aseprite")
+    result.asciiSprites = readTiny5Font()
 
 proc botGameDir(): string =
   ## Returns the game asset directory used by the private bot.
   for candidate in [CrewriftGameDir, AmongThemGameDir]:
-    if dirExists(candidate):
+    if fileExists(candidate / "src" / "crewrift.nim"):
       return candidate
   gameDir()
 

@@ -12,7 +12,6 @@ const
   DefaultMapPath* = "data/croatoan.resources"
   DarkBgPath* = "data/darkbg.aseprite"
   SpriteSheetAsepritePath = "data/spritesheet.aseprite"
-  TinyFontPath = "data/tiny5.aseprite"
   MapWidth* = 1235
   MapHeight* = 659
   SpriteSize* = 12
@@ -901,10 +900,6 @@ proc loadDarkBgPixels*(): seq[uint8] =
 proc asciiIndex*(ch: char): int =
   ## Returns the ASCII sheet index for a character.
   ord(ch) - ord(' ')
-
-proc loadAsciiSprites*(path: string): PixelFont =
-  ## Loads the tiny variable-width ASCII pixel font.
-  readPixelFont(path)
 
 proc blitAsciiText*(
   fb: var Framebuffer,
@@ -3761,7 +3756,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.config = config
   result.rng = initRand(config.seed)
   loadPalette(clientDataDir() / "pallete.png")
-  result.asciiSprites = loadAsciiSprites(gameDir() / TinyFontPath)
+  result.asciiSprites = readTiny5Font()
 
   let sheet = loadSpriteSheet()
   result.crewSprites = loadCrewSprites()
