@@ -154,7 +154,7 @@
           "description": "Kill cooldown duration in ticks.",
           "type": "integer",
           "minimum": 0,
-          "default": 500
+          "default": 300
         },
         "roleRevealTicks": {
           "description": "Role reveal duration in ticks.",
@@ -443,7 +443,7 @@
         "maxGames": 1,
         "mapPath": "data/croatoan.resources",
         "voteTimerTicks": 240,
-        "killCooldownTicks": 500,
+        "killCooldownTicks": 300,
         "showTaskArrows": true,
         "showTaskBubbles": true,
         "showPlayerLabels": true
@@ -500,7 +500,7 @@
       "maxGames": 1,
       "mapPath": "data/croatoan.resources",
       "voteTimerTicks": 120,
-      "killCooldownTicks": 500,
+      "killCooldownTicks": 300,
       "showTaskArrows": false,
       "showTaskBubbles": false,
       "showPlayerLabels": true

@@ -45,7 +45,7 @@ const
   ShadeTintColor* = 9'u8
   OutlineColor* = 0'u8
   KillRange* = 20
-  KillCooldownTicks* = 500
+  KillCooldownTicks* = 300
   RoleRevealTicks* = 120
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
