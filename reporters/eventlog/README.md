@@ -158,20 +158,37 @@ Build the container:
 docker build -f reporters/eventlog/Dockerfile -t crewrift-eventlog-reporter .
 ```
 
-## Intended Manifest Entry
+## Manifest Entry
 
-Do not add this to `coworld_manifest.json` yet. This is the intended reporter
-entry once the platform reporter runtime is wired here:
+This reporter is wired into `coworld_manifest.json` under `reporter[]`. The
+committed entry uses only the fields the manifest's declared `$schema` (metta
+`main`) currently accepts:
 
 ```json
 {
   "id": "crewrift-eventlog-reporter",
   "name": "Crewrift Event-Log Reporter",
   "type": "reporter",
-  "description": "Structured categorical event-log reporter for Crewrift episode replays.",
-  "purpose": "categorical_events",
+  "description": "Expands a completed Crewrift episode replay into a structured categorical event log: {ts, player, key, value} JSON rows served over the reporter WebSocket contract.",
   "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/main/reporters/eventlog",
-  "image": "ghcr.io/metta-ai/reporters-crewrift-eventlog:latest",
+  "image": "ghcr.io/metta-ai/reporters-crewrift-eventlog:latest"
+}
+```
+
+The image is published at `ghcr.io/metta-ai/reporters-crewrift-eventlog:latest`
+(`linux/amd64`).
+
+### Future upgrade: typed reporter fields
+
+The reporter role contract adds two reporter-specific fields — `purpose` and
+`output_format`. That typed manifest spec was reverted on metta `main`
+(`#14986` → `#15013`), so those fields are not yet valid against the declared
+schema and are intentionally omitted from the committed entry. Once the typed
+spec re-lands on `main`, upgrade the entry to declare them:
+
+```json
+{
+  "purpose": "categorical_events",
   "output_format": {
     "mime": "application/json",
     "schema": "<use the EventLogSchema from reporters/eventlog/report.nim>"

@@ -398,11 +398,12 @@
   ],
   "reporter": [
     {
-      "id": "default-reporter",
-      "name": "Default Reporter",
+      "id": "crewrift-eventlog-reporter",
+      "name": "Crewrift Event-Log Reporter",
       "type": "reporter",
-      "description": "Default Coworld reporter for generic episode artifacts.",
-      "image": "public.ecr.aws/q5f4m8t9/cogames@sha256:396e56a9ba1576aecc5b9868a85fa309ea98fdbbf8d656c94ec021906197ea52"
+      "description": "Expands a completed Crewrift episode replay into a structured categorical event log: {ts, player, key, value} JSON rows served over the reporter WebSocket contract.",
+      "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/main/reporters/eventlog",
+      "image": "ghcr.io/metta-ai/reporters-crewrift-eventlog:latest"
     }
   ],
   "grader": [
