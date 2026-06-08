@@ -170,7 +170,7 @@ committed entry uses only the fields the manifest's declared `$schema` (metta
   "name": "Crewrift Event-Log Reporter",
   "type": "reporter",
   "description": "Expands a completed Crewrift episode replay into a structured categorical event log: {ts, player, key, value} JSON rows served over the reporter WebSocket contract.",
-  "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/main/reporters/eventlog",
+  "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master/reporters/eventlog",
   "image": "ghcr.io/metta-ai/reporters-crewrift-eventlog:latest"
 }
 ```
