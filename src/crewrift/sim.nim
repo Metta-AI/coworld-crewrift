@@ -563,21 +563,31 @@ proc centerPoint(room: Room): MapPoint =
   ## Returns the center point for one room rectangle.
   MapPoint(x: room.x + room.w div 2, y: room.y + room.h div 2)
 
+proc clampMapX(x: int): int =
+  ## Returns an x coordinate inside the map bounds.
+  clamp(x, 0, MapWidth - 1)
+
+proc clampMapY(y: int): int =
+  ## Returns a y coordinate inside the map bounds.
+  clamp(y, 0, MapHeight - 1)
+
 proc roomDistanceSquared*(room: Room, x, y: int): int =
   ## Returns the squared distance from a point to a room edge.
   let
+    px = clampMapX(x)
+    py = clampMapY(y)
     dx =
-      if x < room.x:
-        room.x - x
-      elif x >= room.x + room.w:
-        x - (room.x + room.w - 1)
+      if px < room.x:
+        room.x - px
+      elif px >= room.x + room.w:
+        px - (room.x + room.w - 1)
       else:
         0
     dy =
-      if y < room.y:
-        room.y - y
-      elif y >= room.y + room.h:
-        y - (room.y + room.h - 1)
+      if py < room.y:
+        room.y - py
+      elif py >= room.y + room.h:
+        py - (room.y + room.h - 1)
       else:
         0
   dx * dx + dy * dy

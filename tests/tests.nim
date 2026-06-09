@@ -10,6 +10,7 @@ import
   test_max_ticks,
   test_movement_slide,
   test_replay_controls,
+  test_rooms,
   test_slots,
   test_start_wait,
   test_tasks,
