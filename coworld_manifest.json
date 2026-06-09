@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/Metta-AI/metta/main/packages/coworld/src/coworld/coworld_manifest_schema.json",
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
   "game": {
     "name": "crewrift",
     "version": "0.1.40",
@@ -8,7 +8,8 @@
     "runnable": {
       "type": "game",
       "image": "public.ecr.aws/s3j4p9s7/treeform/games/crewrift:latest",
-      "run": ["/bin/crewrift"]
+      "run": ["/bin/crewrift"],
+      "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master"
     },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -388,6 +389,14 @@
       },
       "pages": [
         {
+          "id": "notsus.md",
+          "title": "notsus Bot Player",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/notsus/README.md"
+          }
+        },
+        {
           "id": "rules.md",
           "title": "Rules",
           "content": {
@@ -415,7 +424,8 @@
       "image": "public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest",
       "run": [
         "/bin/notsus"
-      ]
+      ],
+      "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master/players/notsus"
     }
   ],
   "commissioner": [
