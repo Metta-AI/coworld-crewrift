@@ -66,6 +66,47 @@ proc requireCooldownBar(
       return
   doAssert false, "Missing imposter cooldown progress bar."
 
+proc hasPlayerMapLayer(
+  messages: openArray[SpritePacketMessage]
+): bool =
+  ## Returns true when a player packet keeps layer zero as a map layer.
+  for message in messages:
+    if message.kind == spkLayer and
+        message.layer.layer == MapLayerId and
+        message.layer.kind == MapLayerType and
+        message.layer.flags == ZoomableLayerFlag:
+      return true
+
+proc requirePlayerMapCamera(
+  messages: openArray[SpritePacketMessage],
+  sim: SimServer,
+  playerIndex: int
+) =
+  ## Requires the full map sprite and camera offset used by bots.
+  let view = sim.playerView(playerIndex)
+  var
+    foundMapSprite = false
+    foundMapObject = false
+  for message in messages:
+    case message.kind
+    of spkSprite:
+      if message.sprite.id == MapSpriteId and
+          message.sprite.width == MapWidth and
+          message.sprite.height == MapHeight and
+          message.sprite.label == "map":
+        foundMapSprite = true
+    of spkObject:
+      if message.objectDef.id == MapObjectId and
+          message.objectDef.layer == MapLayerId and
+          message.objectDef.spriteId == MapSpriteId and
+          message.objectDef.x == -view.cameraX and
+          message.objectDef.y == -view.cameraY:
+        foundMapObject = true
+    else:
+      discard
+  doAssert foundMapSprite
+  doAssert foundMapObject
+
 proc buildPlayerMessages(
   sim: var SimServer,
   playerIndex: int
@@ -95,6 +136,18 @@ proc testImposterCooldownBar() =
     sprites = messages.collectSprites()
   messages.requireCooldownBar(sprites, 75, 10)
 
+proc testPlayerPacketsUseMapLayer() =
+  ## Tests that bot player packets keep layer zero map-shaped.
+  var game = initCrewriftForTest(defaultGameConfig())
+  let player = game.addPlayer("crew")
+  game.phase = Playing
+  game.players[player].role = Crewmate
+
+  let messages = game.buildPlayerMessages(player)
+  doAssert messages.hasPlayerMapLayer()
+  messages.requirePlayerMapCamera(game, player)
+
 echo "Testing imposter cooldown bar"
+testPlayerPacketsUseMapLayer()
 testImposterCooldownBar()
 echo "ok"

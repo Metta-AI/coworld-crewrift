@@ -1917,8 +1917,29 @@ proc buildSpriteProtocolPlayerInit(
   result = @[]
   if clearObjects:
     result.addU8(0x04)
-  result.addLayer(layerId, FullScreenLayerType, 0)
+  let isPovLayer = layerId == PovLayerId
+  let
+    layerType =
+      if isPovLayer:
+        FullScreenLayerType
+      else:
+        MapLayerType
+    layerFlags =
+      if isPovLayer:
+        0
+      else:
+        ZoomableLayerFlag
+  result.addLayer(layerId, layerType, layerFlags)
   result.addViewport(layerId, ScreenWidth, ScreenHeight)
+  if not isPovLayer:
+    result.addSpriteChanged(
+      spriteDefs,
+      MapSpriteId.protocolSpriteId(spriteIdOffset),
+      sim.gameMap.width,
+      sim.gameMap.height,
+      sim.buildMapSpritePixels(),
+      "map"
+    )
   if addMarkers:
     sim.addMapMarkers(
       spriteDefs,
@@ -2601,24 +2622,37 @@ proc buildSpriteProtocolPlayerUpdates*(
           false
         else:
           sim.usePlayerShadowMask(playerIndex, view)
-    currentIds.add(MapObjectId.protocolObjectId(objectIdOffset))
-    result.addSpriteChanged(
-      nextState.spriteDefs,
-      MapSpriteId.protocolSpriteId(spriteIdOffset),
-      ScreenWidth,
-      ScreenHeight,
-      sim.buildMapViewSpritePixels(cameraX, cameraY),
-      "map view",
-      changed = shadowViewChanged
-    )
-    result.addObject(
-      MapObjectId.protocolObjectId(objectIdOffset),
-      0,
-      0,
-      low(int16),
-      layerId,
-      MapSpriteId.protocolSpriteId(spriteIdOffset)
-    )
+    if layerId == PovLayerId:
+      currentIds.add(MapObjectId.protocolObjectId(objectIdOffset))
+      result.addSpriteChanged(
+        nextState.spriteDefs,
+        MapSpriteId.protocolSpriteId(spriteIdOffset),
+        ScreenWidth,
+        ScreenHeight,
+        sim.buildMapViewSpritePixels(cameraX, cameraY),
+        "map view",
+        changed = shadowViewChanged
+      )
+      result.addObject(
+        MapObjectId.protocolObjectId(objectIdOffset),
+        0,
+        0,
+        low(int16),
+        layerId,
+        MapSpriteId.protocolSpriteId(spriteIdOffset)
+      )
+    else:
+      currentIds.addProtocolObject(
+        result,
+        MapObjectId,
+        -cameraX,
+        -cameraY,
+        low(int16),
+        layerId,
+        MapSpriteId,
+        objectIdOffset,
+        spriteIdOffset
+      )
     if not viewerIsGhost:
       currentIds.add(
         SpritePlayerShadowObjectId.protocolObjectId(objectIdOffset)
