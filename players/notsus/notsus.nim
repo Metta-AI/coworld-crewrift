@@ -4312,20 +4312,6 @@ proc bodySusVotingTarget(bot: Bot): int =
     return slot
   VoteUnknown
 
-proc susSpeakerTargetingSelf(bot: Bot): int =
-  ## Returns a valid chat speaker who called this bot sus.
-  if bot.selfColorIndex < 0:
-    return VoteUnknown
-  for line in bot.voteChatLines:
-    if line.speakerColor == bot.selfColorIndex:
-      continue
-    if chatSusColorIndex(line.text) != bot.selfColorIndex:
-      continue
-    let slot = bot.voteSlotForColor(line.speakerColor)
-    if bot.voteTargetSafeForRole(slot):
-      return line.speakerColor
-  VoteUnknown
-
 proc randomCrewmateSusColor(bot: var Bot): int =
   ## Chooses a random living crewmate color for imposter sus chat.
   var colors: seq[int]
@@ -4342,15 +4328,6 @@ proc maybeQueueImposterSusChat(bot: var Bot) =
   if bot.role != RoleImposter:
     return
   if bot.pendingChat.len > 0:
-    return
-  let replyColor = bot.susSpeakerTargetingSelf()
-  if replyColor != VoteUnknown and bot.voteQueuedSusColor != replyColor:
-    bot.voteQueuedSusColor = replyColor
-    bot.pendingChat = titlePlayerColorName(replyColor) & " sus"
-    bot.logLine(
-      "voting chat: " & bot.pendingChat &
-        " because " & playerColorName(replyColor) & " called me sus"
-    )
     return
   if bot.voteImposterChatDecided:
     return
