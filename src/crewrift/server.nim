@@ -783,9 +783,7 @@ proc runServerLoop*(
       ReplayData()
   var config =
     if replayLoaded:
-      var replayConfig = defaultGameConfig()
-      replayConfig.update(replayData.configJson)
-      replayConfig
+      replayData.replayGameConfig()
     else:
       initialConfig
   if not replayLoaded:
@@ -855,9 +853,7 @@ proc runServerLoop*(
         appState.pendingReplayUri = ""
     if pendingReplayUri.len > 0:
       replayData = loadReplayUri(pendingReplayUri)
-      var replayConfig = defaultGameConfig()
-      replayConfig.update(replayData.configJson)
-      config = replayConfig
+      config = replayData.replayGameConfig()
       sim = initSimServer(config)
       replayPlayer = initReplayPlayer(replayData)
       replayPlayer.mismatchQuit = runtimeConfig.mismatchQuit

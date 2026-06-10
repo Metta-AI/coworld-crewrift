@@ -1,4 +1,5 @@
 import
+  std/json,
   flatty,
   bitworld/spriteprotocol,
   bitworld/replays as replayCodec,
@@ -69,6 +70,23 @@ proc parseReplayBytes*(bytes: string): ReplayData =
 proc loadReplay*(path: string): ReplayData =
   ## Loads a replay file into memory.
   replayCodec.loadReplay(path, CrewriftReplaySpec)
+
+proc replayConfigHasGameInfoTicks(configJson: string): bool =
+  ## Returns true when replay JSON stores the game-info timer field.
+  if configJson.len == 0:
+    return false
+  try:
+    let node = parseJson(configJson)
+    node.kind == JObject and node.hasKey("gameInfoTicks")
+  except JsonParsingError:
+    false
+
+proc replayGameConfig*(data: ReplayData): GameConfig =
+  ## Builds playback config while preserving legacy replay timing.
+  result = defaultGameConfig()
+  if not data.configJson.replayConfigHasGameInfoTicks():
+    result.gameInfoTicks = 0
+  result.update(data.configJson)
 
 proc serializeReplaySim*(sim: SimServer): string =
   ## Serializes one simulation state for replay keyframes.

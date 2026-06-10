@@ -20,6 +20,15 @@ proc hasShadowSprite(messages: openArray[SpritePacketMessage]): bool =
     if message.kind == spkSprite and message.sprite.label == "shadow":
       return true
 
+proc hasSpriteLabel(
+  messages: openArray[SpritePacketMessage],
+  label: string
+): bool =
+  ## Returns true when one packet updates a sprite with the label.
+  for message in messages:
+    if message.kind == spkSprite and message.sprite.label == label:
+      return true
+
 proc hasFullScreenPovLayer(messages: openArray[SpritePacketMessage]): bool =
   ## Returns true when the selected player PoV is sent as a full-screen layer.
   for message in messages:
@@ -27,6 +36,13 @@ proc hasFullScreenPovLayer(messages: openArray[SpritePacketMessage]): bool =
         message.layer.layer == PovLayerId and
         message.layer.kind == FullScreenLayerType and
         message.layer.flags == 0:
+      return true
+
+proc hasTopRightLayer(messages: openArray[SpritePacketMessage]): bool =
+  ## Returns true when the packet defines a top-right layer.
+  for message in messages:
+    if message.kind == spkLayer and
+        message.layer.kind == SpriteLayerTopRight:
       return true
 
 proc hasViewportMapSprite(messages: openArray[SpritePacketMessage]): bool =
@@ -192,8 +208,86 @@ proc testSelectedPovClearsOverlayOnly() =
   doAssert restoredMessages.hasInertPovLayer()
   doAssert restoredMessages.hasInertPovViewport()
 
+proc testRoleRevealInterstitialUsesImposterView() =
+  ## Tests that the global role interstitial uses an impostor screen.
+  var config = defaultGameConfig()
+  config.minPlayers = 3
+  config.imposterCount = 1
+  config.autoImposterCount = false
+  config.gameInfoTicks = 0
+  config.slots = @[
+    PlayerSlotConfig(role: Crewmate, hasRole: true),
+    PlayerSlotConfig(role: Imposter, hasRole: true),
+    PlayerSlotConfig(role: Crewmate, hasRole: true)
+  ]
+
+  var game = initCrewriftForTest(config)
+  let crewIndex = game.addPlayer("crew")
+  discard game.addPlayer("imp")
+  discard game.addPlayer("crew2")
+  game.startGame()
+  doAssert game.phase == RoleReveal
+
+  var
+    state = initGlobalViewerState()
+    nextState: GlobalViewerState
+  state.selectedJoinOrder = game.players[crewIndex].joinOrder
+  let messages = game.buildGlobalMessages(state, nextState)
+  doAssert messages.hasTopRightLayer()
+  doAssert messages.hasSpriteLabel("IMPS")
+  doAssert not messages.hasSpriteLabel("CREWMATE")
+  doAssert not messages.hasFullScreenPovLayer()
+  doAssert not messages.hasViewportMapSprite()
+  doAssert not nextState.povActive
+  doAssert nextState.selectedJoinOrder == game.players[crewIndex].joinOrder
+  doAssert nextState.povJoinOrder == -1
+
+proc testPlayerLabelsUpdateOnlyWhenTextChanges() =
+  ## Tests that floating player names only resend when their text changes.
+  var game = initCrewriftForTest(defaultGameConfig())
+  let
+    voterIndex = game.addPlayer("voter")
+    targetIndex = game.addPlayer("target")
+  game.phase = Playing
+
+  var
+    state = initGlobalViewerState()
+    nextState: GlobalViewerState
+  let firstMessages = game.buildGlobalMessages(state, nextState)
+  doAssert firstMessages.hasSpriteLabel("player label|voter")
+  doAssert firstMessages.hasSpriteLabel("player label|target")
+
+  state = nextState
+  let quietMessages = game.buildGlobalMessages(state, nextState)
+  doAssert not quietMessages.hasSpriteLabel("player label|voter")
+  doAssert not quietMessages.hasSpriteLabel("player label|target")
+
+  state = nextState
+  game.startVote()
+  let unsureMessages = game.buildGlobalMessages(state, nextState)
+  doAssert unsureMessages.hasSpriteLabel("player label|voter|-> ?")
+
+  state = nextState
+  let quietUnsureMessages = game.buildGlobalMessages(state, nextState)
+  doAssert not quietUnsureMessages.hasSpriteLabel(
+    "player label|voter|-> ?"
+  )
+
+  state = nextState
+  game.voteState.votes[voterIndex] = targetIndex
+  let votedMessages = game.buildGlobalMessages(state, nextState)
+  doAssert votedMessages.hasSpriteLabel("player label|voter|-> target")
+
+  state = nextState
+  let quietVotedMessages = game.buildGlobalMessages(state, nextState)
+  doAssert not quietVotedMessages.hasSpriteLabel(
+    "player label|voter|-> target"
+  )
+
 echo "Testing global PoV shadow refresh"
 testSelectedPovShadowRefresh()
 testMapClickSelectsNearestPlayer()
 testSelectedPovClearsOverlayOnly()
+testRoleRevealInterstitialUsesImposterView()
+testPlayerLabelsUpdateOnlyWhenTextChanges()
 echo "ok"

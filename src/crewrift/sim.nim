@@ -48,6 +48,7 @@ const
   OutlineColor* = 0'u8
   KillRange* = 20
   KillCooldownTicks* = 500
+  GameInfoTicks* = 3 * TargetFps
   RoleRevealTicks* = 120
   TaskCompleteTicks* = 72
   TaskBarWidth* = 14
@@ -193,6 +194,7 @@ type
     VoteResult
     GameOver
     RoleReveal
+    GameInfo
 
   VoteCallKind* = enum
     VoteCalledUnknown
@@ -297,6 +299,7 @@ type
     speed*: int
     killRange*: int
     killCooldownTicks*: int
+    gameInfoTicks*: int
     roleRevealTicks*: int
     taskCompleteTicks*: int
     ventRange*: int
@@ -393,6 +396,7 @@ type
     asciiSprites*: PixelFont
     winner*: PlayerRole
     gameOverTimer*: int
+    gameInfoTimer*: int
     roleRevealTimer*: int
     timeLimitReached*: bool
     needsReregister*: bool
@@ -1036,6 +1040,7 @@ proc defaultGameConfig*(): GameConfig =
     speed: 1,
     killRange: KillRange,
     killCooldownTicks: KillCooldownTicks,
+    gameInfoTicks: GameInfoTicks,
     roleRevealTicks: RoleRevealTicks,
     taskCompleteTicks: TaskCompleteTicks,
     ventRange: VentRange,
@@ -1312,6 +1317,8 @@ proc validate(config: GameConfig) =
     raise newException(CrewriftError, "Config field buttonCalls must be non-negative.")
   if config.roleRevealTicks < 0:
     raise newException(CrewriftError, "Config field roleRevealTicks must be non-negative.")
+  if config.gameInfoTicks < 0:
+    raise newException(CrewriftError, "Config field gameInfoTicks must be non-negative.")
   if config.voteTimerTicks <= 0:
     raise newException(CrewriftError, "Config field voteTimerTicks must be positive.")
   if config.connectTimeoutTicks < 0:
@@ -1385,6 +1392,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("speed", config.speed)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
+  node.readConfigInt("gameInfoTicks", config.gameInfoTicks)
   node.readConfigInt("roleRevealTicks", config.roleRevealTicks)
   node.readConfigInt("taskCompleteTicks", config.taskCompleteTicks)
   node.readConfigInt("ventRange", config.ventRange)
@@ -1480,6 +1488,7 @@ proc configJson*(config: GameConfig): string =
     "speed": config.speed,
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
+    "gameInfoTicks": config.gameInfoTicks,
     "roleRevealTicks": config.roleRevealTicks,
     "taskCompleteTicks": config.taskCompleteTicks,
     "ventRange": config.ventRange,
@@ -2330,7 +2339,7 @@ proc recordDisconnectTimeout*(sim: var SimServer, playerIndex: int) =
 proc canGraceDisconnect*(sim: SimServer, playerIndex: int): bool =
   ## Returns true when one socket close should start reconnect grace.
   playerIndex >= 0 and playerIndex < sim.players.len and
-    sim.phase in {RoleReveal, Playing, Voting, VoteResult} and
+    sim.phase in {GameInfo, RoleReveal, Playing, Voting, VoteResult} and
     sim.config.disconnectTimeoutTicks > 0
 
 proc markPlayerDisconnected*(sim: var SimServer, playerIndex: int) =
@@ -2514,7 +2523,25 @@ proc settleAllCompletedTaskRewards(sim: var SimServer) =
   for i in 0 ..< sim.players.len:
     sim.settleCompletedTaskRewards(i)
 
-proc startGame*(sim: var SimServer) =
+proc enterPlaying(sim: var SimServer) =
+  ## Starts active gameplay timing and movement accounting.
+  sim.phase = Playing
+  sim.gameStartTick = sim.tickCount
+  for player in sim.players.mitems:
+    player.lastMoveTick = sim.tickCount
+
+proc enterRoleRevealOrPlaying(sim: var SimServer) =
+  ## Enters role reveal, or active play when reveal is disabled.
+  sim.gameInfoTimer = 0
+  sim.roleRevealTimer = sim.config.roleRevealTicks
+  if sim.roleRevealTimer > 0:
+    sim.phase = RoleReveal
+    sim.gameStartTick = -1
+  else:
+    sim.enterPlaying()
+
+proc startGame*(sim: var SimServer, showInfo = false) =
+  ## Assigns roles and tasks, then enters the first game phase.
   sim.logGameEvent(
     "game started: players=" & $sim.players.len &
       ", imposters=" & $sim.config.effectiveImposterCount(sim.players.len)
@@ -2576,13 +2603,13 @@ proc startGame*(sim: var SimServer) =
   sim.logTaskAssignments(crew, taskDetails)
   for player in sim.players.mitems:
     player.lastMoveTick = sim.tickCount
-  sim.roleRevealTimer = sim.config.roleRevealTicks
-  if sim.roleRevealTimer > 0:
-    sim.phase = RoleReveal
+  if showInfo and sim.config.gameInfoTicks > 0:
+    sim.phase = GameInfo
+    sim.gameInfoTimer = sim.config.gameInfoTicks
+    sim.roleRevealTimer = 0
     sim.gameStartTick = -1
   else:
-    sim.phase = Playing
-    sim.gameStartTick = sim.tickCount
+    sim.enterRoleRevealOrPlaying()
   sim.timeLimitReached = false
   sim.lastLobbyPlayersLogged = -1
   sim.lastLobbyNeededLogged = -1
@@ -3555,7 +3582,8 @@ proc shouldAbortFiniteMatch*(sim: SimServer): bool =
     if sim.config.closedRoster and sim.config.connectTimeoutTicks > 0:
       return false
     return sim.startWaitTimer > 0 and sim.players.len < sim.config.minPlayers
-  sim.phase in {RoleReveal, Playing, Voting, VoteResult} and sim.players.len == 0
+  sim.phase in {GameInfo, RoleReveal, Playing, Voting, VoteResult} and
+    sim.players.len == 0
 
 proc checkWinCondition*(sim: var SimServer) {.measure.} =
   var
@@ -3751,6 +3779,8 @@ proc writeSpritePlayerObservationUiPlayers(
         sy = startY + row * 9
       var flags = RenderPlayerPresent or RenderPlayerAlive
       sim.writeSpritePlayerObservationPlayerSlot(playerIndex, i, sx, sy, flags, output)
+  of GameInfo:
+    discard
   of RoleReveal:
     let viewerIsImp =
       playerIndex >= 0 and playerIndex < sim.players.len and
@@ -4068,6 +4098,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.nextJoinOrder = 0
   result.gameStartTick = -1
   result.startWaitTimer = 0
+  result.gameInfoTimer = 0
   result.gameEventLoggingEnabled = true
   result.voteState.callKind = VoteCalledUnknown
   result.voteState.callerIndex = -1
@@ -4087,6 +4118,7 @@ proc resetToLobby*(sim: var SimServer) =
   sim.tickCount = 0
   sim.gameStartTick = -1
   sim.startWaitTimer = 0
+  sim.gameInfoTimer = 0
   sim.roleRevealTimer = 0
   sim.timeLimitReached = false
   sim.needsReregister = true
@@ -4130,7 +4162,7 @@ proc checkConnectTimeout(sim: var SimServer): bool =
 
 proc checkDisconnectTimeout(sim: var SimServer): bool =
   ## Ends the match as a draw if disconnected players miss reconnect grace.
-  if sim.phase notin {RoleReveal, Playing, Voting, VoteResult} or
+  if sim.phase notin {GameInfo, RoleReveal, Playing, Voting, VoteResult} or
       sim.config.disconnectTimeoutTicks <= 0:
     return false
   var playerIndices: seq[int]
@@ -4162,7 +4194,7 @@ proc stepLobby(sim: var SimServer) {.measure.} =
     sim.startWaitTimer = sim.config.startWaitTicks
   dec sim.startWaitTimer
   if sim.startWaitTimer <= 0:
-    sim.startGame()
+    sim.startGame(showInfo = true)
   else:
     sim.logLobbyCountdown()
 
@@ -4182,13 +4214,16 @@ proc step*(
   if sim.checkDisconnectTimeout():
     return
 
+  if sim.phase == GameInfo:
+    dec sim.gameInfoTimer
+    if sim.gameInfoTimer <= 0:
+      sim.enterRoleRevealOrPlaying()
+    return
+
   if sim.phase == RoleReveal:
     dec sim.roleRevealTimer
     if sim.roleRevealTimer <= 0:
-      sim.phase = Playing
-      sim.gameStartTick = sim.tickCount
-      for player in sim.players.mitems:
-        player.lastMoveTick = sim.tickCount
+      sim.enterPlaying()
     return
 
   if sim.phase == GameOver:

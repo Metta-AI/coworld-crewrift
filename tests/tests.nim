@@ -2,6 +2,7 @@
 import
   test_ascii_text,
   test_discrete_buttons,
+  test_game_info,
   test_input_buffer,
   test_global_pov_shadow,
   test_imposter_cooldown_bar,

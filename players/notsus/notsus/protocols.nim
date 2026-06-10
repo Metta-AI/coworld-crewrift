@@ -10,6 +10,14 @@ const
   ServerTickPrefix = "tick "
 
 type
+  GameInfoSettings* = object
+    found*: bool
+    complete*: bool
+    killCooldownTicks*: int
+    tasksPerPlayer*: int
+    voteTimerTicks*: int
+    maxTicks*: int
+
   SpriteInfo* = ref object
     defined*: bool
     width*: int
@@ -95,6 +103,28 @@ proc tickLabelValue*(label: string): int =
     if result > (high(int) - digit) div 10:
       return -1
     result = result * 10 + digit
+
+proc parseLabelInt(label, prefix, suffix: string): int =
+  ## Parses an integer field from one sprite label, or -1.
+  if not label.startsWith(prefix) or not label.endsWith(suffix):
+    return -1
+  let start = prefix.len
+  let stop = label.len - suffix.len
+  if stop <= start:
+    return -1
+  try:
+    result = label[start ..< stop].parseInt()
+  except ValueError:
+    result = -1
+
+proc gameInfoLabel*(label: string): bool =
+  ## Returns true when a sprite label belongs to the game-info screen.
+  label == "GAME INFO" or
+    label.parseLabelInt("KILL COOLDOWN ", "T") >= 0 or
+    label.parseLabelInt("TASKS ", " EACH") >= 0 or
+    label.parseLabelInt("VOTE TIMER ", "T") >= 0 or
+    label.parseLabelInt("GAME TIMER ", "T") >= 0 or
+    label == "GAME TIMER NONE"
 
 proc queryEscape*(value: string): string =
   ## Escapes a small string for use in a websocket query parameter.
@@ -287,6 +317,48 @@ proc serverTick*(client: ProtocolClient): int =
     let tick = item.sprite.label.tickLabelValue()
     if tick > result:
       result = tick
+
+proc gameInfoSettings*(client: ProtocolClient): GameInfoSettings =
+  ## Reads complete game settings from the current game-info screen.
+  var
+    hasKillCooldownTicks = false
+    hasTasksPerPlayer = false
+    hasVoteTimerTicks = false
+    hasMaxTicks = false
+  for item in client.spriteObjectRefs():
+    let label = item.sprite.label
+    if label == "GAME INFO":
+      result.found = true
+      continue
+    let killCooldownTicks = label.parseLabelInt("KILL COOLDOWN ", "T")
+    if killCooldownTicks >= 0:
+      result.killCooldownTicks = killCooldownTicks
+      hasKillCooldownTicks = true
+      continue
+    let tasksPerPlayer = label.parseLabelInt("TASKS ", " EACH")
+    if tasksPerPlayer >= 0:
+      result.tasksPerPlayer = tasksPerPlayer
+      hasTasksPerPlayer = true
+      continue
+    let voteTimerTicks = label.parseLabelInt("VOTE TIMER ", "T")
+    if voteTimerTicks >= 0:
+      result.voteTimerTicks = voteTimerTicks
+      hasVoteTimerTicks = true
+      continue
+    let maxTicks = label.parseLabelInt("GAME TIMER ", "T")
+    if maxTicks >= 0:
+      result.maxTicks = maxTicks
+      hasMaxTicks = true
+      continue
+    if label == "GAME TIMER NONE":
+      result.maxTicks = 0
+      hasMaxTicks = true
+  result.complete =
+    result.found and
+    hasKillCooldownTicks and
+    hasTasksPerPlayer and
+    hasVoteTimerTicks and
+    hasMaxTicks
 
 proc decodeSpritePixels(
   width,

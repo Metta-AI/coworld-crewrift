@@ -41,6 +41,7 @@ suite "start wait":
     config.minPlayers = 5
     config.roleRevealTicks = 0
     config.startWaitTicks = 3
+    config.gameInfoTicks = 3
     config.tasksPerPlayer = 1
 
     var sim = initCrewriftForTest(config)
@@ -58,5 +59,10 @@ suite "start wait":
     check sim.players.len == 7
 
     sim.step(inputs, inputs)
-    check sim.phase == Playing
+    check sim.phase == GameInfo
+    check sim.gameInfoTimer == 3
     check sim.countImposters() == 2
+
+    for _ in 0 ..< sim.config.gameInfoTicks:
+      sim.step(inputs, inputs)
+    check sim.phase == Playing

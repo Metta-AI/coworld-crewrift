@@ -139,10 +139,6 @@ const
   VoteUnknown = -1
   VoteSkip = -2
   VoteBlackMarker = 12'u8
-  VoteDeadlineTicks = sim.VoteTimerTicks
-  VoteListenBaseTicks = VoteDeadlineTicks div 4
-  VoteListenJitterTicks = VoteDeadlineTicks div 16
-  VoteImposterSkipTicks = VoteListenBaseTicks + VoteListenJitterTicks
   VoteRetryTicks = sim.TargetFps div 2
   BodySuspectRange = 64
   ImposterHuntDelayTicks = 500
@@ -293,6 +289,7 @@ type
     interstitial: bool
     interstitialText: string
     lastGameOverText: string
+    lastGameInfoSummary: string
     gameStarted: bool
     roundStartTick: int
     buttonResetDecided: bool
@@ -1135,6 +1132,7 @@ proc resetProtocolMap(bot: var Bot) =
   bot.serverTick = -1
   bot.protocolMapReady = false
   bot.protocolWalkabilityReady = false
+  bot.lastGameInfoSummary = ""
   bot.sim.gameMap = initialProtocolMap()
   bot.sim.tasks.setLen(0)
   bot.sim.vents.setLen(0)
@@ -1161,6 +1159,38 @@ proc logPrefix(bot: Bot): string =
 proc logLine(bot: Bot, text: string) =
   ## Writes one bot log line with the current server tick prefix.
   echo bot.logPrefix() & text
+
+proc gameTicksLogText(ticks: int): string =
+  ## Returns log text for the total game timer.
+  if ticks > 0:
+    $ticks
+  else:
+    "none"
+
+proc gameInfoSummary(settings: GameInfoSettings): string =
+  ## Returns a compact log summary for learned game settings.
+  "game info updated: kill cool down " &
+    $settings.killCooldownTicks &
+    ", tasks " & $settings.tasksPerPlayer &
+    ", vote " & $settings.voteTimerTicks &
+    ", game ticks " & settings.maxTicks.gameTicksLogText()
+
+proc applyGameInfoSettings(
+  bot: var Bot,
+  settings: GameInfoSettings
+) =
+  ## Applies complete game-info settings learned from the interstitial.
+  if not settings.complete:
+    return
+  bot.sim.config.killCooldownTicks = settings.killCooldownTicks
+  bot.sim.config.tasksPerPlayer = settings.tasksPerPlayer
+  bot.sim.config.voteTimerTicks = settings.voteTimerTicks
+  bot.sim.config.maxTicks = settings.maxTicks
+  let summary = settings.gameInfoSummary()
+  if summary == bot.lastGameInfoSummary:
+    return
+  bot.lastGameInfoSummary = summary
+  bot.logLine(summary)
 
 proc applyProtocolMap(
   bot: var Bot,
@@ -1300,6 +1330,7 @@ proc resetRoundState(bot: var Bot) =
   bot.protocolInterstitialReady = false
   bot.protocolInterstitialText = ""
   bot.protocolVotingReady = false
+  bot.lastGameInfoSummary = ""
   bot.visibleTaskIcons.setLen(0)
   bot.visibleCrewmates.setLen(0)
   bot.visibleBodies.setLen(0)
@@ -1823,7 +1854,7 @@ proc protocolInterstitialLabel(label: string): bool =
       "WAS KILLED", "DRAW", "CREW WINS", "IMPS WIN":
     true
   else:
-    label.startsWith("IN ")
+    label.startsWith("IN ") or label.gameInfoLabel()
 
 proc applyProtocolVotingState(
   bot: var Bot,
@@ -1895,6 +1926,7 @@ proc applyProtocolVotingState(
 proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} =
   ## Caches structured task objects from the current sprite frame.
   bot.updateServerTick(client)
+  bot.applyGameInfoSettings(client.gameInfoSettings())
   bot.spriteDetectionsReady = true
   bot.protocolCameraReady = false
   bot.protocolInterstitialReady = false
@@ -2689,10 +2721,28 @@ proc voteSusColorAllowed(bot: Bot, colorIndex: int): bool =
   let slot = bot.voteSlotForColor(colorIndex)
   bot.voteTargetCanBeSus(slot)
 
+proc voteDeadlineTicks(bot: Bot): int =
+  ## Returns the learned vote timer, clamped for delay math.
+  max(1, bot.sim.config.voteTimerTicks)
+
+proc voteListenBaseTicks(bot: Bot): int =
+  ## Returns the base vote-chat listening delay.
+  max(1, bot.voteDeadlineTicks() div 4)
+
+proc voteListenJitterTicks(bot: Bot): int =
+  ## Returns the randomized vote-chat listening jitter.
+  max(1, bot.voteDeadlineTicks() div 16)
+
+proc voteImposterSkipTicks(bot: Bot): int =
+  ## Returns how long an impostor waits before voting skip.
+  bot.voteListenBaseTicks() + bot.voteListenJitterTicks()
+
 proc randomVoteDelay(bot: var Bot): int =
   ## Returns this meeting's randomized vote delay in ticks.
-  VoteListenBaseTicks - VoteListenJitterTicks +
-    bot.rng.rand(VoteListenJitterTicks * 2)
+  let
+    baseTicks = bot.voteListenBaseTicks()
+    jitterTicks = bot.voteListenJitterTicks()
+  baseTicks - jitterTicks + bot.rng.rand(jitterTicks * 2)
 
 proc ownSusVotingTarget(bot: Bot): int =
   ## Returns this bot's own valid chat sus target, or unknown.
@@ -4329,6 +4379,7 @@ proc desiredVotingDecision(
 ): tuple[target: int, reason: string, instant: bool] =
   ## Chooses the vote target and explains the current decision.
   if bot.role == RoleImposter:
+    let imposterSkipTicks = bot.voteImposterSkipTicks()
     let bandwagonTarget = bot.imposterBandwagonTarget()
     if bandwagonTarget != VoteUnknown:
       return (
@@ -4337,13 +4388,13 @@ proc desiredVotingDecision(
           bot.voteTargetName(bandwagonTarget),
         true
       )
-    if listenedTicks >= VoteImposterSkipTicks:
+    if listenedTicks >= imposterSkipTicks:
       let reason =
         if bot.hasAnyParsedVote():
           "imposter found no crewmate vote to join after " &
-            $VoteImposterSkipTicks & " ticks"
+            $imposterSkipTicks & " ticks"
         else:
-          "imposter saw no votes after " & $VoteImposterSkipTicks & " ticks"
+          "imposter saw no votes after " & $imposterSkipTicks & " ticks"
       return (bot.votePlayerCount, reason, false)
     return (
       bot.votePlayerCount,
@@ -4431,7 +4482,7 @@ proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
     return bot.desiredMask
   let waitTicks =
     if bot.role == RoleImposter and not decision.instant:
-      VoteImposterSkipTicks
+      bot.voteImposterSkipTicks()
     else:
       bot.voteDelayTicks
   if not decision.instant and listenedTicks < waitTicks:

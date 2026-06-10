@@ -1081,6 +1081,32 @@ proc addVisibleVoteChatIcons(
     )
     rowY += messageH
 
+proc gameInfoTextLines(sim: SimServer): seq[string] =
+  ## Returns the settings text for the pregame info screen.
+  result.add("GAME INFO")
+  result.add("KILL COOLDOWN " & $sim.config.killCooldownTicks & "T")
+  result.add("TASKS " & $sim.config.tasksPerPlayer & " EACH")
+  result.add("VOTE TIMER " & $sim.config.voteTimerTicks & "T")
+  if sim.config.maxTicks > 0:
+    result.add("GAME TIMER " & $sim.config.maxTicks & "T")
+  else:
+    result.add("GAME TIMER NONE")
+
+proc addGameInfoTextItems(
+  sim: SimServer,
+  items: var seq[ProtocolTextItem]
+) =
+  ## Adds centered text items for the pregame info screen.
+  let
+    lines = sim.gameInfoTextLines()
+    gap = 4
+    lineH = TextLineHeight + gap
+    blockH = lines.len * lineH - gap
+  var y = (ScreenHeight - blockH) div 2
+  for line in lines:
+    items.addTextItem(sim.centeredTextX(line), y, [line])
+    y += lineH
+
 proc interstitialTextItems(
   sim: SimServer,
   playerIndex: int
@@ -1100,6 +1126,8 @@ proc interstitialTextItems(
         line = "IN " & $seconds
       if seconds > 0:
         result.addTextItem(sim.centeredTextX(line), 20, [line])
+  of GameInfo:
+    sim.addGameInfoTextItems(result)
   of Playing:
     if playerIndex < 0 or playerIndex >= sim.players.len:
       let
@@ -1701,12 +1729,12 @@ proc addProtocolInterstitialActorSprites(
       objectIdOffset,
       spriteIdOffset
     )
-  else:
+  of Playing, GameInfo:
     discard
 
 proc hasInterstitialFrame(sim: SimServer): bool =
   ## Returns true when the global viewer should show a neutral game screen.
-  sim.phase in {Lobby, Voting, VoteResult, GameOver}
+  sim.phase in {Lobby, Voting, VoteResult, GameOver, RoleReveal, GameInfo}
 
 proc addSpriteProtocolInterstitialSprites(
   sim: SimServer,
@@ -2202,6 +2230,19 @@ proc toggleSelectedJoinOrder(
   else:
     state.selectedJoinOrder = joinOrder
 
+proc firstImposterIndex(sim: SimServer): int =
+  ## Returns the first impostor player index, or -1.
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].role == Imposter:
+      return i
+  -1
+
+proc globalInterstitialPlayerIndex(sim: SimServer): int =
+  ## Returns the player index used for the global interstitial layer.
+  if sim.phase == RoleReveal:
+    return sim.firstImposterIndex()
+  -1
+
 proc addScoreboard(
   sim: SimServer,
   spriteDefs: var seq[SpriteDefinition],
@@ -2297,6 +2338,13 @@ proc playerLabelLines(
   let voteLine = voteLabelLine(sim, playerIndex)
   if voteLine.len > 0:
     result.add(voteLine)
+
+proc playerLabelSpriteLabel(lines: openArray[string]): string =
+  ## Returns a stable cache label for one floating player name.
+  result = "player label"
+  for line in lines:
+    result.add("|")
+    result.add(line)
 
 proc spriteTrailDotObjectId(joinOrder, dotIndex: int): int =
   ## Returns the stable global protocol object id for a trail dot.
@@ -3380,19 +3428,33 @@ proc buildSpriteProtocolUpdates*(
     )
     if seekTick >= 0:
       nextState.replaySeekTick = seekTick
-  let playerIndex = sim.selectedPlayerIndex(nextState.selectedJoinOrder)
-  if playerIndex < 0:
+  let selectedPlayerIndex =
+    sim.selectedPlayerIndex(nextState.selectedJoinOrder)
+  if selectedPlayerIndex < 0:
     nextState.selectedJoinOrder = -1
   let
-    povActive = playerIndex >= 0
+    povPlayerIndex = selectedPlayerIndex
+    povJoinOrder =
+      if povPlayerIndex >= 0:
+        sim.players[povPlayerIndex].joinOrder
+      else:
+        -1
+  let
+    povActive =
+      povPlayerIndex >= 0 and sim.phase == Playing
+    activePovJoinOrder =
+      if povActive:
+        povJoinOrder
+      else:
+        -1
     povChanged = povActive != state.povActive or
-      nextState.selectedJoinOrder != state.povJoinOrder
+      activePovJoinOrder != state.povJoinOrder
   if povChanged:
     if nextState.povState.isNil:
       nextState.povState = initPlayerViewerState()
     nextState.povState.shadowReady = false
   nextState.povActive = povActive
-  nextState.povJoinOrder = nextState.selectedJoinOrder
+  nextState.povJoinOrder = activePovJoinOrder
   if not nextState.initialized:
     result = sim.buildSpriteProtocolInit(nextState.spriteDefs)
     result.addReplayControlLayers()
@@ -3467,6 +3529,7 @@ proc buildSpriteProtocolUpdates*(
           labelLines,
           PlayerNameColor
         )
+        labelName = playerLabelSpriteLabel(labelLines)
         labelSpriteId = player.spritePlayerNameSpriteId()
         labelObjectId = player.spritePlayerNameObjectId()
         labelX = player.spritePlayerX() +
@@ -3474,11 +3537,13 @@ proc buildSpriteProtocolUpdates*(
         labelY = player.spritePlayerY() - ImposterBarYOffset -
           label.height - 1
       currentIds.add(labelObjectId)
-      result.addSprite(
+      result.addSpriteChanged(
+        nextState.spriteDefs,
         labelSpriteId,
         label.width,
         label.height,
-        label.pixels
+        label.pixels,
+        labelName
       )
       result.addObject(
         labelObjectId,
@@ -3523,6 +3588,7 @@ proc buildSpriteProtocolUpdates*(
       )
 
   if sim.hasInterstitialFrame():
+    let interstitialPlayerIndex = sim.globalInterstitialPlayerIndex()
     currentIds.add(InterstitialObjectId)
     result.addObject(
       InterstitialObjectId,
@@ -3537,14 +3603,14 @@ proc buildSpriteProtocolUpdates*(
       currentIds,
       result,
       InterstitialLayerId,
-      -1
+      interstitialPlayerIndex
     )
     sim.addProtocolInterstitialActorSprites(
       nextState.spriteDefs,
       currentIds,
       result,
       InterstitialLayerId,
-      -1
+      interstitialPlayerIndex
     )
 
   sim.addReplayControls(
@@ -3573,7 +3639,7 @@ proc buildSpriteProtocolUpdates*(
   if povActive:
     var povState: PlayerViewerState
     let povPacket = sim.buildSpriteProtocolPlayerUpdates(
-      playerIndex,
+      povPlayerIndex,
       nextState.povState,
       povState,
       PovLayerId,
