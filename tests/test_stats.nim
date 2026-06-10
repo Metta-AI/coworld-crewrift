@@ -56,6 +56,15 @@ proc initCrewriftForTest(config: GameConfig): SimServer =
   finally:
     setCurrentDir(previousDir)
 
+proc advanceMeetingCall(sim: var SimServer) =
+  ## Advances the meeting-call interstitial into voting.
+  var
+    inputs = newSeq[InputState](sim.players.len)
+    prevInputs = inputs
+  for _ in 0 ..< MeetingCallTicks:
+    sim.step(inputs, prevInputs)
+    prevInputs = inputs
+
 proc accountFor(sim: SimServer, address: string): RewardAccount =
   ## Returns the reward account for one player address.
   for account in sim.rewardAccounts:
@@ -430,6 +439,7 @@ suite "stats":
     require impIndex >= 0
 
     sim.startVote()
+    sim.advanceMeetingCall()
     check sim.phase == Voting
     sim.voteState.votes = newSeq[int](sim.players.len)
     for i in 0 ..< sim.players.len:
@@ -479,6 +489,7 @@ suite "stats":
     require imposters.len == 2
 
     sim.startVote()
+    sim.advanceMeetingCall()
     sim.voteState.votes = newSeq[int](sim.players.len)
     for i in 0 ..< sim.players.len:
       sim.voteState.votes[i] = imposters[0]
@@ -489,6 +500,7 @@ suite "stats":
     check not sim.players[imposters[0]].alive
 
     sim.startVote()
+    sim.advanceMeetingCall()
     sim.voteState.votes = newSeq[int](sim.players.len)
     for i in 0 ..< sim.players.len:
       if sim.players[i].alive:
@@ -539,6 +551,7 @@ suite "stats":
     require impIndex >= 0
 
     sim.startVote()
+    sim.advanceMeetingCall()
     sim.voteState.votes = newSeq[int](sim.players.len)
     for i in 0 ..< sim.players.len:
       sim.voteState.votes[i] = impIndex
@@ -641,6 +654,7 @@ suite "stats":
     sim.players[skipIndex].role = Crewmate
     sim.players[timeoutIndex].role = Imposter
     sim.startVote()
+    sim.advanceMeetingCall()
     sim.voteState.votes[playerVoteIndex] = timeoutIndex
     sim.voteState.votes[skipIndex] = -2
     sim.voteState.votes[timeoutIndex] = -1
@@ -692,6 +706,7 @@ suite "stats":
     sim.players[playerIndex].assignedTasks = @[0]
     sim.tasks[0].completed[playerIndex] = false
     sim.startVote()
+    sim.advanceMeetingCall()
     sim.players[playerIndex].lastMoveTick =
       sim.tickCount - StuckPenaltyTicks
 

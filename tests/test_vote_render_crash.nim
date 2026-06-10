@@ -19,6 +19,11 @@ for i in 0 ..< 7:
 game.startGame()
 doAssert game.phase == Playing
 game.startVote(VoteCalledButton, 0)
+doAssert game.phase == MeetingCall
+
+var startInputs = newSeq[InputState](game.players.len)
+for _ in 0 ..< MeetingCallTicks:
+  game.step(startInputs, startInputs)
 doAssert game.phase == Voting
 
 var

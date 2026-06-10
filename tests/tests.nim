@@ -8,6 +8,7 @@ import
   test_imposter_cooldown_bar,
   test_imposter_ratio,
   test_map_markers,
+  test_meeting_call_interstitial,
   test_max_ticks,
   test_movement_slide,
   test_replay,

@@ -28,6 +28,14 @@ proc stepVote(
   sim.step(inputs, prevInputs)
   prevInputs = inputs
 
+proc advanceMeetingCall(sim: var SimServer) =
+  ## Advances the meeting-call interstitial into voting.
+  var
+    inputs = newSeq[InputState](sim.players.len)
+    prevInputs = inputs
+  for _ in 0 ..< MeetingCallTicks:
+    sim.stepVote(inputs, prevInputs)
+
 suite "vote cursor input":
   test "pressed direction can reach and commit a target slot":
     var config = defaultGameConfig()
@@ -40,6 +48,7 @@ suite "vote cursor input":
     var sim = initCrewriftForTest(config)
     sim.addPlayers(4)
     sim.startVote()
+    sim.advanceMeetingCall()
 
     var
       inputs = newSeq[InputState](sim.players.len)
@@ -68,6 +77,7 @@ suite "vote cursor input":
     var sim = initCrewriftForTest(config)
     sim.addPlayers(4)
     sim.startVote()
+    sim.advanceMeetingCall()
 
     var
       inputs = newSeq[InputState](sim.players.len)

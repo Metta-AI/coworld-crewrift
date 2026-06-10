@@ -98,6 +98,7 @@ const
   SpritePlayerVoteChatBgSpriteId = 5014
   SpritePlayerKillProgressSpriteId = 5015
   SpritePlayerTickSpriteId = 5016
+  SpritePlayerMeetingButtonSpriteId = 5017
   SpritePlayerVoteMarkerSpriteBase = 5020
   SpritePlayerVoteDotSpriteBase = 5040
   SpritePlayerTickObjectId = 5016
@@ -124,6 +125,13 @@ const
   ProtocolRoleIconObjectBase = 9500
   ProtocolResultIconObjectBase = 9600
   ProtocolGameOverIconObjectBase = 9700
+  ProtocolMeetingIconObjectBase = 9800
+  MeetingCallTextY = 36
+  MeetingCallIconY = 74
+  MeetingCallLeftIconX = 30
+  MeetingCallRightIconX = 80
+  MeetingCallButtonX = MeetingCallLeftIconX + 1
+  MeetingCallButtonY = MeetingCallIconY + 1
   PlayerColorNames = [
     "red",
     "orange",
@@ -971,6 +979,45 @@ proc centeredTextX(sim: SimServer, text: string): int =
   ## Returns the centered x position for interstitial text.
   (ScreenWidth - sim.asciiSprites.textWidth(text)) div 2
 
+proc capitalizedColorName(color: uint8): string =
+  ## Returns one player color with an initial capital letter.
+  result = playerColorText(color)
+  if result.len > 0 and result[0] >= 'a' and result[0] <= 'z':
+    result[0] = char(ord(result[0]) - ord('a') + ord('A'))
+
+proc meetingCallName(sim: SimServer, playerIndex: int): string =
+  ## Returns the display color for one meeting-call player.
+  if playerIndex >= 0 and playerIndex < sim.players.len:
+    return capitalizedColorName(sim.players[playerIndex].color)
+  "Someone"
+
+proc meetingCallBodyName(sim: SimServer): string =
+  ## Returns the display color for the reported body.
+  let body = sim.meetingCallBodyIndex()
+  if body >= 0:
+    return capitalizedColorName(sim.players[body].color)
+  if sim.voteState.bodyColor != 255'u8:
+    return capitalizedColorName(sim.voteState.bodyColor)
+  "Someone"
+
+proc meetingCallLines(sim: SimServer): seq[string] =
+  ## Returns the text lines for the meeting-call interstitial.
+  let caller = sim.meetingCallName(sim.meetingCallCallerIndex())
+  case sim.voteState.callKind
+  of VoteCalledBody:
+    let body = sim.meetingCallBodyName()
+    result.add(caller & " reported")
+    if body == "Someone":
+      result.add("a body")
+    else:
+      result.add(body & "'s body")
+  of VoteCalledButton:
+    result.add(caller & " pressed")
+    result.add("the button")
+  of VoteCalledUnknown:
+    result.add(caller & " called")
+    result.add("a meeting")
+
 proc addTextItem(
   items: var seq[ProtocolTextItem],
   x, y: int,
@@ -1150,6 +1197,14 @@ proc interstitialTextItems(
       14,
       [title]
     )
+  of MeetingCall:
+    let lines = sim.meetingCallLines()
+    for i, line in lines:
+      result.addTextItem(
+        sim.centeredTextX(line),
+        MeetingCallTextY + i * TextLineHeight,
+        [line]
+      )
   of Voting:
     let n = sim.players.len
     if n > 0:
@@ -1621,6 +1676,86 @@ proc addProtocolVoteResultActorSprites(
     spriteIdOffset
   )
 
+proc addProtocolMeetingCallActorSprites(
+  sim: SimServer,
+  currentIds: var seq[int],
+  packet: var seq[uint8],
+  layer: int,
+  objectIdOffset = 0,
+  spriteIdOffset = 0
+) {.measure.} =
+  ## Adds caller, reported body, and button sprites for meeting calls.
+  if sim.phase != MeetingCall:
+    return
+  let caller = sim.meetingCallCallerIndex()
+  if caller >= 0:
+    let
+      iconX =
+        if sim.voteState.callKind == VoteCalledButton:
+          MeetingCallRightIconX
+        else:
+          MeetingCallLeftIconX
+      objectId = ProtocolMeetingIconObjectBase
+    currentIds.addProtocolObject(
+      packet,
+      objectId,
+      iconX - 1,
+      MeetingCallIconY - 1,
+      ProtocolVoteIconZ,
+      layer,
+      sim.players[caller].playerIconSpriteId(),
+      objectIdOffset,
+      spriteIdOffset
+    )
+  case sim.voteState.callKind
+  of VoteCalledBody:
+    let body = sim.meetingCallBodyIndex()
+    if body >= 0:
+      let
+        colorIndex = playerColorIndex(sim.players[body].color)
+        spriteId = bodySpriteId(colorIndex, sim.players[body].joinOrder)
+      currentIds.addProtocolObject(
+        packet,
+        ProtocolMeetingIconObjectBase + 1,
+        MeetingCallRightIconX - 1,
+        MeetingCallIconY - 1,
+        ProtocolVoteIconZ,
+        layer,
+        spriteId,
+        objectIdOffset,
+        spriteIdOffset
+      )
+    elif sim.voteState.bodyColor != 255'u8:
+      let spriteId = bodySpriteId(
+        playerColorIndex(sim.voteState.bodyColor),
+        sim.voteState.bodySlotId
+      )
+      currentIds.addProtocolObject(
+        packet,
+        ProtocolMeetingIconObjectBase + 1,
+        MeetingCallRightIconX - 1,
+        MeetingCallIconY - 1,
+        ProtocolVoteIconZ,
+        layer,
+        spriteId,
+        objectIdOffset,
+        spriteIdOffset
+      )
+  of VoteCalledButton:
+    currentIds.addProtocolObject(
+      packet,
+      ProtocolMeetingIconObjectBase + 1,
+      MeetingCallButtonX,
+      MeetingCallButtonY,
+      ProtocolVoteIconZ,
+      layer,
+      SpritePlayerMeetingButtonSpriteId,
+      objectIdOffset,
+      spriteIdOffset
+    )
+  of VoteCalledUnknown:
+    discard
+
 proc addProtocolGameOverActorSprites(
   sim: SimServer,
   currentIds: var seq[int],
@@ -1689,6 +1824,14 @@ proc addProtocolInterstitialActorSprites(
       objectIdOffset,
       spriteIdOffset
     )
+  of MeetingCall:
+    sim.addProtocolMeetingCallActorSprites(
+      currentIds,
+      packet,
+      layer,
+      objectIdOffset,
+      spriteIdOffset
+    )
   of Voting:
     sim.addProtocolVoteUiSprites(
       spriteDefs,
@@ -1734,7 +1877,9 @@ proc addProtocolInterstitialActorSprites(
 
 proc hasInterstitialFrame(sim: SimServer): bool =
   ## Returns true when the global viewer should show a neutral game screen.
-  sim.phase in {Lobby, Voting, VoteResult, GameOver, RoleReveal, GameInfo}
+  sim.phase in {
+    Lobby, MeetingCall, Voting, VoteResult, GameOver, RoleReveal, GameInfo
+  }
 
 proc addSpriteProtocolInterstitialSprites(
   sim: SimServer,
@@ -1828,6 +1973,14 @@ proc buildSpriteProtocolInit(
     sim.taskIconSprite.height,
     taskPixels,
     "task bubble"
+  )
+  result.addSpriteChanged(
+    spriteDefs,
+    SpritePlayerMeetingButtonSpriteId,
+    sim.meetingButtonSprite.width,
+    sim.meetingButtonSprite.height,
+    buildSpriteProtocolRawSprite(sim.meetingButtonSprite),
+    "meeting button"
   )
   for i in 0 ..< PlayerColors.len:
     result.addSpriteChanged(
@@ -2049,6 +2202,14 @@ proc buildSpriteProtocolPlayerInit(
     sim.ghostIconSprite.height,
     buildSpriteProtocolRawSprite(sim.ghostIconSprite),
     "ghost icon"
+  )
+  result.addSpriteChanged(
+    spriteDefs,
+    SpritePlayerMeetingButtonSpriteId.protocolSpriteId(spriteIdOffset),
+    sim.meetingButtonSprite.width,
+    sim.meetingButtonSprite.height,
+    buildSpriteProtocolRawSprite(sim.meetingButtonSprite),
+    "meeting button"
   )
   result.addSpriteChanged(
     spriteDefs,

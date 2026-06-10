@@ -14,6 +14,14 @@ proc initCrewriftForTest(config: GameConfig): SimServer =
   finally:
     setCurrentDir(previousDir)
 
+proc advanceMeetingCall(sim: var SimServer) =
+  ## Advances the meeting call interstitial into voting.
+  doAssert sim.phase == MeetingCall
+  for _ in 0 ..< MeetingCallTicks:
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+  doAssert sim.phase == Voting
+
 proc hasShadowSprite(messages: openArray[SpritePacketMessage]): bool =
   ## Returns true when one packet updates the player shadow sprite.
   for message in messages:
@@ -264,6 +272,7 @@ proc testPlayerLabelsUpdateOnlyWhenTextChanges() =
 
   state = nextState
   game.startVote()
+  game.advanceMeetingCall()
   let unsureMessages = game.buildGlobalMessages(state, nextState)
   doAssert unsureMessages.hasSpriteLabel("player label|voter|-> ?")
 

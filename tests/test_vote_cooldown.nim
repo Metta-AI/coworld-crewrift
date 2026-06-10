@@ -1,5 +1,6 @@
 import
   std/[os, unittest],
+  bitworld/spriteprotocol,
   crewrift/sim
 
 const GameDir = currentSourcePath.parentDir.parentDir
@@ -18,6 +19,15 @@ proc addPlayers(sim: var SimServer, count: int) =
   for i in 0 ..< count:
     discard sim.addPlayer("player" & $(i + 1))
 
+proc advanceMeetingCall(sim: var SimServer) =
+  ## Advances the meeting-call interstitial into voting.
+  var
+    inputs = newSeq[InputState](sim.players.len)
+    prevInputs = inputs
+  for _ in 0 ..< MeetingCallTicks:
+    sim.step(inputs, prevInputs)
+    prevInputs = inputs
+
 suite "vote cooldown":
   test "vote result resets imposter cooldown":
     var config = defaultGameConfig()
@@ -34,6 +44,7 @@ suite "vote cooldown":
 
     sim.players[imposter].killCooldown = 17
     sim.startVote()
+    sim.advanceMeetingCall()
     sim.voteState.ejectedPlayer = -1
     sim.applyVoteResult()
 

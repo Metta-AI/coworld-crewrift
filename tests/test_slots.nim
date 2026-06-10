@@ -46,6 +46,15 @@ proc initCrewriftForTest(config: GameConfig): SimServer =
   finally:
     setCurrentDir(previousDir)
 
+proc advanceMeetingCall(sim: var SimServer) =
+  ## Advances the meeting-call interstitial into voting.
+  var
+    inputs = newSeq[InputState](sim.players.len)
+    prevInputs = inputs
+  for _ in 0 ..< MeetingCallTicks:
+    sim.step(inputs, prevInputs)
+    prevInputs = inputs
+
 proc roleFor(sim: SimServer, address: string): PlayerRole =
   ## Returns the role for one test player address.
   for player in sim.players:
@@ -305,28 +314,42 @@ suite "player slots":
     var liveSim = initCrewriftForTest(defaultGameConfig())
     discard liveSim.addPlayer("player1")
     liveSim.startVote()
+    liveSim.advanceMeetingCall()
     liveSim.addVotingChat(0, "hello")
     liveSim.step(@[InputState()], @[InputState()])
-    let expectedHash = liveSim.gameHash()
+    let
+      expectedTick = liveSim.tickCount
+      expectedChatTick = expectedTick - 1
+      expectedHash = liveSim.gameHash()
 
     var replaySim = initCrewriftForTest(defaultGameConfig())
     discard replaySim.addPlayer("player1")
     replaySim.startVote()
+    replaySim.advanceMeetingCall()
     var replay = initReplayPlayer(ReplayData(
       gameName: GameName,
       gameVersion: GameVersion,
       configJson: "{}",
       chats: @[
-        ReplayChat(time: tickTime(0), player: 0'u8, message: "hello")
+        ReplayChat(
+          time: tickTime(expectedChatTick),
+          player: 0'u8,
+          message: "hello"
+        )
       ],
-      hashes: @[ReplayHash(tick: 1'u32, hash: expectedHash)]
+      hashes: @[
+        ReplayHash(
+          tick: uint32(expectedTick),
+          hash: expectedHash
+        )
+      ]
     ))
 
     replay.stepReplay(replaySim)
 
-    check replaySim.tickCount == 1
+    check replaySim.tickCount == expectedTick
     check replaySim.chatMessages.len == 1
-    check replaySim.players[0].lastChatTick == 0
+    check replaySim.players[0].lastChatTick == expectedChatTick
     check not replay.hashValidationFailed
     check replay.hashIndex == 1
 

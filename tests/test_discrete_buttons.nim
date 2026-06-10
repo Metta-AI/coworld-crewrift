@@ -23,6 +23,14 @@ proc stepInputs(
   sim.step(inputs, prevInputs)
   prevInputs = inputs
 
+proc advanceMeetingCall(sim: var SimServer) =
+  ## Advances the meeting-call interstitial into voting.
+  var
+    inputs = newSeq[InputState](sim.players.len)
+    prevInputs = inputs
+  for _ in 0 ..< MeetingCallTicks:
+    sim.stepInputs(inputs, prevInputs)
+
 proc addPlayers(sim: var SimServer, count: int) =
   ## Adds named test players to the simulation.
   for i in 0 ..< count:
@@ -175,10 +183,13 @@ suite "discrete button input":
     sim.stepInputs(inputs, prevInputs)
     inputs[0].attack = true
     sim.stepInputs(inputs, prevInputs)
-    check sim.phase == Voting
+    check sim.phase == MeetingCall
     check sim.voteState.callKind == VoteCalledButton
     check sim.voteState.callerIndex == 0
+    check sim.voteState.callTimer == MeetingCallTicks
     check sim.players[0].buttonCallsUsed == 1
+    sim.advanceMeetingCall()
+    check sim.phase == Voting
 
   test "body report requires a fresh attack press":
     var sim = initActionSim(3)
@@ -207,13 +218,17 @@ suite "discrete button input":
     sim.stepInputs(inputs, prevInputs)
     inputs[0].attack = true
     sim.stepInputs(inputs, prevInputs)
-    check sim.phase == Voting
+    check sim.phase == MeetingCall
     check sim.voteState.callKind == VoteCalledBody
     check sim.voteState.callerIndex == 0
+    check sim.voteState.callTimer == MeetingCallTicks
+    sim.advanceMeetingCall()
+    check sim.phase == Voting
 
   test "vote cast requires a fresh attack press":
     var sim = initActionSim(3)
     sim.startVote()
+    sim.advanceMeetingCall()
 
     var
       inputs = newSeq[InputState](sim.players.len)

@@ -64,6 +64,7 @@ const
   AutoImposterCount* = true
   StartWaitTicks* = 5 * TargetFps
   VoteTimerTicks* = TargetFps * 10
+  MeetingCallTicks* = TargetFps * 3
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
   MaxTicks* = 10_000  ## 0 = no limit.
@@ -195,6 +196,7 @@ type
     GameOver
     RoleReveal
     GameInfo
+    MeetingCall
 
   VoteCallKind* = enum
     VoteCalledUnknown
@@ -206,6 +208,7 @@ type
     callerIndex*: int
     bodyColor*: uint8
     bodySlotId*: int
+    callTimer*: int
     votes*: seq[int]
     cursor*: seq[int]
     resultTimer*: int
@@ -372,6 +375,7 @@ type
     bodySprites*: seq[CrewSprite]
     boneSprite*: Sprite
     killButtonSprite*: Sprite
+    meetingButtonSprite*: Sprite
     taskIconSprite*: Sprite
     ghostSprite*: Sprite
     ghostIconSprite*: Sprite
@@ -490,6 +494,10 @@ proc spriteSheetPath(): string =
 proc loadSpriteSheet*(): Image =
   ## Loads the sprite sheet from aseprite.
   readAsepriteImage(spriteSheetPath())
+
+proc loadMeetingButtonSprite*(sheet: Image): Sprite =
+  ## Extracts the emergency meeting button icon from the sprite sheet.
+  spriteFromImage(sheet.subImage(0, 0, SpriteSize, SpriteSize))
 
 proc crewSheetPath(): string =
   ## Returns the crew sprite sheet path.
@@ -1569,6 +1577,25 @@ proc playerText(sim: SimServer, playerIndex: int): string =
     return "unknown"
   playerColorText(sim.players[playerIndex].color)
 
+proc meetingCallCallerIndex*(sim: SimServer): int =
+  ## Returns the current meeting caller index if that player still exists.
+  let index = sim.voteState.callerIndex
+  if index >= 0 and index < sim.players.len:
+    return index
+  -1
+
+proc meetingCallBodyIndex*(sim: SimServer): int =
+  ## Returns the player index for the reported body if it still exists.
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].joinOrder == sim.voteState.bodySlotId:
+      return i
+  if sim.voteState.bodyColor == 255'u8:
+    return -1
+  for i in 0 ..< sim.players.len:
+    if sim.players[i].color == sim.voteState.bodyColor:
+      return i
+  -1
+
 proc taskIdsText(tasks: openArray[int]): string =
   ## Returns a compact comma-separated task id list.
   for i, task in tasks:
@@ -2130,6 +2157,11 @@ proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
   for task in sim.tasks.mitems:
     if playerIndex < task.completed.len:
       task.completed.delete(playerIndex)
+  if sim.phase in {MeetingCall, Voting, VoteResult}:
+    if sim.voteState.callerIndex == playerIndex:
+      sim.voteState.callerIndex = -1
+    elif sim.voteState.callerIndex > playerIndex:
+      dec sim.voteState.callerIndex
   if sim.phase in {Voting, VoteResult}:
     if playerIndex < sim.voteState.votes.len:
       sim.voteState.votes.delete(playerIndex)
@@ -2339,7 +2371,8 @@ proc recordDisconnectTimeout*(sim: var SimServer, playerIndex: int) =
 proc canGraceDisconnect*(sim: SimServer, playerIndex: int): bool =
   ## Returns true when one socket close should start reconnect grace.
   playerIndex >= 0 and playerIndex < sim.players.len and
-    sim.phase in {GameInfo, RoleReveal, Playing, Voting, VoteResult} and
+    sim.phase in {GameInfo, RoleReveal, Playing, MeetingCall, Voting,
+      VoteResult} and
     sim.config.disconnectTimeoutTicks > 0
 
 proc markPlayerDisconnected*(sim: var SimServer, playerIndex: int) =
@@ -2844,32 +2877,10 @@ proc tryVent*(sim: var SimServer, playerIndex: int) =
         sim.players[playerIndex].ventCooldown = 30
       return
 
-proc startVote*(
-  sim: var SimServer,
-  kind = VoteCalledUnknown,
-  callerIndex = -1,
-  bodyColor = 255'u8,
-  bodySlotId = -1
-) =
-  ## Starts a voting meeting and logs its cause.
-  sim.voteState.callKind = kind
-  sim.voteState.callerIndex = callerIndex
-  sim.voteState.bodyColor = bodyColor
-  sim.voteState.bodySlotId = bodySlotId
-  case kind
-  of VoteCalledBody:
-    sim.logGameEvent(
-      "vote called: " & sim.playerText(callerIndex) &
-        " called body (" & playerColorText(bodyColor) & ")"
-    )
-  of VoteCalledButton:
-    sim.logGameEvent(
-      "vote called: " & sim.playerText(callerIndex) &
-        " called emergency button"
-    )
-  of VoteCalledUnknown:
-    sim.logGameEvent("vote called")
+proc startVoting(sim: var SimServer) =
+  ## Opens the voting phase and initializes per-player vote state.
   sim.phase = Voting
+  sim.voteState.callTimer = 0
   sim.chatMessages.setLen(0)
   let n = sim.players.len
   sim.voteState.votes = newSeq[int](n)
@@ -2884,6 +2895,40 @@ proc startVote*(
         firstAlive = j
         break
     sim.voteState.cursor[i] = firstAlive
+
+proc startVote*(
+  sim: var SimServer,
+  kind = VoteCalledUnknown,
+  callerIndex = -1,
+  bodyColor = 255'u8,
+  bodySlotId = -1
+) =
+  ## Starts a meeting-call interstitial and logs its cause.
+  sim.voteState.callKind = kind
+  sim.voteState.callerIndex = callerIndex
+  sim.voteState.bodyColor = bodyColor
+  sim.voteState.bodySlotId = bodySlotId
+  sim.voteState.callTimer = MeetingCallTicks
+  sim.voteState.resultTimer = 0
+  sim.voteState.voteTimer = 0
+  sim.voteState.ejectedPlayer = -1
+  sim.voteState.votes.setLen(0)
+  sim.voteState.cursor.setLen(0)
+  sim.chatMessages.setLen(0)
+  case kind
+  of VoteCalledBody:
+    sim.logGameEvent(
+      "vote called: " & sim.playerText(callerIndex) &
+        " called body (" & playerColorText(bodyColor) & ")"
+    )
+  of VoteCalledButton:
+    sim.logGameEvent(
+      "vote called: " & sim.playerText(callerIndex) &
+        " called emergency button"
+    )
+  of VoteCalledUnknown:
+    sim.logGameEvent("vote called")
+  sim.phase = MeetingCall
 
 proc addVotingChat*(sim: var SimServer, playerIndex: int, message: string) =
   ## Adds one visible chat message while voting.
@@ -3140,10 +3185,10 @@ proc applyInput*(
     let freshA = input.attack and not prevInput.attack
     if freshA:
       sim.tryReport(playerIndex, bodiesBeforeTick)
-      if sim.phase == Voting:
+      if sim.phase != Playing:
         return
       sim.tryCallButton(playerIndex)
-      if sim.phase == Voting:
+      if sim.phase != Playing:
         return
     if player.role == Imposter:
       if freshA:
@@ -3450,6 +3495,7 @@ proc applyVoteResult*(sim: var SimServer) =
     sim.players[ej].alive = false
   sim.bodies.setLen(0)
   sim.chatMessages.setLen(0)
+  sim.voteState.callTimer = 0
   for i in 0 ..< sim.players.len:
     sim.resetPlayerToHome(i)
     if sim.players[i].alive and sim.players[i].role == Imposter:
@@ -3567,7 +3613,8 @@ proc gameTicksElapsed*(sim: SimServer): int =
   max(0, sim.tickCount - sim.gameStartTick)
 
 proc maxTicksReached(sim: SimServer): bool =
-  sim.config.maxTicks > 0 and sim.phase in {Playing, Voting, VoteResult} and
+  sim.config.maxTicks > 0 and
+    sim.phase in {Playing, MeetingCall, Voting, VoteResult} and
     sim.gameTicksElapsed() >= sim.config.maxTicks
 
 proc checkMaxTicks(sim: var SimServer) =
@@ -3582,7 +3629,8 @@ proc shouldAbortFiniteMatch*(sim: SimServer): bool =
     if sim.config.closedRoster and sim.config.connectTimeoutTicks > 0:
       return false
     return sim.startWaitTimer > 0 and sim.players.len < sim.config.minPlayers
-  sim.phase in {GameInfo, RoleReveal, Playing, Voting, VoteResult} and
+  sim.phase in {GameInfo, RoleReveal, Playing, MeetingCall, Voting,
+    VoteResult} and
     sim.players.len == 0
 
 proc checkWinCondition*(sim: var SimServer) {.measure.} =
@@ -3853,6 +3901,30 @@ proc writeSpritePlayerObservationUiPlayers(
         flags,
         output
       )
+  of MeetingCall:
+    let caller = sim.meetingCallCallerIndex()
+    if caller >= 0:
+      sim.writeSpritePlayerObservationPlayerSlotAt(
+        playerIndex,
+        caller,
+        0,
+        ScreenWidth div 2 - VoteActorSize - 8,
+        74,
+        RenderPlayerPresent or RenderPlayerAlive,
+        output
+      )
+    if sim.voteState.callKind == VoteCalledBody:
+      let body = sim.meetingCallBodyIndex()
+      if body >= 0:
+        sim.writeSpritePlayerObservationPlayerSlotAt(
+          playerIndex,
+          body,
+          1,
+          ScreenWidth div 2 + 8,
+          74,
+          RenderPlayerPresent,
+          output
+        )
   of GameOver:
     let
       rowH = 14
@@ -4046,6 +4118,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.killButtonSprite = spriteFromImage(
     sheet.subImage(SpriteSize * 3, 0, SpriteSize, SpriteSize)
   )
+  result.meetingButtonSprite = loadMeetingButtonSprite(sheet)
   result.taskIconSprite = spriteFromImage(
     sheet.subImage(SpriteSize * 4, 0, SpriteSize, SpriteSize)
   )
@@ -4104,6 +4177,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.voteState.callerIndex = -1
   result.voteState.bodyColor = 255'u8
   result.voteState.bodySlotId = -1
+  result.voteState.callTimer = 0
   result.lastLobbyPlayersLogged = -1
   result.lastLobbyNeededLogged = -1
   result.lastLobbySecondsLogged = -1
@@ -4126,6 +4200,7 @@ proc resetToLobby*(sim: var SimServer) =
   sim.voteState.callerIndex = -1
   sim.voteState.bodyColor = 255'u8
   sim.voteState.bodySlotId = -1
+  sim.voteState.callTimer = 0
   sim.lastLobbyPlayersLogged = -1
   sim.lastLobbyNeededLogged = -1
   sim.lastLobbySecondsLogged = -1
@@ -4162,7 +4237,8 @@ proc checkConnectTimeout(sim: var SimServer): bool =
 
 proc checkDisconnectTimeout(sim: var SimServer): bool =
   ## Ends the match as a draw if disconnected players miss reconnect grace.
-  if sim.phase notin {GameInfo, RoleReveal, Playing, Voting, VoteResult} or
+  if sim.phase notin {GameInfo, RoleReveal, Playing, MeetingCall, Voting,
+      VoteResult} or
       sim.config.disconnectTimeoutTicks <= 0:
     return false
   var playerIndices: seq[int]
@@ -4230,6 +4306,13 @@ proc step*(
     dec sim.gameOverTimer
     if sim.gameOverTimer <= 0:
       sim.resetToLobby()
+    return
+
+  if sim.phase == MeetingCall:
+    dec sim.voteState.callTimer
+    if sim.voteState.callTimer <= 0:
+      sim.startVoting()
+    sim.checkMaxTicks()
     return
 
   if sim.phase == VoteResult:
@@ -4304,6 +4387,8 @@ proc step*(
       oldX = sim.players[playerIndex].x
       oldY = sim.players[playerIndex].y
     sim.applyInput(playerIndex, input, prev, bodiesBeforeTick)
+    if sim.phase != Playing:
+      return
     sim.trackMovementAndStuckPenalty(playerIndex, oldX, oldY)
 
   sim.checkWinCondition()

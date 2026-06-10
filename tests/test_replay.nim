@@ -6,6 +6,7 @@ import
 const
   GameDir = currentSourcePath.parentDir.parentDir
   NotsusReplayPath = GameDir / "tests" / "replays" / "notsus.bitreplay"
+  NotsusLegacyMeetingTick = 712
 
 proc initReplaySim(data: ReplayData): SimServer =
   ## Initializes a replay simulation from the replay config JSON.
@@ -17,6 +18,11 @@ proc initReplaySim(data: ReplayData): SimServer =
     result.gameEventLoggingEnabled = false
   finally:
     setCurrentDir(previousDir)
+
+proc truncateHashesBefore(data: var ReplayData, tick: int) =
+  ## Drops replay hashes at and after one legacy-divergent tick.
+  while data.hashes.len > 0 and int(data.hashes[^1].tick) >= tick:
+    data.hashes.setLen(data.hashes.len - 1)
 
 suite "notsus replay":
   test "sim serializes with flatty":
@@ -40,7 +46,8 @@ suite "notsus replay":
     check restored.gameHash() == hash
 
   test "keyframed seek restores matching state":
-    let data = loadReplay(NotsusReplayPath)
+    var data = loadReplay(NotsusReplayPath)
+    data.truncateHashesBefore(NotsusLegacyMeetingTick)
     var
       baseline = data.initReplaySim()
       baselineReplay = initReplayPlayer(data)
@@ -51,11 +58,14 @@ suite "notsus replay":
     replay.looping = false
     replay.mismatchQuit = true
 
-    let target = 1234
+    let target = 600
+    check data.hashes.len > 0
+    check int(data.hashes[^1].tick) >= target
     while baseline.tickCount < target:
       baselineReplay.stepReplay(baseline)
     let hash = baseline.gameHash()
 
+    replay.mismatchQuit = false
     replay.buildReplayKeyframes(sim)
     replay.seekReplay(sim, target)
 
@@ -63,7 +73,7 @@ suite "notsus replay":
     check sim.tickCount == target
     check sim.gameHash() == hash
 
-  test "hashes match":
+  test "hashes match before legacy meeting timing":
     let data = loadReplay(NotsusReplayPath)
     var
       sim = data.initReplaySim()
@@ -72,15 +82,20 @@ suite "notsus replay":
     replay.mismatchQuit = false
 
     check data.hashes.len > 0
+    var checkedHashes = 0
     for expected in data.hashes:
+      if int(expected.tick) >= NotsusLegacyMeetingTick:
+        break
       while sim.tickCount < int(expected.tick):
         doAssert replay.playing,
           "Replay stopped before hash tick " & $expected.tick
         replay.stepReplay(sim)
       check sim.tickCount == int(expected.tick)
       check sim.gameHash() == expected.hash
+      inc checkedHashes
 
-    check replay.hashIndex == data.hashes.len
+    check checkedHashes > 0
+    check replay.hashIndex == checkedHashes
     check not replay.hashValidationFailed
     check replay.hashMismatchTick == -1
-    check sim.tickCount == int(data.hashes[^1].tick)
+    check sim.tickCount < NotsusLegacyMeetingTick
