@@ -19,7 +19,8 @@ import std/[algorithm, exitprocs, heapqueue, monotimes, options, os,
 
 const
   InitialConnectWindowMs = 60_000
-  ReconnectWindowMs = 8_000
+  ReconnectWindowMs = 60_000
+  ReconnectAttemptMs = 1_000
   PlayerScreenX = ScreenWidth div 2
   PlayerScreenY = ScreenHeight div 2
   PlayerWorldOffX = SpriteDrawOffX + PlayerScreenX - SpriteSize div 2
@@ -5854,6 +5855,8 @@ when not defined(italkalotLibrary):
       disconnectStart = getMonoTime()
     while viewer.viewerOpen():
       try:
+        if everConnected or notifiedFailure:
+          echo "trying to reconnect to ", connectUrl
         let ws = newWebSocket(connectUrl)
         echo "connected to ", connectUrl, " protocol=sprite"
         notifiedFailure = false
@@ -5944,17 +5947,18 @@ when not defined(italkalotLibrary):
           if everConnected: ReconnectWindowMs
           else: InitialConnectWindowMs
         if (getMonoTime() - disconnectStart).inMilliseconds >= windowMs:
-          echo "reconnect window exhausted after ",
+          echo "can't connect after ",
             windowMs div 1000, "s; exiting"
           break
         if gui:
           let reconnectStart = getMonoTime()
           while viewer.viewerOpen() and
-              (getMonoTime() - reconnectStart).inMilliseconds < 250:
+              (getMonoTime() - reconnectStart).inMilliseconds <
+                ReconnectAttemptMs:
             viewer.pumpViewer(bot, connected, connectUrl)
             sleep(10)
         else:
-          sleep(250)
+          sleep(ReconnectAttemptMs)
 
 when isMainModule and not defined(italkalotLibrary):
   type
