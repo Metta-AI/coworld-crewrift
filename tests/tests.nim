@@ -15,6 +15,7 @@ import
   test_slots,
   test_start_wait,
   test_tasks,
+  test_tick_marker,
   test_stats,
   test_vote_cooldown,
   test_vote_cursor_input,

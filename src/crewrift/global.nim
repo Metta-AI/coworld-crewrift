@@ -97,8 +97,10 @@ const
   SpritePlayerVoteProgressSpriteId = 5013
   SpritePlayerVoteChatBgSpriteId = 5014
   SpritePlayerKillProgressSpriteId = 5015
+  SpritePlayerTickSpriteId = 5016
   SpritePlayerVoteMarkerSpriteBase = 5020
   SpritePlayerVoteDotSpriteBase = 5040
+  SpritePlayerTickObjectId = 5016
   SpritePlayerVoteCursorObjectId = 10000
   SpritePlayerVoteSelfMarkerObjectId = 10001
   SpritePlayerVoteProgressObjectId = 10002
@@ -589,6 +591,38 @@ proc buildSolidSprite(
 proc buildTransparentBlackSprite(width, height: int): seq[uint8] {.measure.} =
   ## Builds a fully transparent black protocol sprite.
   newRgbaPixels(width, height)
+
+proc addSpritePlayerTickMarker(
+  sim: SimServer,
+  defs: var seq[SpriteDefinition],
+  currentIds: var seq[int],
+  packet: var seq[uint8],
+  layerId,
+  objectIdOffset,
+  spriteIdOffset: int
+) {.measure.} =
+  ## Adds an invisible server tick marker to the player scene.
+  let
+    spriteId = SpritePlayerTickSpriteId.protocolSpriteId(spriteIdOffset)
+    objectId = SpritePlayerTickObjectId.protocolObjectId(objectIdOffset)
+  currentIds.add(objectId)
+  packet.addSpriteChanged(
+    defs,
+    spriteId,
+    1,
+    1,
+    buildTransparentBlackSprite(1, 1),
+    "tick " & $sim.tickCount,
+    changed = true
+  )
+  packet.addObject(
+    objectId,
+    0,
+    0,
+    low(int16),
+    layerId,
+    spriteId
+  )
 
 proc buildIndexedSpritePixels(
   indices: openArray[uint8],
@@ -2895,6 +2929,14 @@ proc buildSpriteProtocolPlayerUpdates*(
       SpritePlayerRemainingSpriteId.protocolSpriteId(spriteIdOffset)
     )
 
+  sim.addSpritePlayerTickMarker(
+    nextState.spriteDefs,
+    currentIds,
+    result,
+    layerId,
+    objectIdOffset,
+    spriteIdOffset
+  )
   if not state.isNil:
     for objectId in state.objectIds:
       if objectId notin currentIds:

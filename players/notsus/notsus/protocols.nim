@@ -7,6 +7,7 @@ const
   MaxFrameDrain* = 128
   MapSpriteId = 1
   MapObjectId = 1
+  ServerTickPrefix = "tick "
 
 type
   SpriteInfo* = ref object
@@ -81,6 +82,19 @@ proc reset*(client: ProtocolClient) =
   client.walkabilityWidth = 0
   client.walkabilityHeight = 0
   client.walkabilityMask.setLen(0)
+
+proc tickLabelValue*(label: string): int =
+  ## Returns the tick count encoded in a sprite tick label.
+  if not label.startsWith(ServerTickPrefix) or
+      label.len == ServerTickPrefix.len:
+    return -1
+  for i in ServerTickPrefix.len ..< label.len:
+    if label[i] < '0' or label[i] > '9':
+      return -1
+    let digit = ord(label[i]) - ord('0')
+    if result > (high(int) - digit) div 10:
+      return -1
+    result = result * 10 + digit
 
 proc queryEscape*(value: string): string =
   ## Escapes a small string for use in a websocket query parameter.
@@ -266,6 +280,14 @@ iterator spriteObjectRefs*(
         sprite: sprite
       )
 
+proc serverTick*(client: ProtocolClient): int =
+  ## Returns the newest server tick marker visible in the sprite scene.
+  result = -1
+  for item in client.spriteObjectRefs():
+    let tick = item.sprite.label.tickLabelValue()
+    if tick > result:
+      result = tick
+
 proc decodeSpritePixels(
   width,
   height: int,
@@ -310,7 +332,7 @@ proc decodeWalkabilityPixels(
     mask[i] = rawPixels[i * 4 + 3].uint8 > 0
   true
 
-proc applySpritePacket(
+proc applySpritePacket*(
   client: ProtocolClient,
   packet: string,
   decodePixels: bool

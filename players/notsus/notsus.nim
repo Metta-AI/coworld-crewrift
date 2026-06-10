@@ -315,6 +315,7 @@ type
     taskHoldTicks: int
     taskHoldIndex: int
     frameTick: int
+    serverTick: int
     centerMicros: int
     spriteScanMicros: int
     localizeLocalMicros: int
@@ -1131,6 +1132,7 @@ proc resetTaskKnowledge(bot: var Bot) =
 
 proc resetProtocolMap(bot: var Bot) =
   ## Clears map metadata that must arrive from the sprite protocol.
+  bot.serverTick = -1
   bot.protocolMapReady = false
   bot.protocolWalkabilityReady = false
   bot.sim.gameMap = initialProtocolMap()
@@ -1148,6 +1150,17 @@ proc resetProtocolMap(bot: var Bot) =
   bot.lastCameraY = bot.cameraY
   bot.cameraLock = NoLock
   bot.localized = false
+
+proc logPrefix(bot: Bot): string =
+  ## Returns a server-tick prefix for bot logs when available.
+  if bot.serverTick >= 0:
+    "[" & $bot.serverTick & "] "
+  else:
+    ""
+
+proc logLine(bot: Bot, text: string) =
+  ## Writes one bot log line with the current server tick prefix.
+  echo bot.logPrefix() & text
 
 proc applyProtocolMap(
   bot: var Bot,
@@ -1222,6 +1235,10 @@ proc updateProtocolMap(bot: var Bot, client: ProtocolClient) {.measure.} =
   for i in 0 ..< tasks.len:
     tasks[i].name = taskNameFromRooms(rooms, tasks[i], i)
   bot.applyProtocolMap(tasks, vents, rooms)
+
+proc updateServerTick(bot: var Bot, client: ProtocolClient) {.measure.} =
+  ## Reads the server tick marker from the retained sprite scene.
+  bot.serverTick = client.serverTick()
 
 proc resetRoundState(bot: var Bot) =
   ## Clears per-round bot state after a detected game-over screen.
@@ -1877,6 +1894,7 @@ proc applyProtocolVotingState(
 
 proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} =
   ## Caches structured task objects from the current sprite frame.
+  bot.updateServerTick(client)
   bot.spriteDetectionsReady = true
   bot.protocolCameraReady = false
   bot.protocolInterstitialReady = false
@@ -4105,7 +4123,7 @@ proc printVotingFrame(bot: var Bot) =
   if frame == bot.lastVoteFrame:
     return
   bot.lastVoteFrame = frame
-  echo frame
+  bot.logLine(frame)
 
 proc selfVoteChoice(bot: Bot): int =
   ## Returns the parsed vote choice for the local player.
@@ -4279,8 +4297,10 @@ proc maybeQueueImposterSusChat(bot: var Bot) =
   if replyColor != VoteUnknown and bot.voteQueuedSusColor != replyColor:
     bot.voteQueuedSusColor = replyColor
     bot.pendingChat = titlePlayerColorName(replyColor) & " sus"
-    echo "voting chat: ", bot.pendingChat,
-      " because ", playerColorName(replyColor), " called me sus"
+    bot.logLine(
+      "voting chat: " & bot.pendingChat &
+        " because " & playerColorName(replyColor) & " called me sus"
+    )
     return
   if bot.voteImposterChatDecided:
     return
@@ -4292,7 +4312,7 @@ proc maybeQueueImposterSusChat(bot: var Bot) =
     return
   bot.voteQueuedSusColor = colorIndex
   bot.pendingChat = titlePlayerColorName(colorIndex) & " sus"
-  echo "voting chat: ", bot.pendingChat, " as random imposter cover"
+  bot.logLine("voting chat: " & bot.pendingChat & " as random imposter cover")
 
 proc clearInvalidBodySusChat(bot: var Bot) =
   ## Drops body sus chat when the suspect is not a living voting target.
@@ -4364,7 +4384,7 @@ proc logVoteDecision(bot: var Bot, target: int, reason: string) =
     return
   bot.voteLoggedTarget = target
   bot.voteLoggedReason = reason
-  echo "voting for ", bot.voteTargetName(target), ": ", reason
+  bot.logLine("voting for " & bot.voteTargetName(target) & ": " & reason)
 
 proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
   ## Chooses voting-screen input from parsed vote state.
@@ -5108,6 +5128,7 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.taskIconMisses = newSeq[int](result.sim.tasks.len)
   result.lastTaskRadarResetTick = -TaskRadarResetTicks
   result.lastDropLogTick = -1_000_000
+  result.serverTick = -1
   when not defined(botHeadless):
     result.buildPatchEntries()
   result.cameraX = result.sim.buttonCameraX()
