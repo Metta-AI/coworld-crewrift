@@ -3155,6 +3155,42 @@ proc screenPointInFrame*(view: PlayerView, worldX, worldY: int): bool =
     sy = worldY - view.cameraY
   sx >= 0 and sx < ScreenWidth and sy >= 0 and sy < ScreenHeight
 
+proc screenRectInFrame*(x, y, w, h: int): bool =
+  ## Returns true when a screen rectangle overlaps the player camera frame.
+  x < ScreenWidth and y < ScreenHeight and x + w > 0 and y + h > 0
+
+proc playerActorScreenRect*(
+  player: Player,
+  view: PlayerView
+): tuple[x, y, w, h: int] =
+  ## Returns the drawn crew actor rectangle in screen coordinates.
+  (
+    x: player.x - SpriteDrawOffX - 1 - view.cameraX,
+    y: player.y - SpriteDrawOffY - 1 - view.cameraY,
+    w: CrewSpriteSize + 2,
+    h: CrewSpriteSize + 2
+  )
+
+proc playerActorInFrame*(player: Player, view: PlayerView): bool =
+  ## Returns true when any part of a crew actor overlaps the frame.
+  let rect = player.playerActorScreenRect(view)
+  screenRectInFrame(rect.x, rect.y, rect.w, rect.h)
+
+proc playerActorVisibilityPoint*(player: Player, view: PlayerView): MapPoint =
+  ## Returns an in-frame point to use for actor visibility checks.
+  MapPoint(
+    x: clamp(
+      player.x + CollisionW div 2,
+      view.cameraX,
+      view.cameraX + ScreenWidth - 1
+    ),
+    y: clamp(
+      player.y + CollisionH div 2,
+      view.cameraY,
+      view.cameraY + ScreenHeight - 1
+    )
+  )
+
 proc screenPointVisible*(sim: SimServer, view: PlayerView, worldX, worldY: int): bool =
   ## Returns true when a world point is visible in this player's rendered view.
   let
@@ -3657,15 +3693,16 @@ proc writeSpritePlayerObservationPlayingPlayers(
       p = sim.players[i]
       sx = p.x - SpriteDrawOffX - cameraX
       sy = p.y - SpriteDrawOffY - cameraY
-    if not view.screenPointInFrame(p.x + CollisionW div 2, p.y + CollisionH div 2):
+    if not p.playerActorInFrame(view):
       continue
     var flags = RenderPlayerPresent
     if p.alive:
+      let visiblePoint = p.playerActorVisibilityPoint(view)
       if i != playerIndex and
           not sim.spritePlayerObservationWorldPointVisible(
             view,
-            p.x + CollisionW div 2,
-            p.y + CollisionH div 2
+            visiblePoint.x,
+            visiblePoint.y
           ):
         continue
       flags = flags or RenderPlayerAlive

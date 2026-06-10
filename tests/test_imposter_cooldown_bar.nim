@@ -107,6 +107,21 @@ proc requirePlayerMapCamera(
   doAssert foundMapSprite
   doAssert foundMapObject
 
+proc requireObjectAt(
+  messages: openArray[SpritePacketMessage],
+  objectId,
+  x,
+  y: int
+) =
+  ## Requires one object at the requested screen position.
+  for message in messages:
+    if message.kind == spkObject and
+        message.objectDef.id == objectId and
+        message.objectDef.x == x and
+        message.objectDef.y == y:
+      return
+  doAssert false, "Missing object " & $objectId & " at " & $x & "," & $y & "."
+
 proc buildPlayerMessages(
   sim: var SimServer,
   playerIndex: int
@@ -147,7 +162,41 @@ proc testPlayerPacketsUseMapLayer() =
   doAssert messages.hasPlayerMapLayer()
   messages.requirePlayerMapCamera(game, player)
 
+proc testPlayerActorCullsBySpriteBounds() =
+  ## Tests that actor sprites stay visible while any edge overlaps.
+  var game = initCrewriftForTest(defaultGameConfig())
+  let
+    viewer = game.addPlayer("viewer")
+    other = game.addPlayer("other")
+    objectId = PlayerObjectBase + game.players[other].joinOrder
+  game.phase = Playing
+  game.players[viewer].role = Crewmate
+  game.players[viewer].alive = false
+  game.players[viewer].x = 300
+  game.players[viewer].y = 300
+  game.players[other].role = Crewmate
+
+  let
+    view = game.playerView(viewer)
+    actorW = CrewSpriteSize + 2
+    actorH = CrewSpriteSize + 2
+    positions = [
+      (x: 1 - actorW, y: 32),
+      (x: ScreenWidth - 1, y: 32),
+      (x: 32, y: 1 - actorH),
+      (x: 32, y: ScreenHeight - 1)
+    ]
+
+  for position in positions:
+    game.players[other].x =
+      view.cameraX + position.x + SpriteDrawOffX + 1
+    game.players[other].y =
+      view.cameraY + position.y + SpriteDrawOffY + 1
+    let messages = game.buildPlayerMessages(viewer)
+    messages.requireObjectAt(objectId, position.x, position.y)
+
 echo "Testing imposter cooldown bar"
 testPlayerPacketsUseMapLayer()
+testPlayerActorCullsBySpriteBounds()
 testImposterCooldownBar()
 echo "ok"

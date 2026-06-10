@@ -2708,17 +2708,15 @@ proc buildSpriteProtocolPlayerUpdates*(
       )
 
     for other in sim.players:
-      if not view.screenPointInFrame(
-        other.x + CollisionW div 2,
-        other.y + CollisionH div 2
-      ):
+      if not other.playerActorInFrame(view):
         continue
       if other.alive:
+        let visiblePoint = other.playerActorVisibilityPoint(view)
         if other.joinOrder != player.joinOrder:
           if not sim.screenPointVisible(
             view,
-            other.x + CollisionW div 2,
-            other.y + CollisionH div 2
+            visiblePoint.x,
+            visiblePoint.y
           ):
             continue
       elif not viewerIsGhost:
