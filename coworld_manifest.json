@@ -7,7 +7,7 @@
     "owner": "treeform@softmax.com",
     "runnable": {
       "type": "game",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/games/crewrift:latest",
+      "image": "{{GAME_IMAGE}}",
       "run": ["/bin/crewrift"],
       "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master"
     },
@@ -422,7 +422,7 @@
       "name": "notsus",
       "type": "player",
       "description": "Sprite-protocol Crewrift bot used for local smoke episodes.",
-      "image": "public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest",
+      "image": "{{PLAYER_IMAGE}}",
       "run": [
         "/bin/notsus"
       ],
