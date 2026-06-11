@@ -19,7 +19,7 @@ import std/[algorithm, exitprocs, heapqueue, monotimes, options, os,
 
 const
   InitialConnectWindowMs = 60_000
-  ReconnectWindowMs = 60_000
+  ReconnectWindowMs = 8_000
   ReconnectAttemptMs = 1_000
   PlayerScreenX = ScreenWidth div 2
   PlayerScreenY = ScreenHeight div 2
