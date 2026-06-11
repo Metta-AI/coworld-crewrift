@@ -22,6 +22,12 @@ suite "max ticks":
     check KillCooldownTicks == 500
     check defaultGameConfig().killCooldownTicks == 500
 
+  test "default connection timeouts are split":
+    check ConnectTimeoutTicks == TargetFps * 120
+    check DisconnectTimeoutTicks == TargetFps * 30
+    check defaultGameConfig().connectTimeoutTicks == TargetFps * 120
+    check defaultGameConfig().disconnectTimeoutTicks == TargetFps * 30
+
   test "default seed resolves to a concrete replay seed":
     var config = defaultGameConfig()
     check config.seed == RandomSeedSentinel

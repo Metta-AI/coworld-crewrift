@@ -156,7 +156,7 @@
           "description": "Initial connection grace duration in ticks.",
           "type": "integer",
           "minimum": 0,
-          "default": 720
+          "default": 2880
         },
         "disconnectTimeoutTicks": {
           "description": "Reconnect grace duration in ticks.",
@@ -488,7 +488,7 @@
         "maxGames": 1,
         "mapPath": "data/croatoan.resources",
         "voteTimerTicks": 1200,
-        "connectTimeoutTicks": 720,
+        "connectTimeoutTicks": 2880,
         "disconnectTimeoutTicks": 720,
         "killCooldownTicks": 500,
         "showTaskArrows": true,
@@ -548,7 +548,7 @@
       "maxGames": 1,
       "mapPath": "data/croatoan.resources",
       "voteTimerTicks": 120,
-      "connectTimeoutTicks": 720,
+      "connectTimeoutTicks": 2880,
       "disconnectTimeoutTicks": 720,
       "killCooldownTicks": 500,
       "showTaskArrows": false,

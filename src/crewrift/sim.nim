@@ -39,7 +39,7 @@ const
   MovementSlideMaxScan = 3
   TargetFps* = 24
   StuckPenaltyTicks* = TargetFps * 20
-  ConnectTimeoutTicks* = TargetFps * 30
+  ConnectTimeoutTicks* = TargetFps * 120
   DisconnectTimeoutTicks* = TargetFps * 30
   SpaceColor* = 0'u8
   MapVoidColor* = 12'u8
