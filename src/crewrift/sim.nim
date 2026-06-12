@@ -1657,6 +1657,30 @@ proc voteTargetText(sim: SimServer, vote: int): string =
     return sim.playerText(vote)
   "unknown"
 
+proc logVoteResults(
+  sim: SimServer,
+  counts: openArray[int],
+  skipVotes,
+  timeoutVotes: int
+) =
+  ## Logs authoritative vote tallies before resolving the vote.
+  sim.logGameEvent("vote results:")
+  sim.logGameEvent("target      votes")
+  sim.logGameEvent("----------  -----")
+  for i, count in counts:
+    sim.logGameEvent(
+      align(sim.playerText(i), 10) & "  " & align($count, 5)
+    )
+  sim.logGameEvent(
+    align("skip", 10) & "  " & align($skipVotes, 5)
+  )
+  sim.logGameEvent(
+    align("timeout", 10) & "  " & align($timeoutVotes, 5)
+  )
+  sim.logGameEvent(
+    align("skip total", 10) & "  " & align($(skipVotes + timeoutVotes), 5)
+  )
+
 proc logLobbyWaiting(sim: var SimServer) =
   ## Logs waiting-for-player state when it changes.
   let
@@ -3475,7 +3499,9 @@ proc allVotesCast*(sim: SimServer): bool =
 proc tallyVotes*(sim: var SimServer, timedOut = false) =
   ## Counts the votes and moves to the vote-result phase.
   var counts = newSeq[int](sim.players.len)
-  var skipCount = 0
+  var
+    skipVotes = 0
+    timeoutVotes = 0
   for i in 0 ..< sim.players.len:
     if sim.players[i].alive:
       let v = sim.voteState.votes[i]
@@ -3483,14 +3509,15 @@ proc tallyVotes*(sim: var SimServer, timedOut = false) =
         inc counts[v]
         sim.recordVotePlayer(i)
       elif v == -2:
-        inc skipCount
+        inc skipVotes
         sim.recordVoteSkip(i)
       elif v == -1:
-        inc skipCount
+        inc timeoutVotes
         sim.recordVoteTimeout(i)
         if timedOut:
           sim.addReward(i, VoteTimeoutPenalty)
-  var maxVotes = skipCount
+  sim.logVoteResults(counts, skipVotes, timeoutVotes)
+  var maxVotes = skipVotes + timeoutVotes
   var maxPlayer = -1
   var tied = false
   for i in 0 ..< counts.len:
