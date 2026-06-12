@@ -214,7 +214,10 @@ nim r tools/expand_replay.nim --format jsonl tests/replays/notsus.bitreplay
 ```
 
 The JSONL stream uses schema `{ts, player, key, value}`. Use `--snapshot-every`
-to include sampled player/body state and player-centric visibility intervals:
+to include sampled player/body state, player-centric visibility intervals, and
+player manifest rows. `player_manifest` rows are emitted after roles and tasks
+are assigned so their `role` and `assigned_tasks` fields describe the actual
+game assignment.
 
 ```sh
 nim r tools/expand_replay.nim --format jsonl --snapshot-every 1 tests/replays/notsus.bitreplay
