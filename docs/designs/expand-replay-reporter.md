@@ -172,9 +172,9 @@ away. That is more code and more fragile than the alternative.
 
 - **(A) Frozen `expand_replay` + text parser in the wrapper.** Zero change to
   `expand_replay`. Cost: a fragile parser and slot-by-join-order reconstruction.
-- **(B) Teach `expand_replay` a structured output mode** (e.g.
-  `--format ndjson`) that emits `{ts,player,key,value}` rows directly, with real
-  slots. The wrapper then just forwards rows — no parser, no slot guessing.
+- **(B) Teach `expand_replay` to enrich its existing JSONL output** (`--format
+  jsonl`) so it emits `{ts,player,key,value}` rows directly, with real slots.
+  The wrapper then just forwards rows — no parser, no slot guessing.
   Cost: this requires surfacing the structured fields inside `expand_replay`
   (the event-layer work), so it is a real change to that file, not a one-liner.
 
@@ -214,7 +214,7 @@ reporters/
     config.nims                 # --path to src
     test_eventlog.nim           # protocol + extraction tests against tests/replays/notsus.bitreplay
     README.md
-tools/expand_replay.nim         # + structured `--format ndjson` mode (decision 3b/B)
+tools/expand_replay.nim         # + structured `--format jsonl` output (decision 3b/B)
 ```
 
 ### Request flow
@@ -289,7 +289,7 @@ tools/expand_replay.nim         # + structured `--format ndjson` mode (decision 
 
 1. **Confirm §3 decisions** (output = JSON; expand_replay gets a structured mode;
    language = Nim) and the §5 open questions.
-2. Add `--format ndjson` (structured rows) to `tools/expand_replay.nim`; keep
+2. Extend `--format jsonl` with structured rows in `tools/expand_replay.nim`; keep
    text output byte-identical; lock both with a test.
 3. Build `reporters/eventlog/`: `protocol.nim` (+ tests), `report.nim` (rows →
    JSON), `service.nim` (mummy WS loop), `Dockerfile`, `README.md`.
