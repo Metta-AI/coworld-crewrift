@@ -13,6 +13,7 @@ type
   ReplayCliConfig = object
     replayPath: string
     outputFormat: OutputFormat
+    snapshotEvery: int
 
   ReplayEventKind* = enum
     PlayerJoined
@@ -49,12 +50,32 @@ type
 
   ReplayTimeline* = object
     events*: seq[ReplayEvent]
+    traceRows*: seq[JsonNode]
     tickCount*: int
     hashFailed*: bool
     failTick*: int
 
+  VisibilityObservation = object
+    observerSlot: int
+    observerLabel: string
+    observerRole: string
+    targetId: string
+    targetKind: string
+    targetSlot: int
+    targetLabel: string
+    targetRole: string
+    room: string
+    x: int
+    y: int
+
+  VisibilityInterval = object
+    sample: VisibilityObservation
+    tickStart: int
+    lastTick: int
+
 const
-  UsageText = "Usage: nim r tools/expand_replay.nim [--format text|jsonl] [replay-path]"
+  UsageText = "Usage: nim r tools/expand_replay.nim [--format text|jsonl] [--snapshot-every ticks] [replay-path]"
+  EventSchemaVersion = "crewrift-events/v1"
   GameDir = currentSourcePath().parentDir().parentDir()
   DefaultReplayPath = GameDir / "tests" / "replays" / "notsus.bitreplay"
 
@@ -72,10 +93,20 @@ proc parseOutputFormat(value: string): OutputFormat =
   else:
     fail("Unknown format: " & value & "\n" & UsageText)
 
+proc parsePositiveInt(value, flag: string): int =
+  ## Parses one positive integer CLI option.
+  try:
+    result = parseInt(value)
+  except ValueError:
+    fail("Invalid integer for " & flag & ": " & value & "\n" & UsageText)
+  if result <= 0:
+    fail(flag & " must be positive.\n" & UsageText)
+
 proc cliConfigFromArgs(): ReplayCliConfig {.used.} =
   ## Returns replay expansion configuration passed on the command line.
   var paths: seq[string]
   var outputFormat = TextFormat
+  var snapshotEvery = 0
   let args = commandLineParams()
   var i = 0
   while i < args.len:
@@ -92,6 +123,16 @@ proc cliConfigFromArgs(): ReplayCliConfig {.used.} =
       outputFormat = parseOutputFormat(args[i])
     elif arg.startsWith("--format="):
       outputFormat = parseOutputFormat(arg["--format=".len .. ^1])
+    elif arg == "--snapshot-every":
+      inc i
+      if i >= args.len:
+        fail("Missing value for --snapshot-every.\n" & UsageText)
+      snapshotEvery = parsePositiveInt(args[i], "--snapshot-every")
+    elif arg.startsWith("--snapshot-every="):
+      snapshotEvery = parsePositiveInt(
+        arg["--snapshot-every=".len .. ^1],
+        "--snapshot-every"
+      )
     elif arg.startsWith("--"):
       fail("Unknown option: " & arg & "\n" & UsageText)
     else:
@@ -100,6 +141,7 @@ proc cliConfigFromArgs(): ReplayCliConfig {.used.} =
   if paths.len > 1:
     fail("Expected at most one replay path.\n" & UsageText)
   result.outputFormat = outputFormat
+  result.snapshotEvery = snapshotEvery
   result.replayPath =
     if paths.len == 0:
       DefaultReplayPath
@@ -170,6 +212,193 @@ proc roomNameAt(sim: SimServer, x, y: int): string =
       bestRoom = i
   sim.roomName(bestRoom)
 
+proc roleText(role: PlayerRole): string =
+  ## Returns the event-schema role name for one player role.
+  case role
+  of Crewmate:
+    "crew"
+  of Imposter:
+    "imposter"
+
+proc traceValue(source: string, confidence = 1.0): JsonNode =
+  ## Returns common fields for one standard event-schema value object.
+  result = newJObject()
+  result["schema_version"] = %EventSchemaVersion
+  result["source"] = %source
+  result["confidence"] = %confidence
+
+proc traceValue(source: string, phase: GamePhase, confidence = 1.0): JsonNode =
+  ## Returns common fields for one standard value object tied to a game phase.
+  result = traceValue(source, confidence)
+  result["phase"] = %($phase)
+
+proc standardRow(tick, player: int, key: string, value: JsonNode): JsonNode =
+  ## Returns one standard event-schema row.
+  result = newJObject()
+  result["ts"] = %tick
+  result["player"] = %player
+  result["key"] = %key
+  result["value"] = value
+
+proc rectJson(x, y, w, h: int): JsonNode =
+  ## Returns one rectangle as JSON.
+  %*{"x": x, "y": y, "w": w, "h": h}
+
+proc mapGeometryRow(sim: SimServer): JsonNode =
+  ## Returns one global map-geometry event row.
+  var rooms = newJArray()
+  for i, room in sim.rooms:
+    rooms.add(%*{
+      "id": i,
+      "name": room.name,
+      "x": room.x,
+      "y": room.y,
+      "w": room.w,
+      "h": room.h
+    })
+
+  var tasks = newJArray()
+  for i, task in sim.tasks:
+    tasks.add(%*{
+      "id": i,
+      "name": task.name,
+      "resource_name": task.resourceName,
+      "x": task.x,
+      "y": task.y,
+      "w": task.w,
+      "h": task.h,
+      "room": sim.roomNameAt(task.x + task.w div 2, task.y + task.h div 2)
+    })
+
+  var vents = newJArray()
+  for i, vent in sim.vents:
+    vents.add(%*{
+      "id": i,
+      "resource_name": vent.resourceName,
+      "x": vent.x,
+      "y": vent.y,
+      "w": vent.w,
+      "h": vent.h,
+      "group": $vent.group,
+      "group_index": vent.groupIndex,
+      "room": sim.roomNameAt(vent.x + vent.w div 2, vent.y + vent.h div 2)
+    })
+
+  var value = traceValue("replay")
+  value["map_name"] = %sim.gameMap.name
+  value["width"] = %sim.gameMap.width
+  value["height"] = %sim.gameMap.height
+  value["rooms"] = rooms
+  value["tasks"] = tasks
+  value["vents"] = vents
+  value["button"] = rectJson(
+    sim.gameMap.button.x,
+    sim.gameMap.button.y,
+    sim.gameMap.button.w,
+    sim.gameMap.button.h
+  )
+  value["home"] = %*{"x": sim.gameMap.home.x, "y": sim.gameMap.home.y}
+  standardRow(0, -1, "map_geometry", value)
+
+proc episodeMetadataRow(sim: SimServer, snapshotEvery: int): JsonNode =
+  ## Returns one global episode-metadata event row.
+  var value = traceValue("replay")
+  value["snapshot_every_ticks"] = %snapshotEvery
+  value["hash_checking"] = %true
+  value["config"] = %*{
+    "speed": sim.config.speed,
+    "max_ticks": sim.config.maxTicks,
+    "kill_range": sim.config.killRange,
+    "kill_cooldown_ticks": sim.config.killCooldownTicks,
+    "report_range": sim.config.reportRange,
+    "vent_range": sim.config.ventRange,
+    "task_complete_ticks": sim.config.taskCompleteTicks,
+    "vote_timer_ticks": sim.config.voteTimerTicks,
+    "vote_result_ticks": sim.config.voteResultTicks,
+    "imposter_count": sim.config.imposterCount,
+    "tasks_per_player": sim.config.tasksPerPlayer,
+    "button_calls": sim.config.buttonCalls
+  }
+  standardRow(0, -1, "episode_metadata", value)
+
+proc playerManifestRow(sim: SimServer, tick, playerIndex: int): JsonNode =
+  ## Returns one player manifest row for a joined player.
+  let p = sim.players[playerIndex]
+  var value = traceValue("replay", sim.phase)
+  value["label"] = %sim.player(playerIndex)
+  value["address"] = %p.address
+  value["color"] = %playerColorText(p.color)
+  value["color_id"] = %int(p.color)
+  value["role"] = %roleText(p.role)
+  value["home_x"] = %p.homeX
+  value["home_y"] = %p.homeY
+  value["assigned_tasks"] = %p.assignedTasks
+  standardRow(tick, sim.playerSlot(playerIndex), "player_manifest", value)
+
+proc addPlayerManifestRows(
+  sim: SimServer,
+  tick: int,
+  rows: var seq[JsonNode],
+  emitted: var seq[bool]
+) =
+  ## Adds one manifest row for each newly seen player.
+  while emitted.len < sim.players.len:
+    emitted.add(false)
+  for i in 0 ..< sim.players.len:
+    if not emitted[i]:
+      rows.add(sim.playerManifestRow(tick, i))
+      emitted[i] = true
+
+proc playerStateRow(sim: SimServer, tick, playerIndex: int): JsonNode =
+  ## Returns one sampled player-state row.
+  let
+    p = sim.players[playerIndex]
+    roomIndex = sim.roomAt(playerIndex)
+  var value = traceValue("replay", sim.phase)
+  value["label"] = %sim.player(playerIndex)
+  value["role"] = %roleText(p.role)
+  value["alive"] = %p.alive
+  value["connected"] = %p.connected
+  value["x"] = %p.x
+  value["y"] = %p.y
+  value["vel_x"] = %p.velX
+  value["vel_y"] = %p.velY
+  value["room"] = %sim.roomNameAt(p.x, p.y)
+  value["inside_room"] = %(roomIndex >= 0)
+  value["active_task"] = %p.activeTask
+  value["task_progress"] = %p.taskProgress
+  value["assigned_tasks"] = %p.assignedTasks
+  value["kill_cooldown"] = %p.killCooldown
+  value["vent_cooldown"] = %p.ventCooldown
+  value["button_calls_used"] = %p.buttonCallsUsed
+  value["reward"] = %p.reward
+  standardRow(tick, sim.playerSlot(playerIndex), "player_state", value)
+
+proc bodyStateRow(sim: SimServer, tick: int, body: Body): JsonNode =
+  ## Returns one sampled body-state row.
+  let victim = sim.playerForSlot(body.slotId)
+  var value = traceValue("replay", sim.phase)
+  value["victim_slot"] = %body.slotId
+  value["victim_label"] = %sim.bodyPlayer(body)
+  value["color"] = %playerColorText(body.color)
+  value["color_id"] = %int(body.color)
+  value["x"] = %body.x
+  value["y"] = %body.y
+  value["room"] = %sim.roomNameAt(body.x, body.y)
+  value["victim_connected"] =
+    if victim >= 0:
+      %sim.players[victim].connected
+    else:
+      %false
+  standardRow(tick, body.slotId, "body_state", value)
+
+proc addStateRows(sim: SimServer, tick: int, rows: var seq[JsonNode]) =
+  ## Adds sampled player and body state rows for one tick.
+  for i in 0 ..< sim.players.len:
+    rows.add(sim.playerStateRow(tick, i))
+  for body in sim.bodies:
+    rows.add(sim.bodyStateRow(tick, body))
+
 proc voteCallerText(sim: SimServer): string
 
 proc addPlayerEvent(
@@ -213,6 +442,141 @@ proc addRoomEvent(
 proc bodyKey(body: Body): string =
   ## Returns a stable key for one body instance.
   $body.slotId & ":" & $body.x & ":" & $body.y
+
+proc sameTarget(interval: VisibilityInterval, sample: VisibilityObservation): bool =
+  ## Returns true when one visibility sample extends an active interval.
+  interval.sample.observerSlot == sample.observerSlot and
+    interval.sample.targetId == sample.targetId
+
+proc visibilityIntervalRow(
+  interval: VisibilityInterval,
+  endTick: int,
+  endedBy: string
+): JsonNode =
+  ## Returns one player-centric visibility interval row.
+  var value = traceValue("replay")
+  value["observer_slot"] = %interval.sample.observerSlot
+  value["observer_label"] = %interval.sample.observerLabel
+  value["observer_role"] = %interval.sample.observerRole
+  value["target_kind"] = %interval.sample.targetKind
+  value["target_id"] = %interval.sample.targetId
+  value["target_slot"] = %interval.sample.targetSlot
+  value["target_label"] = %interval.sample.targetLabel
+  if interval.sample.targetRole.len > 0:
+    value["target_role"] = %interval.sample.targetRole
+  value["room"] = %interval.sample.room
+  value["x"] = %interval.sample.x
+  value["y"] = %interval.sample.y
+  value["tick_start"] = %interval.tickStart
+  value["tick_end"] = %endTick
+  value["last_observed_tick"] = %interval.lastTick
+  value["duration_ticks"] = %(endTick - interval.tickStart)
+  value["visibility_basis"] = %"rendered_view"
+  value["boundary_precision"] = %"exact"
+  value["ended_by"] = %endedBy
+  standardRow(
+    interval.tickStart,
+    interval.sample.observerSlot,
+    interval.sample.targetKind & "_visible_interval",
+    value
+  )
+
+proc visibleObservations(sim: var SimServer): seq[VisibilityObservation] =
+  ## Returns player/body objects visible to each living player this tick.
+  if sim.phase != Playing:
+    return
+  for observerIndex, observer in sim.players:
+    if not observer.alive or not observer.connected:
+      continue
+    let view = sim.playerView(observerIndex)
+    discard sim.usePlayerShadowMask(observerIndex, view)
+    for targetIndex, target in sim.players:
+      if targetIndex == observerIndex or not target.alive or not target.connected:
+        continue
+      if not target.playerActorInFrame(view):
+        continue
+      let visiblePoint = target.playerActorVisibilityPoint(view)
+      if not sim.screenPointVisible(view, visiblePoint.x, visiblePoint.y):
+        continue
+      result.add VisibilityObservation(
+        observerSlot: sim.playerSlot(observerIndex),
+        observerLabel: sim.player(observerIndex),
+        observerRole: roleText(observer.role),
+        targetId: "player:" & $sim.playerSlot(targetIndex),
+        targetKind: "player",
+        targetSlot: sim.playerSlot(targetIndex),
+        targetLabel: sim.player(targetIndex),
+        targetRole: roleText(target.role),
+        room: sim.roomNameAt(target.x, target.y),
+        x: target.x,
+        y: target.y
+      )
+    for body in sim.bodies:
+      let
+        x = body.x + CollisionW div 2
+        y = body.y + CollisionH div 2
+      if not sim.screenPointVisible(view, x, y):
+        continue
+      result.add VisibilityObservation(
+        observerSlot: sim.playerSlot(observerIndex),
+        observerLabel: sim.player(observerIndex),
+        observerRole: roleText(observer.role),
+        targetId: "body:" & body.bodyKey(),
+        targetKind: "body",
+        targetSlot: body.slotId,
+        targetLabel: sim.bodyPlayer(body),
+        room: sim.roomNameAt(body.x, body.y),
+        x: body.x,
+        y: body.y
+      )
+
+proc addVisibilityRows(
+  sim: var SimServer,
+  tick: int,
+  rows: var seq[JsonNode],
+  active: var seq[VisibilityInterval]
+) =
+  ## Extends or closes player-centric visibility intervals.
+  let samples = sim.visibleObservations()
+  var nextActive: seq[VisibilityInterval]
+  for interval in active:
+    var found = -1
+    for i, sample in samples:
+      if interval.sameTarget(sample):
+        found = i
+        break
+    if found >= 0:
+      var continued = interval
+      continued.sample = samples[found]
+      continued.lastTick = tick
+      nextActive.add(continued)
+    elif tick > interval.tickStart:
+      let endedBy = if sim.phase == Playing: "not_visible" else: "phase_changed"
+      rows.add(interval.visibilityIntervalRow(tick, endedBy))
+  for sample in samples:
+    var alreadyActive = false
+    for interval in nextActive:
+      if interval.sameTarget(sample):
+        alreadyActive = true
+        break
+    if not alreadyActive:
+      nextActive.add VisibilityInterval(
+        sample: sample,
+        tickStart: tick,
+        lastTick: tick
+      )
+  active = nextActive
+
+proc flushVisibilityRows(
+  rows: var seq[JsonNode],
+  active: var seq[VisibilityInterval],
+  endTick: int
+) =
+  ## Emits active intervals that last until the replay trace ends.
+  for interval in active:
+    if endTick > interval.tickStart:
+      rows.add(interval.visibilityIntervalRow(endTick, "trace_end"))
+  active.setLen(0)
 
 proc hasKey(keys: openArray[string], key: string): bool =
   ## Returns true when a key is already present.
@@ -674,13 +1038,22 @@ proc jsonRow*(event: ReplayEvent): JsonNode =
   result["key"] = %event.key()
   result["value"] = value
 
+proc eventRow*(event: ReplayEvent): JsonNode =
+  ## Returns one standard event-schema row for a direct replay event.
+  result = event.jsonRow()
+  let value = result["value"]
+  value["schema_version"] = %EventSchemaVersion
+  value["source"] = %"replay"
+  value["confidence"] = %1.0
+  value["phase"] = %($event.phase)
+
 proc eventsAt(timeline: ReplayTimeline, tick: int): seq[ReplayEvent] =
   ## Returns timeline events for one tick in their recorded order.
   for event in timeline.events:
     if event.tick == tick:
       result.add(event)
 
-proc expandReplayTimeline*(data: ReplayData): ReplayTimeline =
+proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline =
   ## Expands one replay into a structured event timeline.
   let previousDir = getCurrentDir()
   setCurrentDir(GameDir)
@@ -697,12 +1070,17 @@ proc expandReplayTimeline*(data: ReplayData): ReplayTimeline =
       done: seq[seq[bool]]
       chatCount = 0
       phase = sim.phase
+      manifestedPlayers: seq[bool]
+      visibilityIntervals: seq[VisibilityInterval]
 
     sim.gameEventLoggingEnabled = false
     for task in sim.tasks:
       done.add(task.completed)
     replay.looping = false
     replay.mismatchQuit = true
+    if snapshotEvery > 0:
+      result.traceRows.add(sim.episodeMetadataRow(snapshotEvery))
+      result.traceRows.add(sim.mapGeometryRow())
 
     while replay.playing:
       let tick = sim.tickCount + 1
@@ -714,6 +1092,7 @@ proc expandReplayTimeline*(data: ReplayData): ReplayTimeline =
         result.failTick = tick
         return
 
+      let eventStart = result.events.len
       if phase != sim.phase:
         result.events.add ReplayEvent(
           tick: tick,
@@ -749,6 +1128,13 @@ proc expandReplayTimeline*(data: ReplayData): ReplayTimeline =
       sim.printVotes(tick, result.events, votes)
       sim.printChats(tick, result.events, chatCount)
       sim.printScoreChanges(tick, result.events, rewards)
+      if snapshotEvery > 0:
+        sim.addPlayerManifestRows(tick, result.traceRows, manifestedPlayers)
+        sim.addVisibilityRows(tick, result.traceRows, visibilityIntervals)
+        if tick mod snapshotEvery == 0 or result.events.len > eventStart:
+          sim.addStateRows(tick, result.traceRows)
+    if snapshotEvery > 0:
+      result.traceRows.flushVisibilityRows(visibilityIntervals, result.tickCount)
   finally:
     setCurrentDir(previousDir)
 
@@ -766,10 +1152,35 @@ proc printText(timeline: ReplayTimeline, path: string) =
 
 proc printJsonl(timeline: ReplayTimeline) =
   ## Prints one machine-readable replay timeline.
+  var
+    traceRowsByTick = newSeq[seq[JsonNode]](timeline.tickCount + 1)
+    eventsByTick = newSeq[seq[ReplayEvent]](timeline.tickCount + 1)
+  for row in timeline.traceRows:
+    let tick = row["ts"].getInt()
+    if tick >= 0 and tick < traceRowsByTick.len:
+      traceRowsByTick[tick].add(row)
   for event in timeline.events:
-    echo $event.jsonRow()
+    if event.tick >= 0 and event.tick < eventsByTick.len:
+      eventsByTick[event.tick].add(event)
+  for tick in 0 .. timeline.tickCount:
+    for row in traceRowsByTick[tick]:
+      echo $row
+    for event in eventsByTick[tick]:
+      echo $event.eventRow()
   if timeline.hashFailed:
+    var warning = traceValue("replay")
+    warning["message"] = %"hash failed"
+    warning["fail_tick"] = %timeline.failTick
+    echo $standardRow(timeline.failTick, -1, "trace_warning", warning)
+    var complete = traceValue("replay")
+    complete["complete"] = %false
+    complete["fail_tick"] = %timeline.failTick
+    echo $standardRow(timeline.failTick, -1, "trace_complete", complete)
     fail("hash failed")
+  var complete = traceValue("replay")
+  complete["complete"] = %true
+  complete["tick_count"] = %timeline.tickCount
+  echo $standardRow(timeline.tickCount, -1, "trace_complete", complete)
 
 proc expandReplay(config: ReplayCliConfig) {.used.} =
   ## Prints one replay timeline.
@@ -778,7 +1189,13 @@ proc expandReplay(config: ReplayCliConfig) {.used.} =
     fail("Replay file does not exist: " & path)
 
   let data = loadReplay(path)
-  let timeline = expandReplayTimeline(data)
+  let timeline = expandReplayTimeline(
+    data,
+    if config.outputFormat == JsonlFormat:
+      config.snapshotEvery
+    else:
+      0
+  )
   case config.outputFormat
   of TextFormat:
     printText(timeline, path)

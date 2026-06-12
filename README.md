@@ -213,6 +213,13 @@ For machine-readable rows, emit one JSON event per line:
 nim r tools/expand_replay.nim --format jsonl tests/replays/notsus.bitreplay
 ```
 
+The JSONL stream uses schema `{ts, player, key, value}`. Use `--snapshot-every`
+to include sampled player/body state and player-centric visibility intervals:
+
+```sh
+nim r tools/expand_replay.nim --format jsonl --snapshot-every 1 tests/replays/notsus.bitreplay
+```
+
 For tournament episodes, first find the completed round where your policy
 played badly, then download the replays you can access:
 
