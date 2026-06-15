@@ -1,0 +1,1471 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.39kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/debian:bookworm-slim
+#2 DONE 16.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 86B done
+#3 DONE 0.0s
+
+#4 [build 1/8] FROM docker.io/library/debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb
+#4 resolve docker.io/library/debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb done
+#4 sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb 8.56kB / 8.56kB done
+#4 sha256:b29f74a267526ae6ea104eed6c46133b0ca70ce812525df8cd5817698f0a624a 1.02kB / 1.02kB done
+#4 sha256:f06a35eff9f9d59ee2f024963396bc980871f60e7aa132eba285f05c0a53b78c 453B / 453B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 1.48MB 0.0s done
+#5 DONE 0.0s
+
+#6 [stage-1 2/4] RUN apt-get update &&   apt-get install -y --no-install-recommends     ca-certificates     libcurl4 &&   rm -rf /var/lib/apt/lists/*
+#6 0.384 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+#6 0.453 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#6 0.456 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
+#6 0.952 Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+#6 5.320 Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+#6 5.339 Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [306 kB]
+#6 ...
+
+#7 [build 2/8] RUN apt-get update &&   apt-get install -y --no-install-recommends     build-essential     ca-certificates     curl     git &&   rm -rf /var/lib/apt/lists/*
+#7 0.384 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+#7 0.449 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#7 0.449 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [48.0 kB]
+#7 0.953 Get:4 http://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+#7 1.431 Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+#7 1.888 Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [306 kB]
+#7 2.264 Fetched 9358 kB in 2s (4687 kB/s)
+#7 2.264 Reading package lists...
+#7 2.916 Reading package lists...
+#7 3.446 Building dependency tree...
+#7 3.582 Reading state information...
+#7 3.730 The following additional packages will be installed:
+#7 3.730   binutils binutils-common binutils-x86-64-linux-gnu bzip2 cpp cpp-12 dpkg-dev
+#7 3.731   g++ g++-12 gcc gcc-12 git-man libasan8 libatomic1 libbinutils libbrotli1
+#7 3.731   libc-dev-bin libc6-dev libcc1-0 libcrypt-dev libctf-nobfd0 libctf0
+#7 3.731   libcurl3-gnutls libcurl4 libdpkg-perl liberror-perl libexpat1 libgcc-12-dev
+#7 3.731   libgdbm-compat4 libgdbm6 libgomp1 libgprofng0 libgssapi-krb5-2 libisl23
+#7 3.731   libitm1 libjansson4 libk5crypto3 libkeyutils1 libkrb5-3 libkrb5support0
+#7 3.731   libldap-2.5-0 liblsan0 libmpc3 libmpfr6 libnghttp2-14 libnsl-dev libnsl2
+#7 3.731   libperl5.36 libpsl5 libquadmath0 librtmp1 libsasl2-2 libsasl2-modules-db
+#7 3.731   libssh2-1 libssl3 libstdc++-12-dev libtirpc-common libtirpc-dev libtirpc3
+#7 3.732   libtsan2 libubsan1 linux-libc-dev make openssl patch perl perl-modules-5.36
+#7 3.732   rpcsvc-proto xz-utils
+#7 3.733 Suggested packages:
+#7 3.733   binutils-doc bzip2-doc cpp-doc gcc-12-locales cpp-12-doc debian-keyring
+#7 3.733   g++-multilib g++-12-multilib gcc-12-doc gcc-multilib manpages-dev autoconf
+#7 3.733   automake libtool flex bison gdb gcc-doc gcc-12-multilib gettext-base
+#7 3.733   git-daemon-run | git-daemon-sysvinit git-doc git-email git-gui gitk gitweb
+#7 3.733   git-cvs git-mediawiki git-svn glibc-doc gnupg | sq | sqop | pgpainless-cli
+#7 3.733   sensible-utils bzr gdbm-l10n krb5-doc krb5-user libstdc++-12-doc make-doc ed
+#7 3.733   diffutils-doc perl-doc libterm-readline-gnu-perl
+#7 3.733   | libterm-readline-perl-perl libtap-harness-archive-perl
+#7 3.733 Recommended packages:
+#7 3.733   fakeroot gnupg | sq | sqop | pgpainless-cli libalgorithm-merge-perl less
+#7 3.733   ssh-client manpages manpages-dev libc-devtools libfile-fcntllock-perl
+#7 3.733   liblocale-gettext-perl krb5-locales libldap-common publicsuffix
+#7 3.733   libsasl2-modules netbase
+#7 4.014 The following NEW packages will be installed:
+#7 4.014   binutils binutils-common binutils-x86-64-linux-gnu build-essential bzip2
+#7 4.014   ca-certificates cpp cpp-12 curl dpkg-dev g++ g++-12 gcc gcc-12 git git-man
+#7 4.014   libasan8 libatomic1 libbinutils libbrotli1 libc-dev-bin libc6-dev libcc1-0
+#7 4.014   libcrypt-dev libctf-nobfd0 libctf0 libcurl3-gnutls libcurl4 libdpkg-perl
+#7 4.014   liberror-perl libexpat1 libgcc-12-dev libgdbm-compat4 libgdbm6 libgomp1
+#7 4.014   libgprofng0 libgssapi-krb5-2 libisl23 libitm1 libjansson4 libk5crypto3
+#7 4.014   libkeyutils1 libkrb5-3 libkrb5support0 libldap-2.5-0 liblsan0 libmpc3
+#7 4.014   libmpfr6 libnghttp2-14 libnsl-dev libnsl2 libperl5.36 libpsl5 libquadmath0
+#7 4.015   librtmp1 libsasl2-2 libsasl2-modules-db libssh2-1 libssl3 libstdc++-12-dev
+#7 4.015   libtirpc-common libtirpc-dev libtirpc3 libtsan2 libubsan1 linux-libc-dev
+#7 4.015   make openssl patch perl perl-modules-5.36 rpcsvc-proto xz-utils
+#7 4.122 0 upgraded, 73 newly installed, 0 to remove and 2 not upgraded.
+#7 4.122 Need to get 89.6 MB of archives.
+#7 4.122 After this operation, 379 MB of additional disk space will be used.
+#7 4.122 Get:1 http://deb.debian.org/debian bookworm/main amd64 perl-modules-5.36 all 5.36.0-7+deb12u3 [2815 kB]
+#7 4.254 Get:2 http://deb.debian.org/debian bookworm/main amd64 libgdbm6 amd64 1.23-3 [72.2 kB]
+#7 4.257 Get:3 http://deb.debian.org/debian bookworm/main amd64 libgdbm-compat4 amd64 1.23-3 [48.2 kB]
+#7 4.257 Get:4 http://deb.debian.org/debian bookworm/main amd64 libperl5.36 amd64 5.36.0-7+deb12u3 [4196 kB]
+#7 4.346 Get:5 http://deb.debian.org/debian bookworm/main amd64 perl amd64 5.36.0-7+deb12u3 [239 kB]
+#7 4.348 Get:6 http://deb.debian.org/debian bookworm/main amd64 bzip2 amd64 1.0.8-5+b1 [49.8 kB]
+#7 4.365 Get:7 http://deb.debian.org/debian bookworm/main amd64 libssl3 amd64 3.0.20-1~deb12u1 [2034 kB]
+#7 4.412 Get:8 http://deb.debian.org/debian bookworm/main amd64 openssl amd64 3.0.20-1~deb12u1 [1438 kB]
+#7 4.469 Get:9 http://deb.debian.org/debian bookworm/main amd64 ca-certificates all 20230311+deb12u1 [155 kB]
+#7 4.486 Get:10 http://deb.debian.org/debian bookworm/main amd64 xz-utils amd64 5.4.1-1 [471 kB]
+#7 4.516 Get:11 http://deb.debian.org/debian bookworm/main amd64 binutils-common amd64 2.40-2 [2487 kB]
+#7 4.582 Get:12 http://deb.debian.org/debian bookworm/main amd64 libbinutils amd64 2.40-2 [572 kB]
+#7 4.607 Get:13 http://deb.debian.org/debian bookworm/main amd64 libctf-nobfd0 amd64 2.40-2 [153 kB]
+#7 4.628 Get:14 http://deb.debian.org/debian bookworm/main amd64 libctf0 amd64 2.40-2 [89.8 kB]
+#7 4.646 Get:15 http://deb.debian.org/debian bookworm/main amd64 libgprofng0 amd64 2.40-2 [812 kB]
+#7 4.677 Get:16 http://deb.debian.org/debian bookworm/main amd64 libjansson4 amd64 2.14-2 [40.8 kB]
+#7 4.711 Get:17 http://deb.debian.org/debian bookworm/main amd64 binutils-x86-64-linux-gnu amd64 2.40-2 [2246 kB]
+#7 4.780 Get:18 http://deb.debian.org/debian bookworm/main amd64 binutils amd64 2.40-2 [65.0 kB]
+#7 4.781 Get:19 http://deb.debian.org/debian bookworm/main amd64 libc-dev-bin amd64 2.36-9+deb12u14 [48.1 kB]
+#7 4.784 Get:20 http://deb.debian.org/debian-security bookworm-security/main amd64 linux-libc-dev amd64 6.1.174-1 [2272 kB]
+#7 4.816 Get:21 http://deb.debian.org/debian bookworm/main amd64 libcrypt-dev amd64 1:4.4.33-2 [118 kB]
+#7 4.823 Get:22 http://deb.debian.org/debian-security bookworm-security/main amd64 libkrb5support0 amd64 1.20.1-2+deb12u5 [33.2 kB]
+#7 4.840 Get:23 http://deb.debian.org/debian-security bookworm-security/main amd64 libk5crypto3 amd64 1.20.1-2+deb12u5 [79.7 kB]
+#7 4.843 Get:24 http://deb.debian.org/debian bookworm/main amd64 libkeyutils1 amd64 1.6.3-2 [8808 B]
+#7 4.857 Get:25 http://deb.debian.org/debian-security bookworm-security/main amd64 libkrb5-3 amd64 1.20.1-2+deb12u5 [332 kB]
+#7 4.883 Get:26 http://deb.debian.org/debian-security bookworm-security/main amd64 libgssapi-krb5-2 amd64 1.20.1-2+deb12u5 [135 kB]
+#7 4.885 Get:27 http://deb.debian.org/debian bookworm/main amd64 libtirpc-common all 1.3.3+ds-1 [14.0 kB]
+#7 4.886 Get:28 http://deb.debian.org/debian bookworm/main amd64 libtirpc3 amd64 1.3.3+ds-1 [85.2 kB]
+#7 4.888 Get:29 http://deb.debian.org/debian bookworm/main amd64 libnsl2 amd64 1.3.0-2 [39.5 kB]
+#7 4.906 Get:30 http://deb.debian.org/debian bookworm/main amd64 libtirpc-dev amd64 1.3.3+ds-1 [191 kB]
+#7 4.911 Get:31 http://deb.debian.org/debian bookworm/main amd64 libnsl-dev amd64 1.3.0-2 [66.4 kB]
+#7 4.913 Get:32 http://deb.debian.org/debian bookworm/main amd64 rpcsvc-proto amd64 1.4.3-1 [63.3 kB]
+#7 4.935 Get:33 http://deb.debian.org/debian bookworm/main amd64 libc6-dev amd64 2.36-9+deb12u14 [1904 kB]
+#7 5.018 Get:34 http://deb.debian.org/debian bookworm/main amd64 libisl23 amd64 0.25-1.1 [683 kB]
+#7 5.065 Get:35 http://deb.debian.org/debian bookworm/main amd64 libmpfr6 amd64 4.2.0-1 [701 kB]
+#7 5.095 Get:36 http://deb.debian.org/debian bookworm/main amd64 libmpc3 amd64 1.3.1-1 [51.5 kB]
+#7 5.097 Get:37 http://deb.debian.org/debian bookworm/main amd64 cpp-12 amd64 12.2.0-14+deb12u1 [9768 kB]
+#7 5.569 Get:38 http://deb.debian.org/debian bookworm/main amd64 cpp amd64 4:12.2.0-3 [6836 B]
+#7 5.569 Get:39 http://deb.debian.org/debian bookworm/main amd64 libcc1-0 amd64 12.2.0-14+deb12u1 [41.7 kB]
+#7 5.571 Get:40 http://deb.debian.org/debian bookworm/main amd64 libgomp1 amd64 12.2.0-14+deb12u1 [116 kB]
+#7 5.574 Get:41 http://deb.debian.org/debian bookworm/main amd64 libitm1 amd64 12.2.0-14+deb12u1 [26.1 kB]
+#7 5.574 Get:42 http://deb.debian.org/debian bookworm/main amd64 libatomic1 amd64 12.2.0-14+deb12u1 [9376 B]
+#7 5.590 Get:43 http://deb.debian.org/debian bookworm/main amd64 libasan8 amd64 12.2.0-14+deb12u1 [2193 kB]
+#7 5.704 Get:44 http://deb.debian.org/debian bookworm/main amd64 liblsan0 amd64 12.2.0-14+deb12u1 [969 kB]
+#7 5.762 Get:45 http://deb.debian.org/debian bookworm/main amd64 libtsan2 amd64 12.2.0-14+deb12u1 [2197 kB]
+#7 5.956 Get:46 http://deb.debian.org/debian bookworm/main amd64 libubsan1 amd64 12.2.0-14+deb12u1 [883 kB]
+#7 6.294 Get:47 http://deb.debian.org/debian bookworm/main amd64 libquadmath0 amd64 12.2.0-14+deb12u1 [145 kB]
+#7 6.438 Get:48 http://deb.debian.org/debian bookworm/main amd64 libgcc-12-dev amd64 12.2.0-14+deb12u1 [2437 kB]
+#7 ...
+
+#6 [stage-1 2/4] RUN apt-get update &&   apt-get install -y --no-install-recommends     ca-certificates     libcurl4 &&   rm -rf /var/lib/apt/lists/*
+#6 6.381 Fetched 9358 kB in 6s (1531 kB/s)
+#6 6.381 Reading package lists...
+#6 6.964 Reading package lists...
+#6 7.492 Building dependency tree...
+#6 7.625 Reading state information...
+#6 7.757 The following additional packages will be installed:
+#6 7.758   libbrotli1 libgssapi-krb5-2 libk5crypto3 libkeyutils1 libkrb5-3
+#6 7.758   libkrb5support0 libldap-2.5-0 libnghttp2-14 libpsl5 librtmp1 libsasl2-2
+#6 7.759   libsasl2-modules-db libssh2-1 libssl3 openssl
+#6 7.760 Suggested packages:
+#6 7.760   krb5-doc krb5-user
+#6 7.760 Recommended packages:
+#6 7.760   krb5-locales libldap-common publicsuffix libsasl2-modules
+#6 7.863 The following NEW packages will be installed:
+#6 7.863   ca-certificates libbrotli1 libcurl4 libgssapi-krb5-2 libk5crypto3
+#6 7.863   libkeyutils1 libkrb5-3 libkrb5support0 libldap-2.5-0 libnghttp2-14 libpsl5
+#6 7.864   librtmp1 libsasl2-2 libsasl2-modules-db libssh2-1 libssl3 openssl
+#6 7.966 0 upgraded, 17 newly installed, 0 to remove and 2 not upgraded.
+#6 7.966 Need to get 5517 kB of archives.
+#6 7.966 After this operation, 14.2 MB of additional disk space will be used.
+#6 7.966 Get:1 http://deb.debian.org/debian bookworm/main amd64 libssl3 amd64 3.0.20-1~deb12u1 [2034 kB]
+#6 8.077 Get:2 http://deb.debian.org/debian bookworm/main amd64 openssl amd64 3.0.20-1~deb12u1 [1438 kB]
+#6 8.122 Get:3 http://deb.debian.org/debian bookworm/main amd64 ca-certificates all 20230311+deb12u1 [155 kB]
+#6 8.124 Get:4 http://deb.debian.org/debian bookworm/main amd64 libbrotli1 amd64 1.0.9-2+b6 [275 kB]
+#6 8.144 Get:5 http://deb.debian.org/debian-security bookworm-security/main amd64 libkrb5support0 amd64 1.20.1-2+deb12u5 [33.2 kB]
+#6 8.145 Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 libk5crypto3 amd64 1.20.1-2+deb12u5 [79.7 kB]
+#6 8.148 Get:7 http://deb.debian.org/debian bookworm/main amd64 libkeyutils1 amd64 1.6.3-2 [8808 B]
+#6 8.149 Get:8 http://deb.debian.org/debian-security bookworm-security/main amd64 libkrb5-3 amd64 1.20.1-2+deb12u5 [332 kB]
+#6 8.171 Get:9 http://deb.debian.org/debian-security bookworm-security/main amd64 libgssapi-krb5-2 amd64 1.20.1-2+deb12u5 [135 kB]
+#6 8.190 Get:10 http://deb.debian.org/debian bookworm/main amd64 libsasl2-modules-db amd64 2.1.28+dfsg-10 [20.3 kB]
+#6 8.190 Get:11 http://deb.debian.org/debian bookworm/main amd64 libsasl2-2 amd64 2.1.28+dfsg-10 [59.7 kB]
+#6 8.191 Get:12 http://deb.debian.org/debian bookworm/main amd64 libldap-2.5-0 amd64 2.5.13+dfsg-5 [183 kB]
+#6 8.196 Get:13 http://deb.debian.org/debian-security bookworm-security/main amd64 libnghttp2-14 amd64 1.52.0-1+deb12u3 [72.4 kB]
+#6 8.198 Get:14 http://deb.debian.org/debian bookworm/main amd64 libpsl5 amd64 0.21.2-1 [58.7 kB]
+#6 8.215 Get:15 http://deb.debian.org/debian bookworm/main amd64 librtmp1 amd64 2.4+20151223.gitfa8646d.1-2+b2 [60.8 kB]
+#6 8.218 Get:16 http://deb.debian.org/debian bookworm/main amd64 libssh2-1 amd64 1.10.0-3+b1 [179 kB]
+#6 8.234 Get:17 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14 [392 kB]
+#6 8.470 debconf: delaying package configuration, since apt-utils is not installed
+#6 8.524 Fetched 5517 kB in 0s (14.8 MB/s)
+#6 8.609 Selecting previously unselected package libssl3:amd64.
+#6 8.609 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6096 files and directories currently installed.)
+#6 8.612 Preparing to unpack .../00-libssl3_3.0.20-1~deb12u1_amd64.deb ...
+#6 8.617 Unpacking libssl3:amd64 (3.0.20-1~deb12u1) ...
+#6 8.826 Selecting previously unselected package openssl.
+#6 8.826 Preparing to unpack .../01-openssl_3.0.20-1~deb12u1_amd64.deb ...
+#6 8.828 Unpacking openssl (3.0.20-1~deb12u1) ...
+#6 9.006 Selecting previously unselected package ca-certificates.
+#6 9.007 Preparing to unpack .../02-ca-certificates_20230311+deb12u1_all.deb ...
+#6 9.008 Unpacking ca-certificates (20230311+deb12u1) ...
+#6 9.118 Selecting previously unselected package libbrotli1:amd64.
+#6 9.118 Preparing to unpack .../03-libbrotli1_1.0.9-2+b6_amd64.deb ...
+#6 9.120 Unpacking libbrotli1:amd64 (1.0.9-2+b6) ...
+#6 9.232 Selecting previously unselected package libkrb5support0:amd64.
+#6 9.232 Preparing to unpack .../04-libkrb5support0_1.20.1-2+deb12u5_amd64.deb ...
+#6 9.234 Unpacking libkrb5support0:amd64 (1.20.1-2+deb12u5) ...
+#6 9.331 Selecting previously unselected package libk5crypto3:amd64.
+#6 9.332 Preparing to unpack .../05-libk5crypto3_1.20.1-2+deb12u5_amd64.deb ...
+#6 9.334 Unpacking libk5crypto3:amd64 (1.20.1-2+deb12u5) ...
+#6 9.436 Selecting previously unselected package libkeyutils1:amd64.
+#6 9.436 Preparing to unpack .../06-libkeyutils1_1.6.3-2_amd64.deb ...
+#6 9.438 Unpacking libkeyutils1:amd64 (1.6.3-2) ...
+#6 9.534 Selecting previously unselected package libkrb5-3:amd64.
+#6 9.535 Preparing to unpack .../07-libkrb5-3_1.20.1-2+deb12u5_amd64.deb ...
+#6 9.536 Unpacking libkrb5-3:amd64 (1.20.1-2+deb12u5) ...
+#6 9.658 Selecting previously unselected package libgssapi-krb5-2:amd64.
+#6 9.659 Preparing to unpack .../08-libgssapi-krb5-2_1.20.1-2+deb12u5_amd64.deb ...
+#6 9.660 Unpacking libgssapi-krb5-2:amd64 (1.20.1-2+deb12u5) ...
+#6 9.763 Selecting previously unselected package libsasl2-modules-db:amd64.
+#6 9.763 Preparing to unpack .../09-libsasl2-modules-db_2.1.28+dfsg-10_amd64.deb ...
+#6 9.765 Unpacking libsasl2-modules-db:amd64 (2.1.28+dfsg-10) ...
+#6 9.861 Selecting previously unselected package libsasl2-2:amd64.
+#6 9.862 Preparing to unpack .../10-libsasl2-2_2.1.28+dfsg-10_amd64.deb ...
+#6 9.863 Unpacking libsasl2-2:amd64 (2.1.28+dfsg-10) ...
+#6 9.961 Selecting previously unselected package libldap-2.5-0:amd64.
+#6 9.962 Preparing to unpack .../11-libldap-2.5-0_2.5.13+dfsg-5_amd64.deb ...
+#6 9.965 Unpacking libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
+#6 10.07 Selecting previously unselected package libnghttp2-14:amd64.
+#6 10.07 Preparing to unpack .../12-libnghttp2-14_1.52.0-1+deb12u3_amd64.deb ...
+#6 10.07 Unpacking libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
+#6 10.17 Selecting previously unselected package libpsl5:amd64.
+#6 10.17 Preparing to unpack .../13-libpsl5_0.21.2-1_amd64.deb ...
+#6 10.17 Unpacking libpsl5:amd64 (0.21.2-1) ...
+#6 10.27 Selecting previously unselected package librtmp1:amd64.
+#6 10.27 Preparing to unpack .../14-librtmp1_2.4+20151223.gitfa8646d.1-2+b2_amd64.deb ...
+#6 10.27 Unpacking librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+#6 10.37 Selecting previously unselected package libssh2-1:amd64.
+#6 10.37 Preparing to unpack .../15-libssh2-1_1.10.0-3+b1_amd64.deb ...
+#6 10.38 Unpacking libssh2-1:amd64 (1.10.0-3+b1) ...
+#6 10.48 Selecting previously unselected package libcurl4:amd64.
+#6 10.49 Preparing to unpack .../16-libcurl4_7.88.1-10+deb12u14_amd64.deb ...
+#6 10.49 Unpacking libcurl4:amd64 (7.88.1-10+deb12u14) ...
+#6 10.58 Setting up libkeyutils1:amd64 (1.6.3-2) ...
+#6 10.59 Setting up libpsl5:amd64 (0.21.2-1) ...
+#6 10.59 Setting up libbrotli1:amd64 (1.0.9-2+b6) ...
+#6 10.60 Setting up libssl3:amd64 (3.0.20-1~deb12u1) ...
+#6 10.60 Setting up libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
+#6 10.61 Setting up libkrb5support0:amd64 (1.20.1-2+deb12u5) ...
+#6 10.61 Setting up libsasl2-modules-db:amd64 (2.1.28+dfsg-10) ...
+#6 10.61 Setting up librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+#6 10.62 Setting up libk5crypto3:amd64 (1.20.1-2+deb12u5) ...
+#6 10.62 Setting up libsasl2-2:amd64 (2.1.28+dfsg-10) ...
+#6 10.63 Setting up libssh2-1:amd64 (1.10.0-3+b1) ...
+#6 10.63 Setting up libkrb5-3:amd64 (1.20.1-2+deb12u5) ...
+#6 10.64 Setting up openssl (3.0.20-1~deb12u1) ...
+#6 10.66 Setting up libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
+#6 10.66 Setting up ca-certificates (20230311+deb12u1) ...
+#6 10.95 debconf: unable to initialize frontend: Dialog
+#6 10.95 debconf: (TERM is not set, so the dialog frontend is not usable.)
+#6 10.95 debconf: falling back to frontend: Readline
+#6 10.96 debconf: unable to initialize frontend: Readline
+#6 10.96 debconf: (Can't locate Term/ReadLine.pm in @INC (you may need to install the Term::ReadLine module) (@INC contains: /etc/perl /usr/local/lib/x86_64-linux-gnu/perl/5.36.0 /usr/local/share/perl/5.36.0 /usr/lib/x86_64-linux-gnu/perl5/5.36 /usr/share/perl5 /usr/lib/x86_64-linux-gnu/perl-base /usr/lib/x86_64-linux-gnu/perl/5.36 /usr/share/perl/5.36 /usr/local/lib/site_perl) at /usr/share/perl5/Debconf/FrontEnd/Readline.pm line 7.)
+#6 10.96 debconf: falling back to frontend: Teletype
+#6 16.22 Updating certificates in /etc/ssl/certs...
+#6 ...
+
+#7 [build 2/8] RUN apt-get update &&   apt-get install -y --no-install-recommends     build-essential     ca-certificates     curl     git &&   rm -rf /var/lib/apt/lists/*
+#7 8.811 Get:49 http://deb.debian.org/debian bookworm/main amd64 gcc-12 amd64 12.2.0-14+deb12u1 [19.3 MB]
+#7 23.03 Get:50 http://deb.debian.org/debian bookworm/main amd64 gcc amd64 4:12.2.0-3 [5216 B]
+#7 23.04 Get:51 http://deb.debian.org/debian bookworm/main amd64 libstdc++-12-dev amd64 12.2.0-14+deb12u1 [2047 kB]
+#7 24.63 Get:52 http://deb.debian.org/debian bookworm/main amd64 g++-12 amd64 12.2.0-14+deb12u1 [10.7 MB]
+#7 ...
+
+#6 [stage-1 2/4] RUN apt-get update &&   apt-get install -y --no-install-recommends     ca-certificates     libcurl4 &&   rm -rf /var/lib/apt/lists/*
+#6 24.88 142 added, 0 removed; done.
+#6 25.00 Setting up libgssapi-krb5-2:amd64 (1.20.1-2+deb12u5) ...
+#6 25.03 Setting up libcurl4:amd64 (7.88.1-10+deb12u14) ...
+#6 25.03 Processing triggers for libc-bin (2.36-9+deb12u14) ...
+#6 25.07 Processing triggers for ca-certificates (20230311+deb12u1) ...
+#6 25.16 Updating certificates in /etc/ssl/certs...
+#6 ...
+
+#7 [build 2/8] RUN apt-get update &&   apt-get install -y --no-install-recommends     build-essential     ca-certificates     curl     git &&   rm -rf /var/lib/apt/lists/*
+#7 26.89 Get:53 http://deb.debian.org/debian bookworm/main amd64 g++ amd64 4:12.2.0-3 [1356 B]
+#7 26.90 Get:54 http://deb.debian.org/debian bookworm/main amd64 make amd64 4.3-4.1 [396 kB]
+#7 26.97 Get:55 http://deb.debian.org/debian bookworm/main amd64 libdpkg-perl all 1.21.23 [604 kB]
+#7 27.05 Get:56 http://deb.debian.org/debian bookworm/main amd64 patch amd64 2.7.6-7 [128 kB]
+#7 27.08 Get:57 http://deb.debian.org/debian bookworm/main amd64 dpkg-dev all 1.21.23 [1354 kB]
+#7 27.23 Get:58 http://deb.debian.org/debian bookworm/main amd64 build-essential amd64 12.9 [7704 B]
+#7 27.23 Get:59 http://deb.debian.org/debian bookworm/main amd64 libbrotli1 amd64 1.0.9-2+b6 [275 kB]
+#7 27.27 Get:60 http://deb.debian.org/debian bookworm/main amd64 libsasl2-modules-db amd64 2.1.28+dfsg-10 [20.3 kB]
+#7 27.27 Get:61 http://deb.debian.org/debian bookworm/main amd64 libsasl2-2 amd64 2.1.28+dfsg-10 [59.7 kB]
+#7 27.28 Get:62 http://deb.debian.org/debian bookworm/main amd64 libldap-2.5-0 amd64 2.5.13+dfsg-5 [183 kB]
+#7 27.30 Get:63 http://deb.debian.org/debian-security bookworm-security/main amd64 libnghttp2-14 amd64 1.52.0-1+deb12u3 [72.4 kB]
+#7 27.31 Get:64 http://deb.debian.org/debian bookworm/main amd64 libpsl5 amd64 0.21.2-1 [58.7 kB]
+#7 27.34 Get:65 http://deb.debian.org/debian bookworm/main amd64 librtmp1 amd64 2.4+20151223.gitfa8646d.1-2+b2 [60.8 kB]
+#7 27.34 Get:66 http://deb.debian.org/debian bookworm/main amd64 libssh2-1 amd64 1.10.0-3+b1 [179 kB]
+#7 27.36 Get:67 http://deb.debian.org/debian bookworm/main amd64 libcurl4 amd64 7.88.1-10+deb12u14 [392 kB]
+#7 27.42 Get:68 http://deb.debian.org/debian bookworm/main amd64 curl amd64 7.88.1-10+deb12u14 [316 kB]
+#7 27.47 Get:69 http://deb.debian.org/debian bookworm/main amd64 libcurl3-gnutls amd64 7.88.1-10+deb12u14 [386 kB]
+#7 27.51 Get:70 http://deb.debian.org/debian bookworm/main amd64 libexpat1 amd64 2.5.0-1+deb12u2 [99.9 kB]
+#7 27.52 Get:71 http://deb.debian.org/debian bookworm/main amd64 liberror-perl all 0.17029-2 [29.0 kB]
+#7 27.53 Get:72 http://deb.debian.org/debian bookworm/main amd64 git-man all 1:2.39.5-0+deb12u3 [2053 kB]
+#7 28.05 Get:73 http://deb.debian.org/debian bookworm/main amd64 git amd64 1:2.39.5-0+deb12u3 [7264 kB]
+#7 ...
+
+#6 [stage-1 2/4] RUN apt-get update &&   apt-get install -y --no-install-recommends     ca-certificates     libcurl4 &&   rm -rf /var/lib/apt/lists/*
+#6 32.49 0 added, 0 removed; done.
+#6 32.49 Running hooks in /etc/ca-certificates/update.d...
+#6 32.50 done.
+#6 DONE 32.7s
+
+#7 [build 2/8] RUN apt-get update &&   apt-get install -y --no-install-recommends     build-essential     ca-certificates     curl     git &&   rm -rf /var/lib/apt/lists/*
+#7 ...
+
+#8 [stage-1 3/4] WORKDIR /workspace/crewrift
+#8 DONE 0.0s
+
+#7 [build 2/8] RUN apt-get update &&   apt-get install -y --no-install-recommends     build-essential     ca-certificates     curl     git &&   rm -rf /var/lib/apt/lists/*
+#7 32.83 debconf: delaying package configuration, since apt-utils is not installed
+#7 32.89 Fetched 89.6 MB in 29s (3141 kB/s)
+#7 32.97 Selecting previously unselected package perl-modules-5.36.
+#7 32.97 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6096 files and directories currently installed.)
+#7 32.97 Preparing to unpack .../00-perl-modules-5.36_5.36.0-7+deb12u3_all.deb ...
+#7 32.97 Unpacking perl-modules-5.36 (5.36.0-7+deb12u3) ...
+#7 33.27 Selecting previously unselected package libgdbm6:amd64.
+#7 33.27 Preparing to unpack .../01-libgdbm6_1.23-3_amd64.deb ...
+#7 33.28 Unpacking libgdbm6:amd64 (1.23-3) ...
+#7 33.38 Selecting previously unselected package libgdbm-compat4:amd64.
+#7 33.38 Preparing to unpack .../02-libgdbm-compat4_1.23-3_amd64.deb ...
+#7 33.38 Unpacking libgdbm-compat4:amd64 (1.23-3) ...
+#7 33.48 Selecting previously unselected package libperl5.36:amd64.
+#7 33.48 Preparing to unpack .../03-libperl5.36_5.36.0-7+deb12u3_amd64.deb ...
+#7 33.48 Unpacking libperl5.36:amd64 (5.36.0-7+deb12u3) ...
+#7 33.84 Selecting previously unselected package perl.
+#7 33.84 Preparing to unpack .../04-perl_5.36.0-7+deb12u3_amd64.deb ...
+#7 33.90 Unpacking perl (5.36.0-7+deb12u3) ...
+#7 34.01 Selecting previously unselected package bzip2.
+#7 34.01 Preparing to unpack .../05-bzip2_1.0.8-5+b1_amd64.deb ...
+#7 34.01 Unpacking bzip2 (1.0.8-5+b1) ...
+#7 34.11 Selecting previously unselected package libssl3:amd64.
+#7 34.11 Preparing to unpack .../06-libssl3_3.0.20-1~deb12u1_amd64.deb ...
+#7 34.12 Unpacking libssl3:amd64 (3.0.20-1~deb12u1) ...
+#7 34.32 Selecting previously unselected package openssl.
+#7 34.33 Preparing to unpack .../07-openssl_3.0.20-1~deb12u1_amd64.deb ...
+#7 34.33 Unpacking openssl (3.0.20-1~deb12u1) ...
+#7 34.51 Selecting previously unselected package ca-certificates.
+#7 34.51 Preparing to unpack .../08-ca-certificates_20230311+deb12u1_all.deb ...
+#7 34.51 Unpacking ca-certificates (20230311+deb12u1) ...
+#7 34.62 Selecting previously unselected package xz-utils.
+#7 34.62 Preparing to unpack .../09-xz-utils_5.4.1-1_amd64.deb ...
+#7 34.62 Unpacking xz-utils (5.4.1-1) ...
+#7 34.74 Selecting previously unselected package binutils-common:amd64.
+#7 34.74 Preparing to unpack .../10-binutils-common_2.40-2_amd64.deb ...
+#7 34.75 Unpacking binutils-common:amd64 (2.40-2) ...
+#7 35.04 Selecting previously unselected package libbinutils:amd64.
+#7 35.04 Preparing to unpack .../11-libbinutils_2.40-2_amd64.deb ...
+#7 35.04 Unpacking libbinutils:amd64 (2.40-2) ...
+#7 35.17 Selecting previously unselected package libctf-nobfd0:amd64.
+#7 35.17 Preparing to unpack .../12-libctf-nobfd0_2.40-2_amd64.deb ...
+#7 35.17 Unpacking libctf-nobfd0:amd64 (2.40-2) ...
+#7 35.28 Selecting previously unselected package libctf0:amd64.
+#7 35.28 Preparing to unpack .../13-libctf0_2.40-2_amd64.deb ...
+#7 35.28 Unpacking libctf0:amd64 (2.40-2) ...
+#7 35.38 Selecting previously unselected package libgprofng0:amd64.
+#7 35.38 Preparing to unpack .../14-libgprofng0_2.40-2_amd64.deb ...
+#7 35.38 Unpacking libgprofng0:amd64 (2.40-2) ...
+#7 35.53 Selecting previously unselected package libjansson4:amd64.
+#7 35.53 Preparing to unpack .../15-libjansson4_2.14-2_amd64.deb ...
+#7 35.53 Unpacking libjansson4:amd64 (2.14-2) ...
+#7 35.63 Selecting previously unselected package binutils-x86-64-linux-gnu.
+#7 35.63 Preparing to unpack .../16-binutils-x86-64-linux-gnu_2.40-2_amd64.deb ...
+#7 35.63 Unpacking binutils-x86-64-linux-gnu (2.40-2) ...
+#7 35.87 Selecting previously unselected package binutils.
+#7 35.87 Preparing to unpack .../17-binutils_2.40-2_amd64.deb ...
+#7 35.87 Unpacking binutils (2.40-2) ...
+#7 35.97 Selecting previously unselected package libc-dev-bin.
+#7 35.97 Preparing to unpack .../18-libc-dev-bin_2.36-9+deb12u14_amd64.deb ...
+#7 35.97 Unpacking libc-dev-bin (2.36-9+deb12u14) ...
+#7 36.07 Selecting previously unselected package linux-libc-dev:amd64.
+#7 36.07 Preparing to unpack .../19-linux-libc-dev_6.1.174-1_amd64.deb ...
+#7 36.07 Unpacking linux-libc-dev:amd64 (6.1.174-1) ...
+#7 36.24 Selecting previously unselected package libcrypt-dev:amd64.
+#7 36.24 Preparing to unpack .../20-libcrypt-dev_1%3a4.4.33-2_amd64.deb ...
+#7 36.30 Unpacking libcrypt-dev:amd64 (1:4.4.33-2) ...
+#7 36.40 Selecting previously unselected package libkrb5support0:amd64.
+#7 36.40 Preparing to unpack .../21-libkrb5support0_1.20.1-2+deb12u5_amd64.deb ...
+#7 36.41 Unpacking libkrb5support0:amd64 (1.20.1-2+deb12u5) ...
+#7 36.50 Selecting previously unselected package libk5crypto3:amd64.
+#7 36.50 Preparing to unpack .../22-libk5crypto3_1.20.1-2+deb12u5_amd64.deb ...
+#7 36.50 Unpacking libk5crypto3:amd64 (1.20.1-2+deb12u5) ...
+#7 36.61 Selecting previously unselected package libkeyutils1:amd64.
+#7 36.61 Preparing to unpack .../23-libkeyutils1_1.6.3-2_amd64.deb ...
+#7 36.61 Unpacking libkeyutils1:amd64 (1.6.3-2) ...
+#7 36.71 Selecting previously unselected package libkrb5-3:amd64.
+#7 36.71 Preparing to unpack .../24-libkrb5-3_1.20.1-2+deb12u5_amd64.deb ...
+#7 36.71 Unpacking libkrb5-3:amd64 (1.20.1-2+deb12u5) ...
+#7 36.83 Selecting previously unselected package libgssapi-krb5-2:amd64.
+#7 36.83 Preparing to unpack .../25-libgssapi-krb5-2_1.20.1-2+deb12u5_amd64.deb ...
+#7 36.83 Unpacking libgssapi-krb5-2:amd64 (1.20.1-2+deb12u5) ...
+#7 36.93 Selecting previously unselected package libtirpc-common.
+#7 36.93 Preparing to unpack .../26-libtirpc-common_1.3.3+ds-1_all.deb ...
+#7 36.93 Unpacking libtirpc-common (1.3.3+ds-1) ...
+#7 37.03 Selecting previously unselected package libtirpc3:amd64.
+#7 37.03 Preparing to unpack .../27-libtirpc3_1.3.3+ds-1_amd64.deb ...
+#7 37.03 Unpacking libtirpc3:amd64 (1.3.3+ds-1) ...
+#7 37.13 Selecting previously unselected package libnsl2:amd64.
+#7 37.13 Preparing to unpack .../28-libnsl2_1.3.0-2_amd64.deb ...
+#7 37.13 Unpacking libnsl2:amd64 (1.3.0-2) ...
+#7 37.22 Selecting previously unselected package libtirpc-dev:amd64.
+#7 37.22 Preparing to unpack .../29-libtirpc-dev_1.3.3+ds-1_amd64.deb ...
+#7 37.22 Unpacking libtirpc-dev:amd64 (1.3.3+ds-1) ...
+#7 37.33 Selecting previously unselected package libnsl-dev:amd64.
+#7 37.33 Preparing to unpack .../30-libnsl-dev_1.3.0-2_amd64.deb ...
+#7 37.33 Unpacking libnsl-dev:amd64 (1.3.0-2) ...
+#7 37.42 Selecting previously unselected package rpcsvc-proto.
+#7 37.42 Preparing to unpack .../31-rpcsvc-proto_1.4.3-1_amd64.deb ...
+#7 37.43 Unpacking rpcsvc-proto (1.4.3-1) ...
+#7 37.52 Selecting previously unselected package libc6-dev:amd64.
+#7 37.52 Preparing to unpack .../32-libc6-dev_2.36-9+deb12u14_amd64.deb ...
+#7 37.53 Unpacking libc6-dev:amd64 (2.36-9+deb12u14) ...
+#7 37.74 Selecting previously unselected package libisl23:amd64.
+#7 37.74 Preparing to unpack .../33-libisl23_0.25-1.1_amd64.deb ...
+#7 37.74 Unpacking libisl23:amd64 (0.25-1.1) ...
+#7 37.87 Selecting previously unselected package libmpfr6:amd64.
+#7 37.87 Preparing to unpack .../34-libmpfr6_4.2.0-1_amd64.deb ...
+#7 37.88 Unpacking libmpfr6:amd64 (4.2.0-1) ...
+#7 37.99 Selecting previously unselected package libmpc3:amd64.
+#7 37.99 Preparing to unpack .../35-libmpc3_1.3.1-1_amd64.deb ...
+#7 37.99 Unpacking libmpc3:amd64 (1.3.1-1) ...
+#7 38.09 Selecting previously unselected package cpp-12.
+#7 38.09 Preparing to unpack .../36-cpp-12_12.2.0-14+deb12u1_amd64.deb ...
+#7 38.09 Unpacking cpp-12 (12.2.0-14+deb12u1) ...
+#7 38.66 Selecting previously unselected package cpp.
+#7 38.66 Preparing to unpack .../37-cpp_4%3a12.2.0-3_amd64.deb ...
+#7 38.66 Unpacking cpp (4:12.2.0-3) ...
+#7 38.76 Selecting previously unselected package libcc1-0:amd64.
+#7 38.76 Preparing to unpack .../38-libcc1-0_12.2.0-14+deb12u1_amd64.deb ...
+#7 38.76 Unpacking libcc1-0:amd64 (12.2.0-14+deb12u1) ...
+#7 38.85 Selecting previously unselected package libgomp1:amd64.
+#7 38.85 Preparing to unpack .../39-libgomp1_12.2.0-14+deb12u1_amd64.deb ...
+#7 38.85 Unpacking libgomp1:amd64 (12.2.0-14+deb12u1) ...
+#7 38.95 Selecting previously unselected package libitm1:amd64.
+#7 38.95 Preparing to unpack .../40-libitm1_12.2.0-14+deb12u1_amd64.deb ...
+#7 38.96 Unpacking libitm1:amd64 (12.2.0-14+deb12u1) ...
+#7 39.05 Selecting previously unselected package libatomic1:amd64.
+#7 39.05 Preparing to unpack .../41-libatomic1_12.2.0-14+deb12u1_amd64.deb ...
+#7 39.05 Unpacking libatomic1:amd64 (12.2.0-14+deb12u1) ...
+#7 39.14 Selecting previously unselected package libasan8:amd64.
+#7 39.15 Preparing to unpack .../42-libasan8_12.2.0-14+deb12u1_amd64.deb ...
+#7 39.15 Unpacking libasan8:amd64 (12.2.0-14+deb12u1) ...
+#7 39.38 Selecting previously unselected package liblsan0:amd64.
+#7 39.38 Preparing to unpack .../43-liblsan0_12.2.0-14+deb12u1_amd64.deb ...
+#7 39.38 Unpacking liblsan0:amd64 (12.2.0-14+deb12u1) ...
+#7 39.53 Selecting previously unselected package libtsan2:amd64.
+#7 39.53 Preparing to unpack .../44-libtsan2_12.2.0-14+deb12u1_amd64.deb ...
+#7 39.54 Unpacking libtsan2:amd64 (12.2.0-14+deb12u1) ...
+#7 39.77 Selecting previously unselected package libubsan1:amd64.
+#7 39.77 Preparing to unpack .../45-libubsan1_12.2.0-14+deb12u1_amd64.deb ...
+#7 39.77 Unpacking libubsan1:amd64 (12.2.0-14+deb12u1) ...
+#7 39.92 Selecting previously unselected package libquadmath0:amd64.
+#7 39.92 Preparing to unpack .../46-libquadmath0_12.2.0-14+deb12u1_amd64.deb ...
+#7 39.92 Unpacking libquadmath0:amd64 (12.2.0-14+deb12u1) ...
+#7 40.02 Selecting previously unselected package libgcc-12-dev:amd64.
+#7 40.02 Preparing to unpack .../47-libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb ...
+#7 40.02 Unpacking libgcc-12-dev:amd64 (12.2.0-14+deb12u1) ...
+#7 40.24 Selecting previously unselected package gcc-12.
+#7 40.24 Preparing to unpack .../48-gcc-12_12.2.0-14+deb12u1_amd64.deb ...
+#7 40.24 Unpacking gcc-12 (12.2.0-14+deb12u1) ...
+#7 40.91 Selecting previously unselected package gcc.
+#7 40.91 Preparing to unpack .../49-gcc_4%3a12.2.0-3_amd64.deb ...
+#7 40.91 Unpacking gcc (4:12.2.0-3) ...
+#7 41.01 Selecting previously unselected package libstdc++-12-dev:amd64.
+#7 41.01 Preparing to unpack .../50-libstdc++-12-dev_12.2.0-14+deb12u1_amd64.deb ...
+#7 41.01 Unpacking libstdc++-12-dev:amd64 (12.2.0-14+deb12u1) ...
+#7 41.24 Selecting previously unselected package g++-12.
+#7 41.24 Preparing to unpack .../51-g++-12_12.2.0-14+deb12u1_amd64.deb ...
+#7 41.24 Unpacking g++-12 (12.2.0-14+deb12u1) ...
+#7 41.84 Selecting previously unselected package g++.
+#7 41.84 Preparing to unpack .../52-g++_4%3a12.2.0-3_amd64.deb ...
+#7 41.84 Unpacking g++ (4:12.2.0-3) ...
+#7 41.93 Selecting previously unselected package make.
+#7 41.93 Preparing to unpack .../53-make_4.3-4.1_amd64.deb ...
+#7 41.93 Unpacking make (4.3-4.1) ...
+#7 42.04 Selecting previously unselected package libdpkg-perl.
+#7 42.05 Preparing to unpack .../54-libdpkg-perl_1.21.23_all.deb ...
+#7 42.05 Unpacking libdpkg-perl (1.21.23) ...
+#7 42.17 Selecting previously unselected package patch.
+#7 42.17 Preparing to unpack .../55-patch_2.7.6-7_amd64.deb ...
+#7 42.17 Unpacking patch (2.7.6-7) ...
+#7 42.26 Selecting previously unselected package dpkg-dev.
+#7 42.26 Preparing to unpack .../56-dpkg-dev_1.21.23_all.deb ...
+#7 42.27 Unpacking dpkg-dev (1.21.23) ...
+#7 42.43 Selecting previously unselected package build-essential.
+#7 42.43 Preparing to unpack .../57-build-essential_12.9_amd64.deb ...
+#7 42.43 Unpacking build-essential (12.9) ...
+#7 42.52 Selecting previously unselected package libbrotli1:amd64.
+#7 42.52 Preparing to unpack .../58-libbrotli1_1.0.9-2+b6_amd64.deb ...
+#7 42.52 Unpacking libbrotli1:amd64 (1.0.9-2+b6) ...
+#7 42.63 Selecting previously unselected package libsasl2-modules-db:amd64.
+#7 42.63 Preparing to unpack .../59-libsasl2-modules-db_2.1.28+dfsg-10_amd64.deb ...
+#7 42.63 Unpacking libsasl2-modules-db:amd64 (2.1.28+dfsg-10) ...
+#7 42.72 Selecting previously unselected package libsasl2-2:amd64.
+#7 42.72 Preparing to unpack .../60-libsasl2-2_2.1.28+dfsg-10_amd64.deb ...
+#7 42.72 Unpacking libsasl2-2:amd64 (2.1.28+dfsg-10) ...
+#7 42.82 Selecting previously unselected package libldap-2.5-0:amd64.
+#7 42.82 Preparing to unpack .../61-libldap-2.5-0_2.5.13+dfsg-5_amd64.deb ...
+#7 42.82 Unpacking libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
+#7 42.92 Selecting previously unselected package libnghttp2-14:amd64.
+#7 42.92 Preparing to unpack .../62-libnghttp2-14_1.52.0-1+deb12u3_amd64.deb ...
+#7 42.93 Unpacking libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
+#7 43.02 Selecting previously unselected package libpsl5:amd64.
+#7 43.02 Preparing to unpack .../63-libpsl5_0.21.2-1_amd64.deb ...
+#7 43.03 Unpacking libpsl5:amd64 (0.21.2-1) ...
+#7 43.15 Selecting previously unselected package librtmp1:amd64.
+#7 43.15 Preparing to unpack .../64-librtmp1_2.4+20151223.gitfa8646d.1-2+b2_amd64.deb ...
+#7 43.16 Unpacking librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+#7 43.25 Selecting previously unselected package libssh2-1:amd64.
+#7 43.25 Preparing to unpack .../65-libssh2-1_1.10.0-3+b1_amd64.deb ...
+#7 43.25 Unpacking libssh2-1:amd64 (1.10.0-3+b1) ...
+#7 43.36 Selecting previously unselected package libcurl4:amd64.
+#7 43.36 Preparing to unpack .../66-libcurl4_7.88.1-10+deb12u14_amd64.deb ...
+#7 43.36 Unpacking libcurl4:amd64 (7.88.1-10+deb12u14) ...
+#7 43.47 Selecting previously unselected package curl.
+#7 43.47 Preparing to unpack .../67-curl_7.88.1-10+deb12u14_amd64.deb ...
+#7 43.47 Unpacking curl (7.88.1-10+deb12u14) ...
+#7 43.58 Selecting previously unselected package libcurl3-gnutls:amd64.
+#7 43.58 Preparing to unpack .../68-libcurl3-gnutls_7.88.1-10+deb12u14_amd64.deb ...
+#7 43.58 Unpacking libcurl3-gnutls:amd64 (7.88.1-10+deb12u14) ...
+#7 43.69 Selecting previously unselected package libexpat1:amd64.
+#7 43.69 Preparing to unpack .../69-libexpat1_2.5.0-1+deb12u2_amd64.deb ...
+#7 43.69 Unpacking libexpat1:amd64 (2.5.0-1+deb12u2) ...
+#7 43.82 Selecting previously unselected package liberror-perl.
+#7 43.82 Preparing to unpack .../70-liberror-perl_0.17029-2_all.deb ...
+#7 43.82 Unpacking liberror-perl (0.17029-2) ...
+#7 43.91 Selecting previously unselected package git-man.
+#7 43.91 Preparing to unpack .../71-git-man_1%3a2.39.5-0+deb12u3_all.deb ...
+#7 43.91 Unpacking git-man (1:2.39.5-0+deb12u3) ...
+#7 44.08 Selecting previously unselected package git.
+#7 44.08 Preparing to unpack .../72-git_1%3a2.39.5-0+deb12u3_amd64.deb ...
+#7 44.14 Unpacking git (1:2.39.5-0+deb12u3) ...
+#7 44.46 Setting up libexpat1:amd64 (2.5.0-1+deb12u2) ...
+#7 44.46 Setting up libkeyutils1:amd64 (1.6.3-2) ...
+#7 44.47 Setting up libpsl5:amd64 (0.21.2-1) ...
+#7 44.47 Setting up libtirpc-common (1.3.3+ds-1) ...
+#7 44.47 Setting up libbrotli1:amd64 (1.0.9-2+b6) ...
+#7 44.48 Setting up binutils-common:amd64 (2.40-2) ...
+#7 44.48 Setting up libssl3:amd64 (3.0.20-1~deb12u1) ...
+#7 44.48 Setting up libnghttp2-14:amd64 (1.52.0-1+deb12u3) ...
+#7 44.49 Setting up linux-libc-dev:amd64 (6.1.174-1) ...
+#7 44.49 Setting up libctf-nobfd0:amd64 (2.40-2) ...
+#7 44.49 Setting up libgomp1:amd64 (12.2.0-14+deb12u1) ...
+#7 44.50 Setting up bzip2 (1.0.8-5+b1) ...
+#7 44.50 Setting up libjansson4:amd64 (2.14-2) ...
+#7 44.50 Setting up libkrb5support0:amd64 (1.20.1-2+deb12u5) ...
+#7 44.51 Setting up libsasl2-modules-db:amd64 (2.1.28+dfsg-10) ...
+#7 44.51 Setting up perl-modules-5.36 (5.36.0-7+deb12u3) ...
+#7 44.51 Setting up rpcsvc-proto (1.4.3-1) ...
+#7 44.52 Setting up make (4.3-4.1) ...
+#7 44.52 Setting up libmpfr6:amd64 (4.2.0-1) ...
+#7 44.53 Setting up librtmp1:amd64 (2.4+20151223.gitfa8646d.1-2+b2) ...
+#7 44.53 Setting up xz-utils (5.4.1-1) ...
+#7 44.56 update-alternatives: using /usr/bin/xz to provide /usr/bin/lzma (lzma) in auto mode
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzma.1.gz because associated file /usr/share/man/man1/xz.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/unlzma.1.gz because associated file /usr/share/man/man1/unxz.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzcat.1.gz because associated file /usr/share/man/man1/xzcat.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzmore.1.gz because associated file /usr/share/man/man1/xzmore.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzless.1.gz because associated file /usr/share/man/man1/xzless.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzdiff.1.gz because associated file /usr/share/man/man1/xzdiff.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzcmp.1.gz because associated file /usr/share/man/man1/xzcmp.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzgrep.1.gz because associated file /usr/share/man/man1/xzgrep.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzegrep.1.gz because associated file /usr/share/man/man1/xzegrep.1.gz (of link group lzma) doesn't exist
+#7 44.57 update-alternatives: warning: skip creation of /usr/share/man/man1/lzfgrep.1.gz because associated file /usr/share/man/man1/xzfgrep.1.gz (of link group lzma) doesn't exist
+#7 44.57 Setting up libquadmath0:amd64 (12.2.0-14+deb12u1) ...
+#7 44.57 Setting up libmpc3:amd64 (1.3.1-1) ...
+#7 44.58 Setting up libatomic1:amd64 (12.2.0-14+deb12u1) ...
+#7 44.58 Setting up patch (2.7.6-7) ...
+#7 44.58 Setting up libk5crypto3:amd64 (1.20.1-2+deb12u5) ...
+#7 44.59 Setting up libsasl2-2:amd64 (2.1.28+dfsg-10) ...
+#7 44.59 Setting up libubsan1:amd64 (12.2.0-14+deb12u1) ...
+#7 44.59 Setting up libcrypt-dev:amd64 (1:4.4.33-2) ...
+#7 44.66 Setting up libasan8:amd64 (12.2.0-14+deb12u1) ...
+#7 44.66 Setting up git-man (1:2.39.5-0+deb12u3) ...
+#7 44.66 Setting up libssh2-1:amd64 (1.10.0-3+b1) ...
+#7 44.67 Setting up libkrb5-3:amd64 (1.20.1-2+deb12u5) ...
+#7 44.67 Setting up libtsan2:amd64 (12.2.0-14+deb12u1) ...
+#7 44.67 Setting up libbinutils:amd64 (2.40-2) ...
+#7 44.67 Setting up libisl23:amd64 (0.25-1.1) ...
+#7 44.68 Setting up libc-dev-bin (2.36-9+deb12u14) ...
+#7 44.68 Setting up openssl (3.0.20-1~deb12u1) ...
+#7 44.70 Setting up libcc1-0:amd64 (12.2.0-14+deb12u1) ...
+#7 44.70 Setting up liblsan0:amd64 (12.2.0-14+deb12u1) ...
+#7 44.71 Setting up libitm1:amd64 (12.2.0-14+deb12u1) ...
+#7 44.71 Setting up libgdbm6:amd64 (1.23-3) ...
+#7 44.71 Setting up libctf0:amd64 (2.40-2) ...
+#7 44.72 Setting up cpp-12 (12.2.0-14+deb12u1) ...
+#7 44.72 Setting up libldap-2.5-0:amd64 (2.5.13+dfsg-5) ...
+#7 44.73 Setting up ca-certificates (20230311+deb12u1) ...
+#7 44.99 debconf: unable to initialize frontend: Dialog
+#7 44.99 debconf: (TERM is not set, so the dialog frontend is not usable.)
+#7 44.99 debconf: falling back to frontend: Readline
+#7 45.05 debconf: unable to initialize frontend: Readline
+#7 45.05 debconf: (This frontend requires a controlling tty.)
+#7 45.05 debconf: falling back to frontend: Teletype
+#7 49.99 Updating certificates in /etc/ssl/certs...
+#7 58.31 142 added, 0 removed; done.
+#7 58.38 Setting up libgprofng0:amd64 (2.40-2) ...
+#7 58.38 Setting up libgcc-12-dev:amd64 (12.2.0-14+deb12u1) ...
+#7 58.39 Setting up libgssapi-krb5-2:amd64 (1.20.1-2+deb12u5) ...
+#7 58.40 Setting up libgdbm-compat4:amd64 (1.23-3) ...
+#7 58.41 Setting up cpp (4:12.2.0-3) ...
+#7 58.45 Setting up libcurl4:amd64 (7.88.1-10+deb12u14) ...
+#7 58.45 Setting up curl (7.88.1-10+deb12u14) ...
+#7 58.45 Setting up libperl5.36:amd64 (5.36.0-7+deb12u3) ...
+#7 58.46 Setting up binutils-x86-64-linux-gnu (2.40-2) ...
+#7 58.46 Setting up libtirpc3:amd64 (1.3.3+ds-1) ...
+#7 58.47 Setting up libcurl3-gnutls:amd64 (7.88.1-10+deb12u14) ...
+#7 58.47 Setting up binutils (2.40-2) ...
+#7 58.47 Setting up perl (5.36.0-7+deb12u3) ...
+#7 58.57 Setting up libtirpc-dev:amd64 (1.3.3+ds-1) ...
+#7 58.57 Setting up gcc-12 (12.2.0-14+deb12u1) ...
+#7 58.57 Setting up libdpkg-perl (1.21.23) ...
+#7 58.58 Setting up libnsl2:amd64 (1.3.0-2) ...
+#7 58.58 Setting up gcc (4:12.2.0-3) ...
+#7 58.66 Setting up dpkg-dev (1.21.23) ...
+#7 58.66 Setting up liberror-perl (0.17029-2) ...
+#7 58.66 Setting up git (1:2.39.5-0+deb12u3) ...
+#7 58.73 Setting up libnsl-dev:amd64 (1.3.0-2) ...
+#7 58.73 Setting up libc6-dev:amd64 (2.36-9+deb12u14) ...
+#7 58.73 Setting up libstdc++-12-dev:amd64 (12.2.0-14+deb12u1) ...
+#7 58.74 Setting up g++-12 (12.2.0-14+deb12u1) ...
+#7 58.74 Setting up g++ (4:12.2.0-3) ...
+#7 58.77 update-alternatives: using /usr/bin/g++ to provide /usr/bin/c++ (c++) in auto mode
+#7 58.78 Setting up build-essential (12.9) ...
+#7 58.78 Processing triggers for libc-bin (2.36-9+deb12u14) ...
+#7 58.82 Processing triggers for ca-certificates (20230311+deb12u1) ...
+#7 58.87 Updating certificates in /etc/ssl/certs...
+#7 65.64 0 added, 0 removed; done.
+#7 65.64 Running hooks in /etc/ca-certificates/update.d...
+#7 65.66 done.
+#7 DONE 66.3s
+
+#9 [build 3/8] RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then     curl -fsSL       -o /usr/local/bin/nimby https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-X64;   elif [ "$(dpkg --print-architecture)" = "arm64" ]; then     curl -fsSL       -o /usr/local/bin/nimby https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-ARM64;   else     echo "unsupported arch: $(dpkg --print-architecture)" && exit 1;   fi &&   chmod +x /usr/local/bin/nimby &&   nimby use 2.2.4
+#9 1.021 Nimby 0.1.26
+#9 1.028 Downloading: https://github.com/treeform/nimby-nim-builds/releases/download/2.2.4/nim-2.2.4-Linux-X64.tar.gz
+#9 3.183 Extracting the Nim compiler
+#9 3.749 Installed Nim 2.2.4 to: /root/.nimby/nim-2.2.4
+#9 3.799 Copied /root/.nimby/nim-2.2.4 to /root/.nimby/nim
+#9 3.812 Add Nim to your PATH for this session with one of:
+#9 3.812 export PATH="/root/.nimby/nim/bin:$PATH"      # bash/zsh
+#9 3.812 fish_add_path /root/.nimby/nim/bin              # fish
+#9 DONE 4.1s
+
+#10 [build 4/8] WORKDIR /workspace/crewrift
+#10 DONE 0.0s
+
+#11 [build 5/8] COPY nimby.lock .
+#11 DONE 0.0s
+
+#12 [build 6/8] RUN nimby --global sync nimby.lock
+#12 0.138 Nimby 0.1.26
+#12 0.140 Using global packages directory.
+#12 3.028 Cloning into '/root/.nimby/pkgs/taggy'...
+#12 3.028 
+#12 3.028 Cloning into '/root/.nimby/pkgs/pixie'...
+#12 3.028 
+#12 3.028 Cloning into '/root/.nimby/pkgs/paddy'...
+#12 3.028 
+#12 3.028 Cloning into '/root/.nimby/pkgs/bitworld'...
+#12 3.028 
+#12 4.010 From https://github.com/treeform/paddy
+#12 4.010  * branch            3fcec08a559479cc8d2fd769f26c6d56bb27a1a1 -> FETCH_HEAD
+#12 4.010 
+#12 4.071 Note: switching to '3fcec08a559479cc8d2fd769f26c6d56bb27a1a1'.
+#12 4.071 
+#12 4.071 You are in 'detached HEAD' state. You can look around, make experimental
+#12 4.071 changes and commit them, and you can discard any commits you make in this
+#12 4.071 state without impacting any branches by switching back to a branch.
+#12 4.071 
+#12 4.071 If you want to create a new branch to retain commits you create, you may
+#12 4.071 do so (now or later) by using -c with the switch command. Example:
+#12 4.071 
+#12 4.071   git switch -c <new-branch-name>
+#12 4.071 
+#12 4.071 Or undo this operation with:
+#12 4.071 
+#12 4.071   git switch -
+#12 4.071 
+#12 4.071 Turn off this advice by setting config variable advice.detachedHead to false
+#12 4.071 
+#12 4.071 HEAD is now at 3fcec08 Send controllers to unfocused windows too.
+#12 4.071 
+#12 4.071 Installed package: paddy
+#12 4.195 From https://github.com/treeform/taggy
+#12 4.195  * branch            0013a4bf921dc9fa735f81577518b2c1e155f062 -> FETCH_HEAD
+#12 4.195 
+#12 4.228 From https://github.com/treeform/pixie
+#12 4.228  * branch            6d47166df0c89c91be4e712734f78af24c4d8361 -> FETCH_HEAD
+#12 4.228 
+#12 4.228 From https://github.com/Metta-AI/bitworld
+#12 4.228  * branch            5a4bea1c3ce5360113f287b1214812dec50f5489 -> FETCH_HEAD
+#12 4.228 
+#12 4.263 Note: switching to '0013a4bf921dc9fa735f81577518b2c1e155f062'.
+#12 4.263 
+#12 4.263 You are in 'detached HEAD' state. You can look around, make experimental
+#12 4.263 changes and commit them, and you can discard any commits you make in this
+#12 4.263 state without impacting any branches by switching back to a branch.
+#12 4.263 
+#12 4.263 If you want to create a new branch to retain commits you create, you may
+#12 4.263 do so (now or later) by using -c with the switch command. Example:
+#12 4.263 
+#12 4.263   git switch -c <new-branch-name>
+#12 4.263 
+#12 4.263 Or undo this operation with:
+#12 4.263 
+#12 4.263   git switch -
+#12 4.263 
+#12 4.263 Turn off this advice by setting config variable advice.detachedHead to false
+#12 4.263 
+#12 4.263 HEAD is now at 0013a4b 0.0.3
+#12 4.263 
+#12 4.263 Installed package: taggy
+#12 4.489 Note: switching to '5a4bea1c3ce5360113f287b1214812dec50f5489'.
+#12 4.489 
+#12 4.489 You are in 'detached HEAD' state. You can look around, make experimental
+#12 4.489 changes and commit them, and you can discard any commits you make in this
+#12 4.489 state without impacting any branches by switching back to a branch.
+#12 4.489 
+#12 4.489 If you want to create a new branch to retain commits you create, you may
+#12 4.489 do so (now or later) by using -c with the switch command. Example:
+#12 4.489 
+#12 4.489   git switch -c <new-branch-name>
+#12 4.489 
+#12 4.489 Or undo this operation with:
+#12 4.489 
+#12 4.489   git switch -
+#12 4.489 
+#12 4.489 Turn off this advice by setting config variable advice.detachedHead to false
+#12 4.489 
+#12 4.489 HEAD is now at 5a4bea1 Add mismatchQuit.
+#12 4.489 
+#12 4.489 Installed package: bitworld
+#12 4.489 Note: switching to '6d47166df0c89c91be4e712734f78af24c4d8361'.
+#12 4.489 
+#12 4.489 You are in 'detached HEAD' state. You can look around, make experimental
+#12 4.489 changes and commit them, and you can discard any commits you make in this
+#12 4.489 state without impacting any branches by switching back to a branch.
+#12 4.489 
+#12 4.489 If you want to create a new branch to retain commits you create, you may
+#12 4.489 do so (now or later) by using -c with the switch command. Example:
+#12 4.489 
+#12 4.489   git switch -c <new-branch-name>
+#12 4.489 
+#12 4.489 Or undo this operation with:
+#12 4.489 
+#12 4.489   git switch -
+#12 4.489 
+#12 4.489 Turn off this advice by setting config variable advice.detachedHead to false
+#12 4.489 
+#12 4.489 HEAD is now at 6d47166 Merge pull request #568 from treeform/vmath_v3c
+#12 4.489 
+#12 4.489 Installed package: pixie
+#12 5.230 Cloning into '/root/.nimby/pkgs/whisky'...
+#12 5.230 
+#12 5.233 Cloning into '/root/.nimby/pkgs/silky'...
+#12 5.233 
+#12 5.596 Cloning into '/root/.nimby/pkgs/windy'...
+#12 5.596 
+#12 5.681 Cloning into '/root/.nimby/pkgs/mummy'...
+#12 5.681 
+#12 6.167 From https://github.com/guzba/whisky
+#12 6.167  * branch            494fb1046f5a563defc87ac36b8c62846ee7ea2c -> FETCH_HEAD
+#12 6.167 
+#12 6.225 Note: switching to '494fb1046f5a563defc87ac36b8c62846ee7ea2c'.
+#12 6.225 
+#12 6.225 You are in 'detached HEAD' state. You can look around, make experimental
+#12 6.225 changes and commit them, and you can discard any commits you make in this
+#12 6.225 state without impacting any branches by switching back to a branch.
+#12 6.225 
+#12 6.225 If you want to create a new branch to retain commits you create, you may
+#12 6.225 do so (now or later) by using -c with the switch command. Example:
+#12 6.225 
+#12 6.225   git switch -c <new-branch-name>
+#12 6.225 
+#12 6.225 Or undo this operation with:
+#12 6.225 
+#12 6.225   git switch -
+#12 6.225 
+#12 6.225 Turn off this advice by setting config variable advice.detachedHead to false
+#12 6.225 
+#12 6.225 HEAD is now at 494fb10 Merge pull request #8 from treeform/expose-socket-field
+#12 6.225 
+#12 6.225 Installed package: whisky
+#12 6.409 From https://github.com/treeform/silky
+#12 6.409  * branch            d5225513d6496138d4e29b6930af22172c1fe75b -> FETCH_HEAD
+#12 6.409 
+#12 6.490 Note: switching to 'd5225513d6496138d4e29b6930af22172c1fe75b'.
+#12 6.490 
+#12 6.490 You are in 'detached HEAD' state. You can look around, make experimental
+#12 6.490 changes and commit them, and you can discard any commits you make in this
+#12 6.490 state without impacting any branches by switching back to a branch.
+#12 6.490 
+#12 6.490 If you want to create a new branch to retain commits you create, you may
+#12 6.490 do so (now or later) by using -c with the switch command. Example:
+#12 6.490 
+#12 6.490   git switch -c <new-branch-name>
+#12 6.490 
+#12 6.490 Or undo this operation with:
+#12 6.490 
+#12 6.490   git switch -
+#12 6.490 
+#12 6.490 Turn off this advice by setting config variable advice.detachedHead to false
+#12 6.490 
+#12 6.490 HEAD is now at d522551 Merge pull request #45 from treeform/heysokam/masking
+#12 6.490 
+#12 6.490 Installed package: silky
+#12 6.560 From https://github.com/treeform/windy
+#12 6.560  * branch            1b5f60bbd2027729d661ccab2c19fcaec6ef9376 -> FETCH_HEAD
+#12 6.560 
+#12 6.632 Note: switching to '1b5f60bbd2027729d661ccab2c19fcaec6ef9376'.
+#12 6.632 
+#12 6.632 You are in 'detached HEAD' state. You can look around, make experimental
+#12 6.632 changes and commit them, and you can discard any commits you make in this
+#12 6.632 state without impacting any branches by switching back to a branch.
+#12 6.632 
+#12 6.632 If you want to create a new branch to retain commits you create, you may
+#12 6.632 do so (now or later) by using -c with the switch command. Example:
+#12 6.632 
+#12 6.632   git switch -c <new-branch-name>
+#12 6.632 
+#12 6.632 Or undo this operation with:
+#12 6.632 
+#12 6.632   git switch -
+#12 6.632 
+#12 6.632 Turn off this advice by setting config variable advice.detachedHead to false
+#12 6.632 
+#12 6.632 HEAD is now at 1b5f60b Add ws send.
+#12 6.632 
+#12 6.632 Installed package: windy
+#12 6.816 From https://github.com/treeform/mummy
+#12 6.816  * branch            3bcb1e3f7aec9530fe03404eb7468cdfdb14fedb -> FETCH_HEAD
+#12 6.816 
+#12 6.881 Note: switching to '3bcb1e3f7aec9530fe03404eb7468cdfdb14fedb'.
+#12 6.881 
+#12 6.881 You are in 'detached HEAD' state. You can look around, make experimental
+#12 6.881 changes and commit them, and you can discard any commits you make in this
+#12 6.881 state without impacting any branches by switching back to a branch.
+#12 6.881 
+#12 6.881 If you want to create a new branch to retain commits you create, you may
+#12 6.881 do so (now or later) by using -c with the switch command. Example:
+#12 6.881 
+#12 6.881   git switch -c <new-branch-name>
+#12 6.881 
+#12 6.881 Or undo this operation with:
+#12 6.881 
+#12 6.881   git switch -
+#12 6.881 
+#12 6.881 Turn off this advice by setting config variable advice.detachedHead to false
+#12 6.881 
+#12 6.881 HEAD is now at 3bcb1e3 Make the options simpler.
+#12 6.881 
+#12 6.881 Installed package: mummy
+#12 7.606 Cloning into '/root/.nimby/pkgs/curly'...
+#12 7.606 
+#12 7.846 Cloning into '/root/.nimby/pkgs/supersnappy'...
+#12 7.846 
+#12 7.851 Cloning into '/root/.nimby/pkgs/libcurl'...
+#12 7.851 
+#12 8.476 Cloning into '/root/.nimby/pkgs/webby'...
+#12 8.476 
+#12 8.546 From https://github.com/guzba/curly
+#12 8.546  * branch            a0f42baacbc48f4e5924b18854c0df9dcc251466 -> FETCH_HEAD
+#12 8.546 
+#12 8.607 Note: switching to 'a0f42baacbc48f4e5924b18854c0df9dcc251466'.
+#12 8.607 
+#12 8.607 You are in 'detached HEAD' state. You can look around, make experimental
+#12 8.607 changes and commit them, and you can discard any commits you make in this
+#12 8.607 state without impacting any branches by switching back to a branch.
+#12 8.607 
+#12 8.607 If you want to create a new branch to retain commits you create, you may
+#12 8.607 do so (now or later) by using -c with the switch command. Example:
+#12 8.607 
+#12 8.607   git switch -c <new-branch-name>
+#12 8.607 
+#12 8.607 Or undo this operation with:
+#12 8.607 
+#12 8.607   git switch -
+#12 8.607 
+#12 8.607 Turn off this advice by setting config variable advice.detachedHead to false
+#12 8.607 
+#12 8.607 HEAD is now at a0f42ba Merge pull request #22 from guzba/ryan2
+#12 8.607 
+#12 8.607 Installed package: curly
+#12 8.801 From https://github.com/guzba/supersnappy
+#12 8.801  * branch            ff8fe2bffefc1f4edc15deb20d921f600babb8c4 -> FETCH_HEAD
+#12 8.801 
+#12 8.879 From https://github.com/Araq/libcurl
+#12 8.879  * branch            7a420498f60a31d99fc8513886ce36c4e8c3a4ae -> FETCH_HEAD
+#12 8.879 
+#12 8.938 Note: switching to '7a420498f60a31d99fc8513886ce36c4e8c3a4ae'.
+#12 8.938 
+#12 8.938 You are in 'detached HEAD' state. You can look around, make experimental
+#12 8.938 changes and commit them, and you can discard any commits you make in this
+#12 8.938 state without impacting any branches by switching back to a branch.
+#12 8.938 
+#12 8.938 If you want to create a new branch to retain commits you create, you may
+#12 8.938 do so (now or later) by using -c with the switch command. Example:
+#12 8.938 
+#12 8.938   git switch -c <new-branch-name>
+#12 8.938 
+#12 8.938 Or undo this operation with:
+#12 8.938 
+#12 8.938   git switch -
+#12 8.938 
+#12 8.938 Turn off this advice by setting config variable advice.detachedHead to false
+#12 8.938 
+#12 8.938 HEAD is now at 7a42049 Merge pull request #8 from lantos-lgtm/patch-1
+#12 8.938 
+#12 8.938 Installed package: libcurl
+#12 8.939 Note: switching to 'ff8fe2bffefc1f4edc15deb20d921f600babb8c4'.
+#12 8.939 
+#12 8.939 You are in 'detached HEAD' state. You can look around, make experimental
+#12 8.939 changes and commit them, and you can discard any commits you make in this
+#12 8.939 state without impacting any branches by switching back to a branch.
+#12 8.939 
+#12 8.939 If you want to create a new branch to retain commits you create, you may
+#12 8.939 do so (now or later) by using -c with the switch command. Example:
+#12 8.939 
+#12 8.939   git switch -c <new-branch-name>
+#12 8.939 
+#12 8.939 Or undo this operation with:
+#12 8.939 
+#12 8.939   git switch -
+#12 8.939 
+#12 8.939 Turn off this advice by setting config variable advice.detachedHead to false
+#12 8.939 
+#12 8.939 HEAD is now at ff8fe2b update for 2.0
+#12 8.939 
+#12 8.939 Installed package: supersnappy
+#12 9.601 From https://github.com/treeform/webby
+#12 9.601  * branch            55a2c03abbd32abf4775712c1959d975dc982549 -> FETCH_HEAD
+#12 9.601 
+#12 9.661 Note: switching to '55a2c03abbd32abf4775712c1959d975dc982549'.
+#12 9.661 
+#12 9.661 You are in 'detached HEAD' state. You can look around, make experimental
+#12 9.661 changes and commit them, and you can discard any commits you make in this
+#12 9.661 state without impacting any branches by switching back to a branch.
+#12 9.661 
+#12 9.661 If you want to create a new branch to retain commits you create, you may
+#12 9.661 do so (now or later) by using -c with the switch command. Example:
+#12 9.661 
+#12 9.661   git switch -c <new-branch-name>
+#12 9.661 
+#12 9.661 Or undo this operation with:
+#12 9.661 
+#12 9.661   git switch -
+#12 9.661 
+#12 9.661 Turn off this advice by setting config variable advice.detachedHead to false
+#12 9.661 
+#12 9.661 HEAD is now at 55a2c03 Merge pull request #24 from guzba/master
+#12 9.661 
+#12 9.661 Installed package: webby
+#12 9.953 Cloning into '/root/.nimby/pkgs/flatty'...
+#12 9.953 
+#12 10.15 Cloning into '/root/.nimby/pkgs/chroma'...
+#12 10.15 
+#12 10.70 Cloning into '/root/.nimby/pkgs/bumpy'...
+#12 10.70 
+#12 11.10 From https://github.com/treeform/chroma
+#12 11.10  * branch            2381748f92e5ea16cb2403ff7e20c6dd5443a59d -> FETCH_HEAD
+#12 11.10 
+#12 11.10 From https://github.com/treeform/flatty
+#12 11.10  * branch            05d878b397933331966a7f80dd0c55664559201f -> FETCH_HEAD
+#12 11.10 
+#12 11.16 Note: switching to '2381748f92e5ea16cb2403ff7e20c6dd5443a59d'.
+#12 11.16 
+#12 11.16 You are in 'detached HEAD' state. You can look around, make experimental
+#12 11.16 changes and commit them, and you can discard any commits you make in this
+#12 11.16 state without impacting any branches by switching back to a branch.
+#12 11.16 
+#12 11.16 If you want to create a new branch to retain commits you create, you may
+#12 11.16 do so (now or later) by using -c with the switch command. Example:
+#12 11.16 
+#12 11.16   git switch -c <new-branch-name>
+#12 11.16 
+#12 11.16 Or undo this operation with:
+#12 11.16 
+#12 11.16   git switch -
+#12 11.16 
+#12 11.16 Turn off this advice by setting config variable advice.detachedHead to false
+#12 11.16 
+#12 11.16 HEAD is now at 2381748 Use standard actions.
+#12 11.16 
+#12 11.16 Installed package: chroma
+#12 11.17 Note: switching to '05d878b397933331966a7f80dd0c55664559201f'.
+#12 11.17 
+#12 11.17 You are in 'detached HEAD' state. You can look around, make experimental
+#12 11.17 changes and commit them, and you can discard any commits you make in this
+#12 11.17 state without impacting any branches by switching back to a branch.
+#12 11.17 
+#12 11.17 If you want to create a new branch to retain commits you create, you may
+#12 11.17 do so (now or later) by using -c with the switch command. Example:
+#12 11.17 
+#12 11.17   git switch -c <new-branch-name>
+#12 11.17 
+#12 11.17 Or undo this operation with:
+#12 11.17 
+#12 11.17   git switch -
+#12 11.17 
+#12 11.17 Turn off this advice by setting config variable advice.detachedHead to false
+#12 11.17 
+#12 11.17 HEAD is now at 05d878b Merge pull request #44 from treeform/fmt1
+#12 11.17 
+#12 11.17 Installed package: flatty
+#12 11.65 From https://github.com/treeform/bumpy
+#12 11.65  * branch            8f4d5ee2005af166b0a08e64e2035f8ff27f1531 -> FETCH_HEAD
+#12 11.65 
+#12 11.71 Note: switching to '8f4d5ee2005af166b0a08e64e2035f8ff27f1531'.
+#12 11.71 
+#12 11.71 You are in 'detached HEAD' state. You can look around, make experimental
+#12 11.71 changes and commit them, and you can discard any commits you make in this
+#12 11.71 state without impacting any branches by switching back to a branch.
+#12 11.71 
+#12 11.71 If you want to create a new branch to retain commits you create, you may
+#12 11.71 do so (now or later) by using -c with the switch command. Example:
+#12 11.71 
+#12 11.71   git switch -c <new-branch-name>
+#12 11.71 
+#12 11.71 Or undo this operation with:
+#12 11.71 
+#12 11.71   git switch -
+#12 11.71 
+#12 11.71 Turn off this advice by setting config variable advice.detachedHead to false
+#12 11.71 
+#12 11.71 HEAD is now at 8f4d5ee Merge pull request #30 from treeform/DocFix
+#12 11.71 
+#12 11.71 Installed package: bumpy
+#12 11.97 Cloning into '/root/.nimby/pkgs/zippy'...
+#12 11.97 
+#12 12.24 Cloning into '/root/.nimby/pkgs/crunchy'...
+#12 12.24 
+#12 12.51 Cloning into '/root/.nimby/pkgs/vmath'...
+#12 12.51 
+#12 12.68 Cloning into '/root/.nimby/pkgs/nimsimd'...
+#12 12.68 
+#12 12.87 From https://github.com/guzba/zippy
+#12 12.87  * branch            bcb8c1e1be6abb0a0e35a3c6040cdd9391cc993f -> FETCH_HEAD
+#12 12.87 
+#12 13.02 Note: switching to 'bcb8c1e1be6abb0a0e35a3c6040cdd9391cc993f'.
+#12 13.02 
+#12 13.02 You are in 'detached HEAD' state. You can look around, make experimental
+#12 13.02 changes and commit them, and you can discard any commits you make in this
+#12 13.02 state without impacting any branches by switching back to a branch.
+#12 13.02 
+#12 13.02 If you want to create a new branch to retain commits you create, you may
+#12 13.02 do so (now or later) by using -c with the switch command. Example:
+#12 13.02 
+#12 13.02   git switch -c <new-branch-name>
+#12 13.02 
+#12 13.02 Or undo this operation with:
+#12 13.02 
+#12 13.02   git switch -
+#12 13.02 
+#12 13.02 Turn off this advice by setting config variable advice.detachedHead to false
+#12 13.02 
+#12 13.02 HEAD is now at bcb8c1e Merge pull request #105 from guzba/ryan
+#12 13.02 
+#12 13.02 Installed package: zippy
+#12 13.16 From https://github.com/guzba/crunchy
+#12 13.16  * branch            98eb6526982bb8aae8eec6e8781f4539fa19e049 -> FETCH_HEAD
+#12 13.16 
+#12 13.22 Note: switching to '98eb6526982bb8aae8eec6e8781f4539fa19e049'.
+#12 13.22 
+#12 13.22 You are in 'detached HEAD' state. You can look around, make experimental
+#12 13.22 changes and commit them, and you can discard any commits you make in this
+#12 13.22 state without impacting any branches by switching back to a branch.
+#12 13.22 
+#12 13.22 If you want to create a new branch to retain commits you create, you may
+#12 13.22 do so (now or later) by using -c with the switch command. Example:
+#12 13.22 
+#12 13.22   git switch -c <new-branch-name>
+#12 13.22 
+#12 13.22 Or undo this operation with:
+#12 13.22 
+#12 13.22   git switch -
+#12 13.22 
+#12 13.22 Turn off this advice by setting config variable advice.detachedHead to false
+#12 13.22 
+#12 13.22 HEAD is now at 98eb652 Merge pull request #25 from guzba/ryan
+#12 13.22 
+#12 13.22 Installed package: crunchy
+#12 13.60 From https://github.com/treeform/vmath
+#12 13.60  * branch            7bd9f6e6b23ca3b751be42f20c8025d320881a00 -> FETCH_HEAD
+#12 13.60 
+#12 13.60 From https://github.com/guzba/nimsimd
+#12 13.60  * branch            3f6b2668ffb0867d0bf786a658b817763e611350 -> FETCH_HEAD
+#12 13.60 
+#12 13.69 Note: switching to '3f6b2668ffb0867d0bf786a658b817763e611350'.
+#12 13.69 
+#12 13.69 You are in 'detached HEAD' state. You can look around, make experimental
+#12 13.69 changes and commit them, and you can discard any commits you make in this
+#12 13.69 state without impacting any branches by switching back to a branch.
+#12 13.69 
+#12 13.69 If you want to create a new branch to retain commits you create, you may
+#12 13.69 do so (now or later) by using -c with the switch command. Example:
+#12 13.69 
+#12 13.69   git switch -c <new-branch-name>
+#12 13.69 
+#12 13.69 Or undo this operation with:
+#12 13.69 
+#12 13.69   git switch -
+#12 13.69 
+#12 13.69 Turn off this advice by setting config variable advice.detachedHead to false
+#12 13.69 
+#12 13.69 HEAD is now at 3f6b266 Merge pull request #32 from guzba/ryan
+#12 13.69 
+#12 13.69 Installed package: nimsimd
+#12 13.69 Note: switching to '7bd9f6e6b23ca3b751be42f20c8025d320881a00'.
+#12 13.69 
+#12 13.69 You are in 'detached HEAD' state. You can look around, make experimental
+#12 13.69 changes and commit them, and you can discard any commits you make in this
+#12 13.69 state without impacting any branches by switching back to a branch.
+#12 13.69 
+#12 13.69 If you want to create a new branch to retain commits you create, you may
+#12 13.69 do so (now or later) by using -c with the switch command. Example:
+#12 13.69 
+#12 13.69   git switch -c <new-branch-name>
+#12 13.69 
+#12 13.69 Or undo this operation with:
+#12 13.69 
+#12 13.69   git switch -
+#12 13.69 
+#12 13.69 Turn off this advice by setting config variable advice.detachedHead to false
+#12 13.69 
+#12 13.69 HEAD is now at 7bd9f6e Merge pull request #82 from treeform/version_3
+#12 13.69 
+#12 13.69 Installed package: vmath
+#12 13.96 Cloning into '/root/.nimby/pkgs/jsony'...
+#12 13.96 
+#12 14.49 Cloning into '/root/.nimby/pkgs/shady'...
+#12 14.49 
+#12 14.68 Cloning into '/root/.nimby/pkgs/urlly'...
+#12 14.68 
+#12 14.92 From https://github.com/treeform/jsony
+#12 14.92  * branch            fbbf55e94e204d7daf583813d79f7327c8001d17 -> FETCH_HEAD
+#12 14.92 
+#12 15.01 Note: switching to 'fbbf55e94e204d7daf583813d79f7327c8001d17'.
+#12 15.01 
+#12 15.01 You are in 'detached HEAD' state. You can look around, make experimental
+#12 15.01 changes and commit them, and you can discard any commits you make in this
+#12 15.01 state without impacting any branches by switching back to a branch.
+#12 15.01 
+#12 15.01 If you want to create a new branch to retain commits you create, you may
+#12 15.01 do so (now or later) by using -c with the switch command. Example:
+#12 15.01 
+#12 15.01   git switch -c <new-branch-name>
+#12 15.01 
+#12 15.01 Or undo this operation with:
+#12 15.01 
+#12 15.01   git switch -
+#12 15.01 
+#12 15.01 Turn off this advice by setting config variable advice.detachedHead to false
+#12 15.01 
+#12 15.01 HEAD is now at fbbf55e Merge pull request #110 from treeform/duplicate-discriminator
+#12 15.01 
+#12 15.01 Installed package: jsony
+#12 15.03 Cloning into '/root/.nimby/pkgs/ws'...
+#12 15.03 
+#12 15.44 From https://github.com/treeform/shady
+#12 15.44  * branch            c89db58632c5442df16251b3e15cb43c5d52e2a6 -> FETCH_HEAD
+#12 15.44 
+#12 15.53 Note: switching to 'c89db58632c5442df16251b3e15cb43c5d52e2a6'.
+#12 15.53 
+#12 15.53 You are in 'detached HEAD' state. You can look around, make experimental
+#12 15.53 changes and commit them, and you can discard any commits you make in this
+#12 15.53 state without impacting any branches by switching back to a branch.
+#12 15.53 
+#12 15.53 If you want to create a new branch to retain commits you create, you may
+#12 15.53 do so (now or later) by using -c with the switch command. Example:
+#12 15.53 
+#12 15.53   git switch -c <new-branch-name>
+#12 15.53 
+#12 15.53 Or undo this operation with:
+#12 15.53 
+#12 15.53   git switch -
+#12 15.53 
+#12 15.53 Turn off this advice by setting config variable advice.detachedHead to false
+#12 15.53 
+#12 15.53 HEAD is now at c89db58 Update README shader examples. (#31)
+#12 15.53 
+#12 15.53 Installed package: shady
+#12 15.61 From https://github.com/treeform/urlly
+#12 15.61  * branch            99784779f05649df25fd9c33003d8ef6de027345 -> FETCH_HEAD
+#12 15.61 
+#12 15.67 Note: switching to '99784779f05649df25fd9c33003d8ef6de027345'.
+#12 15.67 
+#12 15.67 You are in 'detached HEAD' state. You can look around, make experimental
+#12 15.67 changes and commit them, and you can discard any commits you make in this
+#12 15.67 state without impacting any branches by switching back to a branch.
+#12 15.67 
+#12 15.67 If you want to create a new branch to retain commits you create, you may
+#12 15.67 do so (now or later) by using -c with the switch command. Example:
+#12 15.67 
+#12 15.67   git switch -c <new-branch-name>
+#12 15.67 
+#12 15.67 Or undo this operation with:
+#12 15.67 
+#12 15.67   git switch -
+#12 15.67 
+#12 15.67 Turn off this advice by setting config variable advice.detachedHead to false
+#12 15.67 
+#12 15.67 HEAD is now at 9978477 Switch to github action doc generator.
+#12 15.67 
+#12 15.67 Installed package: urlly
+#12 16.08 Cloning into '/root/.nimby/pkgs/opengl'...
+#12 16.08 
+#12 16.15 From https://github.com/treeform/ws
+#12 16.15  * branch            cbb8f763b436669392d10baec2a45778395395cc -> FETCH_HEAD
+#12 16.15 
+#12 16.22 Note: switching to 'cbb8f763b436669392d10baec2a45778395395cc'.
+#12 16.22 
+#12 16.22 You are in 'detached HEAD' state. You can look around, make experimental
+#12 16.22 changes and commit them, and you can discard any commits you make in this
+#12 16.22 state without impacting any branches by switching back to a branch.
+#12 16.22 
+#12 16.22 If you want to create a new branch to retain commits you create, you may
+#12 16.22 do so (now or later) by using -c with the switch command. Example:
+#12 16.22 
+#12 16.22   git switch -c <new-branch-name>
+#12 16.22 
+#12 16.22 Or undo this operation with:
+#12 16.22 
+#12 16.22   git switch -
+#12 16.22 
+#12 16.22 Turn off this advice by setting config variable advice.detachedHead to false
+#12 16.22 
+#12 16.22 HEAD is now at cbb8f76 FIx {.gcsafe.} issue in test.
+#12 16.22 
+#12 16.22 Installed package: ws
+#12 16.85 Cloning into '/root/.nimby/pkgs/fluffy'...
+#12 16.85 
+#12 16.99 From https://github.com/nim-lang/opengl
+#12 16.99  * branch            8e2e098f82dc5eefd874488c37b5830233cd18f4 -> FETCH_HEAD
+#12 16.99 
+#12 17.02 Cloning into '/root/.nimby/pkgs/metal4'...
+#12 17.02 
+#12 17.05 Note: switching to '8e2e098f82dc5eefd874488c37b5830233cd18f4'.
+#12 17.05 
+#12 17.05 You are in 'detached HEAD' state. You can look around, make experimental
+#12 17.05 changes and commit them, and you can discard any commits you make in this
+#12 17.05 state without impacting any branches by switching back to a branch.
+#12 17.05 
+#12 17.05 If you want to create a new branch to retain commits you create, you may
+#12 17.05 do so (now or later) by using -c with the switch command. Example:
+#12 17.05 
+#12 17.05   git switch -c <new-branch-name>
+#12 17.05 
+#12 17.05 Or undo this operation with:
+#12 17.05 
+#12 17.05   git switch -
+#12 17.05 
+#12 17.05 Turn off this advice by setting config variable advice.detachedHead to false
+#12 17.05 
+#12 17.05 HEAD is now at 8e2e098 bump to 1.2.9 in order to fix the pre-existing wrong tag (#99)
+#12 17.05 
+#12 17.05 Installed package: opengl
+#12 17.81 From https://github.com/treeform/fluffy
+#12 17.81  * branch            2012906732cc104dc08fb80a3cec976ddfd9a98a -> FETCH_HEAD
+#12 17.81 
+#12 17.92 Note: switching to '2012906732cc104dc08fb80a3cec976ddfd9a98a'.
+#12 17.92 
+#12 17.92 You are in 'detached HEAD' state. You can look around, make experimental
+#12 17.92 changes and commit them, and you can discard any commits you make in this
+#12 17.92 state without impacting any branches by switching back to a branch.
+#12 17.92 
+#12 17.92 If you want to create a new branch to retain commits you create, you may
+#12 17.92 do so (now or later) by using -c with the switch command. Example:
+#12 17.92 
+#12 17.92   git switch -c <new-branch-name>
+#12 17.92 
+#12 17.92 Or undo this operation with:
+#12 17.92 
+#12 17.92   git switch -
+#12 17.92 
+#12 17.92 Turn off this advice by setting config variable advice.detachedHead to false
+#12 17.92 
+#12 17.92 HEAD is now at 2012906 Use the new silky API.
+#12 17.92 
+#12 17.92 Installed package: fluffy
+#12 17.94 From https://github.com/treeform/metal4
+#12 17.94  * branch            46d0bc5afd65a563ecf9c5c93004b357733594c1 -> FETCH_HEAD
+#12 17.94 
+#12 17.98 Cloning into '/root/.nimby/pkgs/dx12'...
+#12 17.98 
+#12 18.01 Note: switching to '46d0bc5afd65a563ecf9c5c93004b357733594c1'.
+#12 18.01 
+#12 18.01 You are in 'detached HEAD' state. You can look around, make experimental
+#12 18.01 changes and commit them, and you can discard any commits you make in this
+#12 18.01 state without impacting any branches by switching back to a branch.
+#12 18.01 
+#12 18.01 If you want to create a new branch to retain commits you create, you may
+#12 18.01 do so (now or later) by using -c with the switch command. Example:
+#12 18.01 
+#12 18.01   git switch -c <new-branch-name>
+#12 18.01 
+#12 18.01 Or undo this operation with:
+#12 18.01 
+#12 18.01   git switch -
+#12 18.01 
+#12 18.01 Turn off this advice by setting config variable advice.detachedHead to false
+#12 18.01 
+#12 18.01 HEAD is now at 46d0bc5 Merge pull request #3 from treeform/Testing
+#12 18.01 
+#12 18.01 Installed package: metal4
+#12 18.50 Cloning into '/root/.nimby/pkgs/vk14'...
+#12 18.50 
+#12 18.91 From https://github.com/treeform/dx12
+#12 18.91  * branch            11f7fd5a6223e71d52a360f701145e63f306559f -> FETCH_HEAD
+#12 18.91 
+#12 18.99 Note: switching to '11f7fd5a6223e71d52a360f701145e63f306559f'.
+#12 18.99 
+#12 18.99 You are in 'detached HEAD' state. You can look around, make experimental
+#12 18.99 changes and commit them, and you can discard any commits you make in this
+#12 18.99 state without impacting any branches by switching back to a branch.
+#12 18.99 
+#12 18.99 If you want to create a new branch to retain commits you create, you may
+#12 18.99 do so (now or later) by using -c with the switch command. Example:
+#12 18.99 
+#12 18.99   git switch -c <new-branch-name>
+#12 18.99 
+#12 18.99 Or undo this operation with:
+#12 18.99 
+#12 18.99   git switch -
+#12 18.99 
+#12 18.99 Turn off this advice by setting config variable advice.detachedHead to false
+#12 18.99 
+#12 18.99 HEAD is now at 11f7fd5 Merge pull request #3 from treeform/actions
+#12 18.99 
+#12 18.99 Installed package: dx12
+#12 19.44 From https://github.com/treeform/vk14
+#12 19.44  * branch            68841f5e1a13247e7a463bfe79beb27232cbd6c5 -> FETCH_HEAD
+#12 19.44 
+#12 19.52 Note: switching to '68841f5e1a13247e7a463bfe79beb27232cbd6c5'.
+#12 19.52 
+#12 19.52 You are in 'detached HEAD' state. You can look around, make experimental
+#12 19.52 changes and commit them, and you can discard any commits you make in this
+#12 19.52 state without impacting any branches by switching back to a branch.
+#12 19.52 
+#12 19.52 If you want to create a new branch to retain commits you create, you may
+#12 19.52 do so (now or later) by using -c with the switch command. Example:
+#12 19.52 
+#12 19.52   git switch -c <new-branch-name>
+#12 19.52 
+#12 19.52 Or undo this operation with:
+#12 19.52 
+#12 19.52   git switch -
+#12 19.52 
+#12 19.52 Turn off this advice by setting config variable advice.detachedHead to false
+#12 19.52 
+#12 19.52 HEAD is now at 68841f5 Merge pull request #4 from treeform/codex/vkpr
+#12 19.52 
+#12 19.52 Installed package: vk14
+#12 19.52 Took: 19.38 seconds
+#12 DONE 19.8s
+
+#13 [build 7/8] COPY . .
+#13 DONE 0.0s
+
+#14 [build 8/8] RUN nim c   -d:release   -d:botHeadless   -d:useMalloc   --opt:speed   --stackTrace:on   --nimcache:/tmp/crewrift-nimcache   --out:notsus   players/notsus/notsus.nim
+#14 0.351 Hint: used config file '/root/.nimby/nim/config/nim.cfg' [Conf]
+#14 0.351 Hint: used config file '/root/.nimby/nim/config/config.nims' [Conf]
+#14 0.351 Hint: used config file '/workspace/crewrift/nim.cfg' [Conf]
+#14 0.383 ...............................................................................................................................................................................................................................................................
+#14 3.885 /workspace/crewrift/players/notsus/notsus/protocols.nim(451, 6) Hint: 'renderSpriteFrame' is declared but not used [XDeclaredButNotUsed]
+#14 3.885 ....
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(2677, 6) Hint: 'ownSusVotingTarget' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(2689, 6) Hint: 'parseVotingCandidate' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3079, 6) Hint: 'taskIconRenderable' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3266, 6) Hint: 'inputMaskSummary' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3370, 6) Hint: 'roleName' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3406, 6) Hint: 'knownImposterSummary' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3524, 6) Hint: 'pathDistance' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3936, 6) Hint: 'bodySuspectedColor' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(3944, 6) Hint: 'suspectSummary' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(4004, 6) Hint: 'voteSummary' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(414, 6) Hint: 'atlasPath' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(4180, 6) Hint: 'seenVotingTargetFrom' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(425, 6) Hint: 'sampleColor' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(47, 3) Hint: 'ViewerWindowWidth' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(48, 3) Hint: 'ViewerWindowHeight' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(49, 3) Hint: 'ViewerMargin' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(50, 3) Hint: 'ViewerFrameScale' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(5059, 6) Hint: 'sheetSprite' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(51, 3) Hint: 'ViewerMapScale' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(52, 3) Hint: 'ViewerBackground' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(53, 3) Hint: 'ViewerPanel' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(54, 3) Hint: 'ViewerPanelAlt' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(543, 6) Hint: 'roomName' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(55, 3) Hint: 'ViewerText' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(56, 3) Hint: 'ViewerMutedText' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(57, 3) Hint: 'ViewerViewport' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(58, 3) Hint: 'ViewerButton' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(59, 3) Hint: 'ViewerPlayer' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(60, 3) Hint: 'ViewerCrew' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(61, 3) Hint: 'ViewerImp' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(62, 3) Hint: 'ViewerTask' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(63, 3) Hint: 'ViewerTaskGuess' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(64, 3) Hint: 'ViewerRadarLine' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(65, 3) Hint: 'ViewerPath' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(66, 3) Hint: 'ViewerWalk' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(67, 3) Hint: 'ViewerWall' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(68, 3) Hint: 'ViewerUnknown' is declared but not used [XDeclaredButNotUsed]
+#14 4.503 /workspace/crewrift/players/notsus/notsus.nim(844, 6) Hint: 'buildPatchEntries' is declared but not used [XDeclaredButNotUsed]
+#14 4.516 CC: ../../../../root/.nimby/nim/lib/system/exceptions.nim
+#14 4.518 CC: ../../../../root/.nimby/nim/lib/std/private/digitsutils.nim
+#14 4.520 CC: ../../../../root/.nimby/nim/lib/std/assertions.nim
+#14 4.521 CC: ../../../../root/.nimby/nim/lib/system/dollars.nim
+#14 4.522 CC: ../../../../root/.nimby/nim/lib/std/syncio.nim
+#14 4.524 CC: ../../../../root/.nimby/nim/lib/system.nim
+#14 4.526 CC: ../../../../root/.nimby/nim/lib/pure/algorithm.nim
+#14 4.528 CC: ../../../../root/.nimby/nim/lib/pure/math.nim
+#14 4.530 CC: ../../../../root/.nimby/nim/lib/pure/parseutils.nim
+#14 4.532 CC: ../../../../root/.nimby/nim/lib/pure/strutils.nim
+#14 5.071 CC: ../../../../root/.nimby/nim/lib/pure/hashes.nim
+#14 5.174 CC: ../../../../root/.nimby/nim/lib/pure/collections/tables.nim
+#14 5.191 CC: ../../../../root/.nimby/pkgs/flatty/src/flatty/binny.nim
+#14 5.338 CC: ../../../../root/.nimby/nim/lib/pure/pathnorm.nim
+#14 5.441 CC: ../../../../root/.nimby/nim/lib/std/oserrors.nim
+#14 5.449 CC: ../../../../root/.nimby/nim/lib/std/private/oscommon.nim
+#14 5.485 CC: ../../../../root/.nimby/nim/lib/std/private/ospaths2.nim
+#14 5.705 CC: ../../../../root/.nimby/nim/lib/pure/options.nim
+#14 5.859 CC: ../../../../root/.nimby/nim/lib/pure/times.nim
+#14 5.866 CC: ../../../../root/.nimby/nim/lib/std/envvars.nim
+#14 6.088 CC: ../../../../root/.nimby/nim/lib/std/private/osappdirs.nim
+#14 6.177 CC: ../../../../root/.nimby/nim/lib/std/cmdline.nim
+#14 6.231 CC: ../../../../root/.nimby/nim/lib/pure/os.nim
+#14 6.309 CC: ../../../../root/.nimby/pkgs/nimsimd/src/nimsimd/runtimecheck.nim
+#14 6.427 CC: ../../../../root/.nimby/pkgs/pixie/src/pixie/simd.nim
+#14 6.429 CC: ../../../../root/.nimby/pkgs/pixie/src/pixie/fontformats/opentype.nim
+#14 6.441 CC: ../../../../root/.nimby/nim/lib/pure/streams.nim
+#14 6.523 CC: ../../../../root/.nimby/pkgs/pixie/src/pixie/fileformats/jpeg.nim
+#14 6.709 CC: ../../../../root/.nimby/nim/lib/pure/collections/heapqueue.nim
+#14 6.782 CC: ../../../../root/.nimby/nim/lib/std/sysrand.nim
+#14 6.836 CC: ../../../../root/.nimby/pkgs/crunchy/src/crunchy/sha256.nim
+#14 6.905 CC: ../../../../root/.nimby/pkgs/pixie/src/pixie/fileformats/png.nim
+#14 6.933 CC: ../../../../root/.nimby/pkgs/supersnappy/src/supersnappy/internal.nim
+#14 6.945 CC: ../../../../root/.nimby/pkgs/supersnappy/src/supersnappy.nim
+#14 7.036 CC: ../../../../root/.nimby/pkgs/bitworld/src/bitworld/spriteprotocol.nim
+#14 7.171 CC: ../../../../root/.nimby/pkgs/bitworld/src/bitworld/server.nim
+#14 7.278 CC: ../../../../root/.nimby/nim/lib/std/monotimes.nim
+#14 7.544 CC: ../../../../root/.nimby/nim/lib/pure/random.nim
+#14 7.738 CC: ../../../../root/.nimby/nim/lib/pure/nativesockets.nim
+#14 7.742 CC: ../../../../root/.nimby/nim/lib/pure/base64.nim
+#14 7.775 CC: ../../../../root/.nimby/pkgs/mummy/src/mummy.nim
+#14 7.783 CC: ../../../../root/.nimby/pkgs/bitworld/src/bitworld/pixelfonts.nim
+#14 7.961 CC: ../../../../root/.nimby/pkgs/bitworld/src/bitworld/profile.nim
+#14 8.016 CC: ../../src/crewrift/sim.nim
+#14 8.026 CC: ../../src/crewrift/texts.nim
+#14 8.130 CC: ../../../../root/.nimby/nim/lib/pure/net.nim
+#14 8.357 CC: ../../../../root/.nimby/nim/lib/pure/uri.nim
+#14 8.374 CC: ../../../../root/.nimby/nim/lib/pure/httpcore.nim
+#14 8.378 CC: ../../../../root/.nimby/nim/lib/pure/asyncfutures.nim
+#14 8.661 CC: ../../../../root/.nimby/nim/lib/pure/asyncdispatch.nim
+#14 8.680 CC: ../../../../root/.nimby/nim/lib/pure/httpclient.nim
+#14 8.733 CC: ../../../../root/.nimby/nim/lib/std/sha1.nim
+#14 8.802 CC: ../../../../root/.nimby/pkgs/whisky/src/whisky.nim
+#14 8.850 CC: notsus/protocols.nim
+#14 8.977 CC: notsus/votereader.nim
+#14 9.014 CC: ../../../../root/.nimby/nim/lib/std/exitprocs.nim
+#14 9.155 CC: ../../../../root/.nimby/nim/lib/pure/parseopt.nim
+#14 9.481 CC: notsus.nim
+#14 15.13 Hint:  [Link]
+#14 15.28 Hint: mm: orc; threads: on; opt: speed; options: -d:release
+#14 15.28 124617 lines; 14.930s; 337.34MiB peakmem; proj: /workspace/crewrift/players/notsus/notsus.nim; out: /workspace/crewrift/notsus [SuccessX]
+#14 DONE 15.3s
+
+#15 [stage-1 4/4] COPY --from=build /workspace/crewrift/notsus /bin/notsus
+#15 DONE 0.0s
+
+#16 exporting to image
+#16 exporting layers 0.1s done
+#16 writing image sha256:f8752c563b7b4fc4b8e44f9f9949c2cd507ed65b4e3b98d7b0d03c88b8954c60 done
+#16 naming to docker.io/library/notsus:latest
+#16 naming to docker.io/library/notsus:latest done
+#16 DONE 0.1s
