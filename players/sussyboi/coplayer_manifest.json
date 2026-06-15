@@ -1,0 +1,7 @@
+{
+  "author": "treeform@softmax.com",
+  "name": "notsus",
+  "image_uri": "public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest",
+  "run": ["/bin/notsus"],
+  "games": ["crewrift"]
+}
