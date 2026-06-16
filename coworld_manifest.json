@@ -97,6 +97,11 @@
           "type": "boolean",
           "default": false
         },
+        "fastMode": {
+          "description": "Advance frames early when all players report ready.",
+          "type": "boolean",
+          "default": false
+        },
         "seed": {
           "description": "Random seed. Use -1 to pick a time-based seed.",
           "type": "integer",
@@ -491,6 +496,7 @@
         "connectTimeoutTicks": 2880,
         "disconnectTimeoutTicks": 720,
         "killCooldownTicks": 500,
+        "fastMode": false,
         "showTaskArrows": true,
         "showTaskBubbles": true,
         "showPlayerLabels": true
@@ -551,6 +557,7 @@
       "connectTimeoutTicks": 2880,
       "disconnectTimeoutTicks": 720,
       "killCooldownTicks": 500,
+      "fastMode": false,
       "showTaskArrows": false,
       "showTaskBubbles": false,
       "showPlayerLabels": true

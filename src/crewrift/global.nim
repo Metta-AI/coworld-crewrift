@@ -454,6 +454,8 @@ proc applyGlobalViewerMessage*(
       state.replayCommands.add(item.text)
     of SpriteClientInputMessage:
       discard
+    of SpriteClientReadyMessage:
+      discard
 
 proc applyPlayerViewerMessage*(
   state: var PlayerViewerState,
@@ -470,7 +472,8 @@ proc applyPlayerViewerMessage*(
     of SpriteClientInputMessage:
       pressedMask = pressedMask or (item.mask and not inputMask)
       inputMask = item.mask
-    of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage:
+    of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage,
+        SpriteClientReadyMessage:
       discard
 
 proc isSolid(sprite: Sprite, x, y: int, flipH: bool): bool =

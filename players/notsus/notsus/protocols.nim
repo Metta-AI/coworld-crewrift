@@ -188,6 +188,10 @@ proc chatBlob*(text: string): string =
   ## Builds one sprite player chat packet.
   blobFromSpriteChat(text)
 
+proc readyBlob*(): string =
+  ## Builds one sprite player-ready packet.
+  blobFromSpriteReady()
+
 proc unpack4bpp*(
   packed: openArray[uint8],
   unpacked: var seq[uint8]

@@ -5946,6 +5946,11 @@ when not defined(italkalotLibrary):
               profileBlock "send chat":
                 ws.send(chatBlob(bot.pendingChat), BinaryMessage)
                 bot.pendingChat = ""
+          if gui:
+            ws.send(readyBlob(), BinaryMessage)
+          else:
+            profileBlock "send ready":
+              ws.send(readyBlob(), BinaryMessage)
       except Exception as e:
         if connected:
           echo "connection lost: ", e.msg

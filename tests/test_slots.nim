@@ -100,6 +100,12 @@ suite "player slots":
     check config.finalGameQuitReady(1, GameOver, 1)
     check config.finalGameQuitReady(1, Lobby, 0)
 
+  test "player ready packet is recognized":
+    check isPlayerReadyPacket("" & char(0x85))
+    check not isPlayerReadyPacket("")
+    check not isPlayerReadyPacket("" & char(0x84))
+    check not isPlayerReadyPacket("" & char(0x85) & char(0))
+
   test "config parses example slots and tokens":
     var config = defaultGameConfig()
     config.update(ExampleSlotsJson)
