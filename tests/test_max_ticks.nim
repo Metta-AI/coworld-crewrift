@@ -54,13 +54,16 @@ suite "max ticks":
   test "config json":
     var config = defaultGameConfig()
     config.maxTicks = 123
+    config.fastMode = true
 
     let serialized = parseJson(config.configJson())
     check serialized["maxTicks"].getInt() == 123
+    check serialized["fastMode"].getBool()
 
     var roundTrip = defaultGameConfig()
     roundTrip.update($serialized)
     check roundTrip.maxTicks == 123
+    check roundTrip.fastMode
 
   test "starts at game start":
     var config = defaultGameConfig()

@@ -304,6 +304,7 @@ type
     stopThreshold*: int
     seed*: int
     speed*: int
+    fastMode*: bool
     killRange*: int
     killCooldownTicks*: int
     gameInfoTicks*: int
@@ -1051,6 +1052,7 @@ proc defaultGameConfig*(): GameConfig =
     stopThreshold: StopThreshold,
     seed: RandomSeedSentinel,
     speed: 1,
+    fastMode: false,
     killRange: KillRange,
     killCooldownTicks: KillCooldownTicks,
     gameInfoTicks: GameInfoTicks,
@@ -1403,6 +1405,7 @@ proc update*(config: var GameConfig, jsonText: string) =
   node.readConfigInt("stopThreshold", config.stopThreshold)
   node.readConfigInt("seed", config.seed)
   node.readConfigInt("speed", config.speed)
+  node.readConfigBool("fastMode", config.fastMode)
   node.readConfigInt("killRange", config.killRange)
   node.readConfigInt("killCooldownTicks", config.killCooldownTicks)
   node.readConfigInt("gameInfoTicks", config.gameInfoTicks)
@@ -1499,6 +1502,7 @@ proc configJson*(config: GameConfig): string =
     "stopThreshold": config.stopThreshold,
     "seed": config.seed,
     "speed": config.speed,
+    "fastMode": config.fastMode,
     "killRange": config.killRange,
     "killCooldownTicks": config.killCooldownTicks,
     "gameInfoTicks": config.gameInfoTicks,

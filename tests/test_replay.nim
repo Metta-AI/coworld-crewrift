@@ -1,5 +1,5 @@
 import
-  std/[os, unittest],
+  std/[json, os, unittest],
   crewrift/replays,
   crewrift/sim
 
@@ -17,6 +17,19 @@ proc initReplaySim(data: ReplayData): SimServer =
     result.gameEventLoggingEnabled = false
   finally:
     setCurrentDir(previousDir)
+
+proc withFastMode(data: ReplayData): ReplayData =
+  ## Returns replay data with fast-mode config enabled.
+  result = data
+  var node =
+    if data.configJson.len > 0:
+      parseJson(data.configJson)
+    else:
+      newJObject()
+  if node.kind != JObject:
+    node = newJObject()
+  node["fastMode"] = %true
+  result.configJson = $node
 
 suite "notsus replay":
   # NEVER IGNORE THE HASH.
@@ -88,5 +101,20 @@ suite "notsus replay":
 
     check checkedHashes > 0
     check replay.hashIndex == checkedHashes
+    check not replay.hashValidationFailed
+    check replay.hashMismatchTick == -1
+
+  test "fast mode config does not affect replay hashes":
+    let data = loadReplay(NotsusReplayPath).withFastMode()
+    var
+      sim = data.initReplaySim()
+      replay = initReplayPlayer(data)
+    replay.looping = false
+    replay.mismatchQuit = true
+
+    while replay.playing:
+      replay.stepReplay(sim)
+
+    check replay.hashIndex == data.hashes.len
     check not replay.hashValidationFailed
     check replay.hashMismatchTick == -1
