@@ -6,7 +6,6 @@ import
 const
   GameDir = currentSourcePath.parentDir.parentDir
   NotsusReplayPath = GameDir / "tests" / "replays" / "notsus.bitreplay"
-  NotsusLegacyMeetingTick = 712
 
 proc initReplaySim(data: ReplayData): SimServer =
   ## Initializes a replay simulation from the replay config JSON.
@@ -19,12 +18,9 @@ proc initReplaySim(data: ReplayData): SimServer =
   finally:
     setCurrentDir(previousDir)
 
-proc truncateHashesBefore(data: var ReplayData, tick: int) =
-  ## Drops replay hashes at and after one legacy-divergent tick.
-  while data.hashes.len > 0 and int(data.hashes[^1].tick) >= tick:
-    data.hashes.setLen(data.hashes.len - 1)
-
 suite "notsus replay":
+  # NEVER IGNORE THE HASH.
+  # PROVIDE A NEW REPLAY INSTEAD.
   test "sim serializes with flatty":
     let data = loadReplay(NotsusReplayPath)
     var
@@ -46,8 +42,7 @@ suite "notsus replay":
     check restored.gameHash() == hash
 
   test "keyframed seek restores matching state":
-    var data = loadReplay(NotsusReplayPath)
-    data.truncateHashesBefore(NotsusLegacyMeetingTick)
+    let data = loadReplay(NotsusReplayPath)
     var
       baseline = data.initReplaySim()
       baselineReplay = initReplayPlayer(data)
@@ -65,7 +60,6 @@ suite "notsus replay":
       baselineReplay.stepReplay(baseline)
     let hash = baseline.gameHash()
 
-    replay.mismatchQuit = false
     replay.buildReplayKeyframes(sim)
     replay.seekReplay(sim, target)
 
@@ -73,19 +67,17 @@ suite "notsus replay":
     check sim.tickCount == target
     check sim.gameHash() == hash
 
-  test "hashes match before legacy meeting timing":
+  test "hashes match":
     let data = loadReplay(NotsusReplayPath)
     var
       sim = data.initReplaySim()
       replay = initReplayPlayer(data)
     replay.looping = false
-    replay.mismatchQuit = false
+    replay.mismatchQuit = true
 
     check data.hashes.len > 0
     var checkedHashes = 0
     for expected in data.hashes:
-      if int(expected.tick) >= NotsusLegacyMeetingTick:
-        break
       while sim.tickCount < int(expected.tick):
         doAssert replay.playing,
           "Replay stopped before hash tick " & $expected.tick
@@ -98,4 +90,3 @@ suite "notsus replay":
     check replay.hashIndex == checkedHashes
     check not replay.hashValidationFailed
     check replay.hashMismatchTick == -1
-    check sim.tickCount < NotsusLegacyMeetingTick

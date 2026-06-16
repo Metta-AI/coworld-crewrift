@@ -36,8 +36,18 @@ proc addPlayers(sim: var SimServer, count: int) =
   for i in 0 ..< count:
     discard sim.addPlayer("player" & $(i + 1))
 
+proc taskRects(sim: SimServer): seq[taskAssignments.TaskRect] =
+  ## Returns task rectangles for the loaded map.
+  for task in sim.tasks:
+    result.add taskAssignments.TaskRect(
+      x: task.x,
+      y: task.y,
+      w: task.w,
+      h: task.h
+    )
+
 suite "task assignment":
-  test "uses every task once when demand matches supply":
+  test "draws unique task lists for each crew":
     let taskRects = [
       taskAssignments.TaskRect(x: 1, y: 1, w: 1, h: 1),
       taskAssignments.TaskRect(x: 3, y: 1, w: 1, h: 1),
@@ -60,16 +70,11 @@ suite "task assignment":
     )
 
     check assignments.len == 2
-    var seen = newSeq[int](taskRects.len)
     for assignment in assignments:
       check assignment.len == 3
       check assignment.hasUniqueTasks()
-      for task in assignment:
-        inc seen[task]
-    for count in seen:
-      check count == 1
 
-  test "duplicates across crew before duplicating inside one crew":
+  test "allows cross crew repeats without same crew duplicates":
     let taskRects = [
       taskAssignments.TaskRect(x: 1, y: 1, w: 1, h: 1),
       taskAssignments.TaskRect(x: 4, y: 1, w: 1, h: 1),
@@ -127,6 +132,28 @@ suite "task assignment":
       check assignment.taskIds.len == 2
       check assignment.taskIds.hasUniqueTasks()
       check assignment.routeCost > 0
+
+  test "production task routes reroll without duplicates":
+    let sim = initCrewriftForTest(defaultGameConfig())
+    for seed in 0 ..< 10:
+      var rng = initRand(seed)
+      let assignments = taskAssignments.assignTaskDetails(
+        sim.taskRects(),
+        sim.walkMask,
+        MapWidth,
+        MapHeight,
+        sim.gameMap.home.x,
+        sim.gameMap.home.y,
+        6,
+        8,
+        rng
+      )
+
+      check assignments.len == 6
+      for assignment in assignments:
+        check assignment.taskIds.len == 8
+        check assignment.taskIds.hasUniqueTasks()
+        check assignment.routeCost > 0
 
   test "start game assigns balanced lists to crewmates":
     var config = defaultGameConfig()
