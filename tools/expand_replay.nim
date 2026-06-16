@@ -335,6 +335,18 @@ proc playerManifestRow(sim: SimServer, tick, playerIndex: int): JsonNode =
   value["assigned_tasks"] = %p.assignedTasks
   standardRow(tick, sim.playerSlot(playerIndex), "player_manifest", value)
 
+proc roleAssigned(sim: SimServer, playerIndex: int): bool =
+  ## Returns true when startGame has assigned this player's game role.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return false
+  let player = sim.players[playerIndex]
+  for account in sim.rewardAccounts:
+    if account.address == player.address and
+        account.slotIndex == player.joinOrder and
+        account.hasRole:
+      return true
+  false
+
 proc addPlayerManifestRows(
   sim: SimServer,
   tick: int,
@@ -345,7 +357,7 @@ proc addPlayerManifestRows(
   while emitted.len < sim.players.len:
     emitted.add(false)
   for i in 0 ..< sim.players.len:
-    if not emitted[i]:
+    if not emitted[i] and sim.roleAssigned(i):
       rows.add(sim.playerManifestRow(tick, i))
       emitted[i] = true
 
