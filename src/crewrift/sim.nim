@@ -253,15 +253,8 @@ type
     x*, y*: int
     color*: uint8
     slotId*: int
-
-  SimEventKind* = enum
-    SimKill
-
-  SimEvent* = object
-    tick*: int
-    kind*: SimEventKind
-    actorSlot*: int
-    targetSlot*: int
+    killerSlot*: int
+    killTick*: int
 
   CrewSprite* = ref object
     width*, height*: int
@@ -378,7 +371,6 @@ type
     config*: GameConfig
     players*: seq[Player]
     chatMessages*: seq[ChatMessage]
-    simEvents*: seq[SimEvent]
     rewardAccounts*: seq[RewardAccount]
     bodies*: seq[Body]
     crewSprites*: seq[CrewSprite]
@@ -1625,10 +1617,6 @@ proc logGameEvent(sim: SimServer, text: string) =
   if sim.gameEventLoggingEnabled:
     echo text
 
-proc clearSimEvents*(sim: var SimServer) =
-  ## Clears transient per-tick observation events.
-  sim.simEvents.setLen(0)
-
 proc logTaskAssignments(
   sim: SimServer,
   crew: openArray[int],
@@ -2862,18 +2850,14 @@ proc tryKill*(sim: var SimServer, killerIndex: int) =
       playerColorText(sim.players[bestTarget].color) &
         " killed by " & playerColorText(killer.color) & " (imposter)"
     )
-    sim.simEvents.add SimEvent(
-      tick: sim.tickCount,
-      kind: SimKill,
-      actorSlot: sim.players[killerIndex].joinOrder,
-      targetSlot: sim.players[bestTarget].joinOrder
-    )
     sim.players[bestTarget].alive = false
     sim.bodies.add Body(
       x: sim.players[bestTarget].x,
       y: sim.players[bestTarget].y,
       color: sim.players[bestTarget].color,
-      slotId: sim.players[bestTarget].joinOrder
+      slotId: sim.players[bestTarget].joinOrder,
+      killerSlot: sim.players[killerIndex].joinOrder,
+      killTick: sim.tickCount
     )
     sim.addReward(killerIndex, KillReward)
     sim.recordKill(killerIndex)
@@ -4327,7 +4311,6 @@ proc step*(
   prevInputs: openArray[InputState]
 ) {.measure.} =
   inc sim.tickCount
-  sim.clearSimEvents()
 
   if sim.phase == Lobby:
     if sim.checkConnectTimeout():

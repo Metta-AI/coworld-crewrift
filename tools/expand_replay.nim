@@ -397,6 +397,8 @@ proc bodyStateRow(sim: SimServer, tick: int, body: Body): JsonNode =
   value["x"] = %body.x
   value["y"] = %body.y
   value["room"] = %sim.roomNameAt(body.x, body.y)
+  value["killer_slot"] = %body.killerSlot
+  value["kill_tick"] = %body.killTick
   value["victim_connected"] =
     if victim >= 0:
       %sim.players[victim].connected
@@ -453,7 +455,7 @@ proc addRoomEvent(
 
 proc bodyKey(body: Body): string =
   ## Returns a stable key for one body instance.
-  $body.slotId & ":" & $body.x & ":" & $body.y
+  $body.slotId & ":" & $body.killTick & ":" & $body.x & ":" & $body.y
 
 proc sameTarget(interval: VisibilityInterval, sample: VisibilityObservation): bool =
   ## Returns true when one visibility sample extends an active interval.
@@ -631,23 +633,19 @@ proc printNewBodies(
     if printed.hasKey(key):
       continue
     let victim = sim.playerForSlot(body.slotId)
-    for simEvent in sim.simEvents:
-      if simEvent.kind != SimKill or simEvent.tick != tick or
-          simEvent.targetSlot != body.slotId:
-        continue
-      let killer = sim.playerForSlot(simEvent.actorSlot)
+    if body.killerSlot >= 0 and body.killTick == tick:
+      let killer = sim.playerForSlot(body.killerSlot)
       if killer >= 0 and victim >= 0:
         events.add ReplayEvent(
           tick: tick,
           kind: Kill,
-          actorSlot: simEvent.actorSlot,
+          actorSlot: body.killerSlot,
           actorLabel: sim.player(killer),
-          secondarySlot: simEvent.targetSlot,
+          secondarySlot: body.slotId,
           secondaryLabel: sim.player(victim),
           task: -1,
           phase: sim.phase
         )
-      break
     events.add ReplayEvent(
       tick: tick,
       kind: BodyFound,
