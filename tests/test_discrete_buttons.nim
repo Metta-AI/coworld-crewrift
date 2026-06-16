@@ -133,7 +133,7 @@ suite "discrete button input":
     sim.stepInputs(inputs, prevInputs)
     check sim.deadCrewmates() == 2
 
-  test "kill events preserve simultaneous killer attribution":
+  test "bodies preserve simultaneous killer attribution":
     var sim = initActionSim(4)
     sim.players[1].role = Imposter
     sim.players[1].killCooldown = 0
@@ -150,21 +150,24 @@ suite "discrete button input":
 
     sim.stepInputs(inputs, prevInputs)
 
-    check sim.simEvents.len == 2
-    check sim.simEvents[0].kind == SimKill
-    check sim.simEvents[0].actorSlot == sim.players[0].joinOrder
-    check sim.simEvents[0].targetSlot == sim.players[2].joinOrder
-    check sim.simEvents[1].kind == SimKill
-    check sim.simEvents[1].actorSlot == sim.players[1].joinOrder
-    check sim.simEvents[1].targetSlot == sim.players[3].joinOrder
+    check sim.bodies.len == 2
+    check sim.bodies[0].killerSlot == sim.players[0].joinOrder
+    check sim.bodies[0].slotId == sim.players[2].joinOrder
+    check sim.bodies[0].killTick == sim.tickCount
+    check sim.bodies[1].killerSlot == sim.players[1].joinOrder
+    check sim.bodies[1].slotId == sim.players[3].joinOrder
+    check sim.bodies[1].killTick == sim.tickCount
 
     let restored = deserializeReplaySim(serializeReplaySim(sim))
-    check restored.simEvents.len == 0
+    check restored.bodies.len == 2
+    check restored.bodies[0].killerSlot == sim.players[0].joinOrder
+    check restored.bodies[0].killTick == sim.tickCount
 
     inputs[0].attack = false
     inputs[1].attack = false
     sim.stepInputs(inputs, prevInputs)
-    check sim.simEvents.len == 0
+    check sim.bodies[0].killerSlot == sim.players[0].joinOrder
+    check sim.bodies[0].killTick == sim.tickCount - 1
 
   test "vent only fires on a fresh B press":
     var sim = initActionSim(3)
@@ -236,7 +239,9 @@ suite "discrete button input":
       x: 100,
       y: 100,
       color: sim.players[2].color,
-      slotId: sim.players[2].joinOrder
+      slotId: sim.players[2].joinOrder,
+      killerSlot: -1,
+      killTick: -1
     )
 
     var
