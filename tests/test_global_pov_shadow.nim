@@ -1,5 +1,6 @@
 import
   std/os,
+  supersnappy,
   bitworld/spriteprotocol,
   crewrift/[global, sim]
 
@@ -36,6 +37,28 @@ proc hasSpriteLabel(
   for message in messages:
     if message.kind == spkSprite and message.sprite.label == label:
       return true
+
+proc spriteWithLabel(
+  messages: openArray[SpritePacketMessage],
+  label: string
+): SpritePacketSpriteDef =
+  ## Returns the sprite with a matching protocol label.
+  for message in messages:
+    if message.kind == spkSprite and message.sprite.label == label:
+      return message.sprite
+  doAssert false, "Missing sprite label " & label & "."
+
+proc hasSolidStrikeRow(sprite: SpritePacketSpriteDef): bool =
+  ## Returns true when the text sprite has a full strikethrough row.
+  if sprite.height <= 3:
+    return false
+  let pixels = uncompress(sprite.compressedPixels)
+  doAssert pixels.len == sprite.width * sprite.height * 4
+  for x in 0 ..< sprite.width:
+    let alpha = pixels[(3 * sprite.width + x) * 4 + 3]
+    if alpha == 0:
+      return false
+  true
 
 proc hasFullScreenPovLayer(messages: openArray[SpritePacketMessage]): bool =
   ## Returns true when the selected player PoV is sent as a full-screen layer.
@@ -293,10 +316,30 @@ proc testPlayerLabelsUpdateOnlyWhenTextChanges() =
     "player label|voter|-> target"
   )
 
+proc testScoreboardStrikesDeadPlayers() =
+  ## Tests top-left scoreboard names are struck when players die.
+  var game = initCrewriftForTest(defaultGameConfig())
+  discard game.addPlayer("voter")
+  let targetIndex = game.addPlayer("target")
+  game.players[targetIndex].alive = false
+  game.phase = Playing
+
+  var
+    state = initGlobalViewerState()
+    nextState: GlobalViewerState
+  let
+    messages = game.buildGlobalMessages(state, nextState)
+    sprite = messages.spriteWithLabel(
+      "score target (crew) 0 color 2 alive false"
+    )
+
+  doAssert sprite.hasSolidStrikeRow()
+
 echo "Testing global PoV shadow refresh"
 testSelectedPovShadowRefresh()
 testMapClickSelectsNearestPlayer()
 testSelectedPovClearsOverlayOnly()
 testRoleRevealInterstitialUsesImposterView()
 testPlayerLabelsUpdateOnlyWhenTextChanges()
+testScoreboardStrikesDeadPlayers()
 echo "ok"

@@ -2439,7 +2439,8 @@ proc addScoreboard(
           ScoreboardTextColor
       text = sim.buildSpriteProtocolTextSprite(
         [player.scoreboardText()],
-        color
+        color,
+        struck = not player.alive
       )
     currentIds.add(pipObjectId)
     currentIds.add(textObjectId)
@@ -2465,7 +2466,9 @@ proc addScoreboard(
       text.width,
       text.height,
       text.pixels,
-      "score " & player.scoreboardText() & " color " & $color
+      "score " & player.scoreboardText() & " color " & $color &
+        " alive " & $player.alive,
+      changed = not player.alive
     )
     packet.addObject(
       textObjectId,
