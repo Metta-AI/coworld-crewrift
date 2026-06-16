@@ -1328,15 +1328,26 @@ proc buildVoteProgressSprite(sim: SimServer): seq[uint8] {.measure.} =
     BarW = ScreenWidth - 4
     BarH = 2
   result = newRgbaPixels(BarW, BarH)
-  let filled =
-    if sim.config.voteTimerTicks > 0:
-      clamp(
-        sim.voteState.voteTimer * BarW div sim.config.voteTimerTicks,
-        0,
-        BarW
-      )
-    else:
-      0
+  let
+    timer =
+      if sim.voteState.finalizeTimer > 0:
+        sim.voteState.finalizeTimer
+      else:
+        sim.voteState.voteTimer
+    total =
+      if sim.voteState.finalizeTimer > 0:
+        VoteFinalizeTicks
+      else:
+        sim.config.voteTimerTicks
+    filled =
+      if total > 0:
+        clamp(
+          timer * BarW div total,
+          0,
+          BarW
+        )
+      else:
+        0
   for y in 0 ..< BarH:
     for x in 0 ..< BarW:
       result.putRgbaPixel(y * BarW + x, if x < filled: 10'u8 else: 1'u8)

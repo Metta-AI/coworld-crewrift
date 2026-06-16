@@ -66,6 +66,45 @@ suite "vote cursor input":
     check sim.voteState.cursor[0] == 3
     check sim.voteState.votes[0] == 3
 
+  test "last cast vote waits before result screen":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 0
+    config.autoImposterCount = false
+    config.tasksPerPlayer = 1
+    config.voteTimerTicks = 120
+
+    var sim = initCrewriftForTest(config)
+    sim.addPlayers(3)
+    sim.startVote()
+    sim.advanceMeetingCall()
+
+    sim.voteState.votes[0] = 1
+    sim.voteState.votes[1] = 1
+    sim.voteState.cursor[2] = 1
+
+    var
+      inputs = newSeq[InputState](sim.players.len)
+      prevInputs = inputs
+    inputs[2].attack = true
+    sim.stepVote(inputs, prevInputs)
+
+    check sim.phase == Voting
+    check sim.voteState.votes[2] == 1
+    check sim.voteState.finalizeTimer == VoteFinalizeTicks
+
+    inputs[2].attack = false
+    for _ in 0 ..< VoteFinalizeTicks - 1:
+      sim.stepVote(inputs, prevInputs)
+
+    check sim.phase == Voting
+    check sim.voteState.finalizeTimer == 1
+
+    sim.stepVote(inputs, prevInputs)
+
+    check sim.phase == VoteResult
+    check sim.voteState.ejectedPlayer == 1
+
   test "held direction only moves one target slot":
     var config = defaultGameConfig()
     config.minPlayers = 4

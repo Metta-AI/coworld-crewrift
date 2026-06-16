@@ -58,6 +58,7 @@ const
   ProgressFilled* = 10'u8
   ReportRange* = 20
   VoteResultTicks* = 72
+  VoteFinalizeTicks* = TargetFps * 2
   MaxPlayers* = 16
   MinPlayers* = 8
   ImposterCount* = 2
@@ -213,6 +214,7 @@ type
     cursor*: seq[int]
     resultTimer*: int
     voteTimer*: int
+    finalizeTimer*: int
     ejectedPlayer*: int
 
   TaskStation* = object
@@ -2916,6 +2918,7 @@ proc startVoting(sim: var SimServer) =
   sim.voteState.votes = newSeq[int](n)
   sim.voteState.cursor = newSeq[int](n)
   sim.voteState.voteTimer = sim.config.voteTimerTicks
+  sim.voteState.finalizeTimer = 0
   for i in 0 ..< n:
     sim.voteState.votes[i] = -1
     sim.players[i].lastChatTick = sim.tickCount - sim.config.messageCooldownTicks
@@ -2941,6 +2944,7 @@ proc startVote*(
   sim.voteState.callTimer = MeetingCallTicks
   sim.voteState.resultTimer = 0
   sim.voteState.voteTimer = 0
+  sim.voteState.finalizeTimer = 0
   sim.voteState.ejectedPlayer = -1
   sim.voteState.votes.setLen(0)
   sim.voteState.cursor.setLen(0)
@@ -3478,6 +3482,11 @@ proc allVotesCast*(sim: SimServer): bool =
       return false
   true
 
+proc startVoteFinalizeTimer(sim: var SimServer) =
+  ## Starts the short delay that keeps final vote dots visible.
+  if sim.voteState.finalizeTimer <= 0:
+    sim.voteState.finalizeTimer = VoteFinalizeTicks
+
 proc tallyVotes*(sim: var SimServer, timedOut = false) =
   ## Counts the votes and moves to the vote-result phase.
   var counts = newSeq[int](sim.players.len)
@@ -3518,6 +3527,7 @@ proc tallyVotes*(sim: var SimServer, timedOut = false) =
       "vote ended: " & sim.playerText(maxPlayer) & " killed by vote"
     )
   sim.phase = VoteResult
+  sim.voteState.finalizeTimer = 0
   sim.voteState.resultTimer = sim.config.voteResultTicks
 
 proc applyVoteResult*(sim: var SimServer) =
@@ -4208,6 +4218,7 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.voteState.bodyColor = 255'u8
   result.voteState.bodySlotId = -1
   result.voteState.callTimer = 0
+  result.voteState.finalizeTimer = 0
   result.lastLobbyPlayersLogged = -1
   result.lastLobbyNeededLogged = -1
   result.lastLobbySecondsLogged = -1
@@ -4232,6 +4243,7 @@ proc resetToLobby*(sim: var SimServer) =
   sim.voteState.bodyColor = 255'u8
   sim.voteState.bodySlotId = -1
   sim.voteState.callTimer = 0
+  sim.voteState.finalizeTimer = 0
   sim.lastLobbyPlayersLogged = -1
   sim.lastLobbyNeededLogged = -1
   sim.lastLobbySecondsLogged = -1
@@ -4355,6 +4367,12 @@ proc step*(
     return
 
   if sim.phase == Voting:
+    if sim.voteState.finalizeTimer > 0:
+      dec sim.voteState.finalizeTimer
+      if sim.voteState.finalizeTimer <= 0:
+        sim.tallyVotes()
+      sim.checkMaxTicks()
+      return
     dec sim.voteState.voteTimer
     if sim.voteState.voteTimer <= 0:
       sim.tallyVotes(timedOut = true)
@@ -4396,7 +4414,7 @@ proc step*(
             sim.voteTargetText(sim.voteState.votes[i])
         )
         if sim.allVotesCast():
-          sim.tallyVotes()
+          sim.startVoteFinalizeTimer()
     sim.checkMaxTicks()
     return
 
