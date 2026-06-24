@@ -62,8 +62,8 @@ proc testHeldRetap() =
   doAssert downMask == ButtonA
   doAssert (pressedMask and ButtonA) == ButtonA
 
-proc testDebugSpritePacket() =
-  ## Tests that a player debug sprite packet is captured beside input state.
+proc testDebugSpritePackets() =
+  ## Tests that player debug sprite packets are captured beside input state.
   var
     state = initPlayerViewerState()
     downMask = 0'u8
@@ -71,21 +71,24 @@ proc testDebugSpritePacket() =
     chatText = ""
     debugSprites: seq[uint8] = @[]
     packet: seq[uint8]
+    extraPacket: seq[uint8]
   packet.addObject(1, 2, 3, 4, MapLayerId, 5)
+  extraPacket.addObject(6, 7, 8, 9, MapLayerId, 10)
 
   state.applyPlayerViewerMessage(
-    blobFromSpriteDebugSprites(packet),
+    blobFromSpriteDebugSprites(packet) &
+      blobFromSpriteDebugSprites(extraPacket),
     downMask,
     pressedMask,
     chatText,
     debugSprites
   )
 
-  doAssert debugSprites == packet
+  doAssert debugSprites == packet & extraPacket
 
 echo "Testing input buffer"
 testQuickPressRelease()
 testHeldRepeat()
 testHeldRetap()
-testDebugSpritePacket()
+testDebugSpritePackets()
 echo "ok"
