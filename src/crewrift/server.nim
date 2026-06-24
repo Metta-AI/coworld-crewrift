@@ -658,7 +658,12 @@ proc websocketHandler(
             if chatText.len > 0:
               appState.chatMessages[websocket] = chatText
             if debugSprites.len > 0:
-              appState.debugSprites[websocket] = debugSprites
+              var pendingDebugSprites = appState.debugSprites.getOrDefault(
+                websocket,
+                @[]
+              )
+              pendingDebugSprites.add(debugSprites)
+              appState.debugSprites[websocket] = pendingDebugSprites
   of ErrorEvent, CloseEvent:
     var who = ""
     {.gcsafe.}:

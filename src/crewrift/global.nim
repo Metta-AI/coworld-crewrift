@@ -479,7 +479,7 @@ proc applyPlayerViewerMessage*(
     of SpriteClientChatMessage:
       chatText.add(item.text)
     of SpriteClientDebugSpriteMessage:
-      debugSprites = item.debugSprites
+      debugSprites.add(item.debugSprites)
     of SpriteClientInputMessage:
       pressedMask = pressedMask or (item.mask and not inputMask)
       inputMask = item.mask
