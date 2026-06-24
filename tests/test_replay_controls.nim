@@ -11,6 +11,8 @@ const
   ReplayCenterBottomLayerId = 8
   ReplayBottomLeftLayerId = 9
   ReplayMismatchLayerId = 10
+  ReplayDebugToggleX = 102
+  ReplayDebugToggleY = 2
 
 proc initCrewriftForTest(config: GameConfig): SimServer =
   ## Initializes Crewrift from the game directory.
@@ -57,6 +59,29 @@ proc packetHasLayer(packet: openArray[uint8], layerId: int): bool =
   ## Returns true when a sprite packet contains one layer definition.
   for message in packet.parseSpritePacket():
     if message.kind == spkLayer and message.layer.layer == layerId:
+      return true
+
+proc packetHasSpriteLabel(
+  packet: openArray[uint8],
+  label: string
+): bool =
+  ## Returns true when a sprite definition carries one label.
+  for message in packet.parseSpritePacket():
+    if message.kind == spkSprite and message.sprite.label == label:
+      return true
+
+proc packetHasNamespacedDebugObject(
+  packet: openArray[uint8],
+  layerId: int
+): bool =
+  ## Returns true when the debug object was remapped into Crewrift's namespace.
+  for message in packet.parseSpritePacket():
+    if message.kind != spkObject:
+      continue
+    let objectDef = message.objectDef
+    if objectDef.id == 55002 and objectDef.spriteId == 55001 and
+        objectDef.layer == layerId and objectDef.x == 3 and
+        objectDef.y == 4 and objectDef.z == 31000:
       return true
 
 suite "replay controls":
@@ -162,6 +187,101 @@ suite "replay controls":
     check next.replayCommands == @[' ']
     check next.mousePressed == false
     check next.mouseReleased == false
+
+  test "debug sprite toggle changes viewer state":
+    var game = initCrewriftForTest(defaultGameConfig())
+    var state = initGlobalViewerState()
+    var next: GlobalViewerState
+
+    discard game.buildSpriteProtocolUpdates(
+      state,
+      next,
+      replayTick = 100,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 1000,
+      replayLooping = false,
+      replayEnabled = true
+    )
+    state = next
+
+    state.clickReplayLayer(
+      ReplayBottomLeftLayerId,
+      ReplayDebugToggleX,
+      ReplayDebugToggleY
+    )
+    discard game.buildSpriteProtocolUpdates(
+      state,
+      next,
+      replayTick = 100,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 1000,
+      replayLooping = false,
+      replayEnabled = true
+    )
+    check next.debugSpritesVisible
+    check next.replayCommands.len == 0
+
+  test "debug sprites draw on player and replay pov views":
+    var game = initCrewriftForTest(defaultGameConfig())
+    let playerIndex = game.addPlayer("debugger")
+    game.phase = Playing
+    var debugPacket: seq[uint8]
+    debugPacket.addSprite(
+      1,
+      1,
+      1,
+      @[255'u8, 255, 255, 255],
+      "debug planned path"
+    )
+    debugPacket.addObject(2, 3, 4, 0, MapLayerId, 1)
+
+    var
+      state = initPlayerViewerState()
+      nextState: PlayerViewerState
+    let playerPacket = game.buildSpriteProtocolPlayerUpdates(
+      playerIndex,
+      state,
+      nextState,
+      debugSprites = debugPacket
+    )
+    check playerPacket.packetHasSpriteLabel("debug planned path")
+    check playerPacket.packetHasNamespacedDebugObject(MapLayerId)
+
+    var
+      globalState = initGlobalViewerState()
+      nextGlobalState: GlobalViewerState
+    globalState.selectedJoinOrder = game.players[playerIndex].joinOrder
+
+    let hiddenPacket = game.buildSpriteProtocolUpdates(
+      globalState,
+      nextGlobalState,
+      replayTick = 1,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 10,
+      replayLooping = false,
+      replayEnabled = true,
+      debugSprites = @[debugPacket]
+    )
+    check not hiddenPacket.packetHasSpriteLabel("debug planned path")
+
+    globalState = nextGlobalState
+    globalState.debugSpritesVisible = true
+    let visiblePacket = game.buildSpriteProtocolUpdates(
+      globalState,
+      nextGlobalState,
+      replayTick = 1,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 10,
+      replayLooping = false,
+      replayEnabled = true,
+      debugSprites = @[debugPacket]
+    )
+    check visiblePacket.packetHasSpriteLabel("debug planned path")
+    check visiblePacket.packetHasNamespacedDebugObject(PovLayerId)
 
   test "fast click arriving during frame writeback is preserved":
     var

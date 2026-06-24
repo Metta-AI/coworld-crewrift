@@ -27,6 +27,7 @@ type
     lastAppliedMasks: Table[WebSocket, uint8]
     playerReady: Table[WebSocket, bool]
     chatMessages: Table[WebSocket, string]
+    debugSprites: Table[WebSocket, seq[uint8]]
     playerIndices: Table[WebSocket, int]
     playerAddresses: Table[WebSocket, string]
     playerSlots: Table[WebSocket, int]
@@ -140,6 +141,7 @@ proc initAppState() =
   appState.lastAppliedMasks = initTable[WebSocket, uint8]()
   appState.playerReady = initTable[WebSocket, bool]()
   appState.chatMessages = initTable[WebSocket, string]()
+  appState.debugSprites = initTable[WebSocket, seq[uint8]]()
   appState.playerIndices = initTable[WebSocket, int]()
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.playerSlots = initTable[WebSocket, int]()
@@ -189,6 +191,7 @@ proc removePlayerWebSocketState(websocket: WebSocket): int =
   appState.lastAppliedMasks.del(websocket)
   appState.playerReady.del(websocket)
   appState.chatMessages.del(websocket)
+  appState.debugSprites.del(websocket)
   appState.playerAddresses.del(websocket)
   appState.playerSlots.del(websocket)
   appState.playerTokens.del(websocket)
@@ -642,16 +645,20 @@ proc websocketHandler(
                 0
               )
               chatText = ""
+              debugSprites: seq[uint8] = @[]
             appState.playerViewers[websocket].applyPlayerViewerMessage(
               message.data,
               mask,
               pressedMask,
-              chatText
+              chatText,
+              debugSprites
             )
             appState.inputMasks[websocket] = mask
             appState.inputPressedMasks[websocket] = pressedMask
             if chatText.len > 0:
               appState.chatMessages[websocket] = chatText
+            if debugSprites.len > 0:
+              appState.debugSprites[websocket] = debugSprites
   of ErrorEvent, CloseEvent:
     var who = ""
     {.gcsafe.}:
@@ -903,6 +910,7 @@ proc runServerLoop*(
       downInputs: seq[InputState]
       downInputMasks: seq[uint8]
       pressedInputMasks: seq[uint8]
+      playerDebugSprites: seq[seq[uint8]]
       globalViewers: seq[WebSocket] = @[]
       globalStates: seq[GlobalViewerState] = @[]
       rewardViewers: seq[WebSocket] = @[]
@@ -935,6 +943,7 @@ proc runServerLoop*(
           shouldReset = true
           appState.resetRequested = false
           appState.chatMessages.clear()
+          appState.debugSprites.clear()
         for websocket in appState.closedSockets:
           if not replayLoaded and websocket in appState.playerIndices:
             let playerIndex = appState.playerIndices[websocket]
@@ -1079,6 +1088,7 @@ proc runServerLoop*(
           downInputs = newSeq[InputState](sim.players.len)
           downInputMasks = newSeq[uint8](sim.players.len)
           pressedInputMasks = newSeq[uint8](sim.players.len)
+          playerDebugSprites = newSeq[seq[uint8]](sim.players.len)
         for websocket, playerIndex in appState.playerIndices.pairs:
           if not websocket.isPlayerWebSocket():
             continue
@@ -1094,6 +1104,18 @@ proc runServerLoop*(
           appState.inputPressedMasks[websocket] = 0
           if playerIndex < 0 or playerIndex >= inputs.len:
             continue
+          let debugSprites = appState.debugSprites.getOrDefault(
+            websocket,
+            @[]
+          )
+          appState.debugSprites.del(websocket)
+          if debugSprites.len > 0:
+            playerDebugSprites[playerIndex] = debugSprites
+            replayWriter.writeDebugSprite(
+              tickTime(sim.tickCount),
+              playerIndex,
+              debugSprites
+            )
           let currentMask = appState.inputMasks.getOrDefault(websocket, 0)
           let appliedMask = currentMask or pressedMask
           inputs[playerIndex] = decodeInputMask(appliedMask)
@@ -1300,10 +1322,20 @@ proc runServerLoop*(
 
     for i in 0 ..< sockets.len:
       var nextState: PlayerViewerState
+      let debugSprites =
+        if replayLoaded and playerIndices[i] >= 0 and
+            playerIndices[i] < replayPlayer.debugSprites.len:
+          replayPlayer.debugSprites[playerIndices[i]]
+        elif not replayLoaded and playerIndices[i] >= 0 and
+            playerIndices[i] < playerDebugSprites.len:
+          playerDebugSprites[playerIndices[i]]
+        else:
+          @[]
       let framePacket = sim.buildSpriteProtocolPlayerUpdates(
         playerIndices[i],
         playerViewerStates[i],
-        nextState
+        nextState,
+        debugSprites = debugSprites
       )
       {.gcsafe.}:
         withLock appState.lock:
@@ -1338,7 +1370,8 @@ proc runServerLoop*(
         else: liveProgressMaxTick(config),
         replayPlayer.looping,
         replayLoaded,
-        if replayLoaded: replayPlayer.hashMismatchTick else: -1
+        if replayLoaded: replayPlayer.hashMismatchTick else: -1,
+        if replayLoaded: replayPlayer.debugSprites else: @[]
       )
       if packet.len == 0:
         continue

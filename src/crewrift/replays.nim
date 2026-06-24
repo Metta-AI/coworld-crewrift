@@ -13,9 +13,11 @@ type
     leaveIndex*: int
     chatIndex*: int
     inputIndex*: int
+    debugSpriteIndex*: int
     hashIndex*: int
     masks*: seq[uint8]
     lastAppliedMasks*: seq[uint8]
+    debugSprites*: seq[seq[uint8]]
     hashValidationFailed*: bool
     hashMismatchTick*: int
 
@@ -25,10 +27,12 @@ type
     leaveIndex*: int
     chatIndex*: int
     inputIndex*: int
+    debugSpriteIndex*: int
     hashIndex*: int
     masks*: seq[uint8]
     pressedMasks*: seq[uint8]
     lastAppliedMasks*: seq[uint8]
+    debugSprites*: seq[seq[uint8]]
     playing*: bool
     looping*: bool
     speedIndex*: int
@@ -102,6 +106,7 @@ proc initReplayPlayer*(data: ReplayData): ReplayPlayer =
   result.masks = @[]
   result.pressedMasks = @[]
   result.lastAppliedMasks = @[]
+  result.debugSprites = @[]
   result.playing = true
   result.looping = true
   result.speedIndex = 0
@@ -123,12 +128,14 @@ proc resetReplay*(replay: var ReplayPlayer) =
   replay.leaveIndex = 0
   replay.chatIndex = 0
   replay.inputIndex = 0
+  replay.debugSpriteIndex = 0
   replay.hashIndex = 0
   replay.hashValidationFailed = false
   replay.hashMismatchTick = -1
   replay.masks = @[]
   replay.pressedMasks = @[]
   replay.lastAppliedMasks = @[]
+  replay.debugSprites = @[]
 
 proc saveReplayKeyframe(
   replay: ReplayPlayer,
@@ -142,9 +149,11 @@ proc saveReplayKeyframe(
     leaveIndex: replay.leaveIndex,
     chatIndex: replay.chatIndex,
     inputIndex: replay.inputIndex,
+    debugSpriteIndex: replay.debugSpriteIndex,
     hashIndex: replay.hashIndex,
     masks: replay.masks,
     lastAppliedMasks: replay.lastAppliedMasks,
+    debugSprites: replay.debugSprites,
     hashValidationFailed: replay.hashValidationFailed,
     hashMismatchTick: replay.hashMismatchTick
   )
@@ -162,10 +171,12 @@ proc restoreReplayKeyframe(
   replay.leaveIndex = keyframe.leaveIndex
   replay.chatIndex = keyframe.chatIndex
   replay.inputIndex = keyframe.inputIndex
+  replay.debugSpriteIndex = keyframe.debugSpriteIndex
   replay.hashIndex = keyframe.hashIndex
   replay.masks = keyframe.masks
   replay.pressedMasks = newSeq[uint8](replay.masks.len)
   replay.lastAppliedMasks = keyframe.lastAppliedMasks
+  replay.debugSprites = keyframe.debugSprites
   replay.hashValidationFailed = keyframe.hashValidationFailed
   replay.hashMismatchTick = keyframe.hashMismatchTick
 
@@ -182,11 +193,17 @@ proc ensureReplayPlayer(replay: var ReplayPlayer, player: int) =
     replay.masks.add(0)
     replay.pressedMasks.add(0)
     replay.lastAppliedMasks.add(0)
+    replay.debugSprites.add(@[])
 
 proc clearReplayPressedMasks(replay: var ReplayPlayer) =
   ## Clears per-step replay press events.
   for mask in replay.pressedMasks.mitems:
     mask = 0
+
+proc clearReplayDebugSprites(replay: var ReplayPlayer) =
+  ## Clears per-step replay debug overlays.
+  for packet in replay.debugSprites.mitems:
+    packet.setLen(0)
 
 proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
   ## Applies replay joins and inputs for the current tick.
@@ -203,6 +220,8 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
       replay.pressedMasks.delete(int(leave.player))
     if int(leave.player) < replay.lastAppliedMasks.len:
       replay.lastAppliedMasks.delete(int(leave.player))
+    if int(leave.player) < replay.debugSprites.len:
+      replay.debugSprites.delete(int(leave.player))
     inc replay.leaveIndex
 
   while replay.joinIndex < replay.data.joins.len and
@@ -229,6 +248,13 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let chat = replay.data.chats[replay.chatIndex]
     sim.addVotingChat(int(chat.player), chat.message)
     inc replay.chatIndex
+
+  while replay.debugSpriteIndex < replay.data.debugSprites.len and
+      replay.data.debugSprites[replay.debugSpriteIndex].time <= time:
+    let debugSprite = replay.data.debugSprites[replay.debugSpriteIndex]
+    replay.ensureReplayPlayer(int(debugSprite.player))
+    replay.debugSprites[int(debugSprite.player)] = debugSprite.packet
+    inc replay.debugSpriteIndex
 
 proc replayPrevInputs(
   replay: var ReplayPlayer,
@@ -291,6 +317,7 @@ proc checkReplayHash(replay: var ReplayPlayer, sim: SimServer) =
 proc stepReplay*(replay: var ReplayPlayer, sim: var SimServer) =
   ## Advances replay by one simulation tick.
   replay.clearReplayPressedMasks()
+  replay.clearReplayDebugSprites()
   replay.applyReplayEvents(sim)
   let prevInputs = replay.replayPrevInputs(sim.players.len)
   let inputs = replay.replayInputs(sim.players.len)

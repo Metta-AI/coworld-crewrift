@@ -184,6 +184,12 @@ https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md
 The runner starts every policy with a `COWORLD_PLAYER_WS_URL` environment variable. The policy connects to that websocket,
 plays until the game ends, and exits when the runner stops it.
 
+Policies may also emit Sprite v1 debug sprite packets on the player websocket.
+The payload is a normal server-to-client sprite packet containing debug-only
+sprite definitions and objects. Crewrift draws that payload over the emitting
+player's observation view for the current step, records it in the replay, and
+lets replay viewers toggle those annotations on the selected player POV.
+
 Choose one starting point:
 
 * **Stock baseline:** run the public `notsus` image to compare against your own player.

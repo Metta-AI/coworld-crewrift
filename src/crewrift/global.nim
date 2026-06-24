@@ -1,5 +1,6 @@
 import
   std/os,
+  supersnappy,
   bitworld/pixelfonts, bitworld/profile, bitworld/spriteprotocol, bitworld/server,
   sim
 
@@ -76,8 +77,12 @@ const
   TransportWidth = 108
   TransportHeight = 18
   TransportSpeedGap = 16
+  TransportDebugX = 100
   TransportX = 2
   TransportY = 1
+  DebugSpriteIdOffset = 55000
+  DebugSpriteIdRange = 8000
+  DebugSpriteZBase = 31000
   SpritePlayerKillSpriteId = 5000
   SpritePlayerKillShadowSpriteId = 5001
   SpritePlayerGhostIconSpriteId = 5002
@@ -187,6 +192,7 @@ type
     scrubbingReplay*: bool
     replaySeekTick*: int
     replayCommands*: seq[char]
+    debugSpritesVisible*: bool
     trails: seq[PlayerTrail]
     spriteDefs: seq[SpriteDefinition]
 
@@ -456,19 +462,24 @@ proc applyGlobalViewerMessage*(
       discard
     of SpriteClientReadyMessage:
       discard
+    of SpriteClientDebugSpriteMessage:
+      discard
 
 proc applyPlayerViewerMessage*(
   state: var PlayerViewerState,
   message: string,
   inputMask: var uint8,
   pressedMask: var uint8,
-  chatText: var string
+  chatText: var string,
+  debugSprites: var seq[uint8]
 ) =
   ## Applies sprite player protocol input messages.
   for item in message.parseSpriteClientMessages():
     case item.kind
     of SpriteClientChatMessage:
       chatText.add(item.text)
+    of SpriteClientDebugSpriteMessage:
+      debugSprites = item.debugSprites
     of SpriteClientInputMessage:
       pressedMask = pressedMask or (item.mask and not inputMask)
       inputMask = item.mask
@@ -2797,6 +2808,49 @@ proc addSpritePlayerTaskArrows(
       spriteIdOffset
     )
 
+proc debugProtocolId(sourceId, baseId: int): int =
+  ## Maps a player-local debug id into Crewrift's debug namespace.
+  baseId + sourceId mod DebugSpriteIdRange
+
+proc addDebugSpritePacket(
+  currentIds: var seq[int],
+  packet: var seq[uint8],
+  debugSprites: openArray[uint8],
+  layerId: int
+) {.measure.} =
+  ## Adds one player-authored debug sprite packet to a player viewport.
+  for message in debugSprites.parseSpritePacket():
+    case message.kind
+    of spkSprite:
+      packet.addSprite(
+        message.sprite.id.debugProtocolId(DebugSpriteIdOffset),
+        message.sprite.width,
+        message.sprite.height,
+        uncompress(message.sprite.compressedPixels),
+        message.sprite.label
+      )
+    of spkObject:
+      let objectId = message.objectDef.id.debugProtocolId(DebugSpriteIdOffset)
+      currentIds.add(objectId)
+      packet.addObject(
+        objectId,
+        message.objectDef.x,
+        message.objectDef.y,
+        clamp(
+          DebugSpriteZBase + message.objectDef.z,
+          int(low(int16)),
+          int(high(int16))
+        ),
+        layerId,
+        message.objectDef.spriteId.debugProtocolId(DebugSpriteIdOffset)
+      )
+    of spkDeleteObject:
+      packet.addDeleteObject(
+        message.objectId.debugProtocolId(DebugSpriteIdOffset)
+      )
+    of spkClearObjects, spkViewport, spkLayer:
+      discard
+
 proc buildSpriteProtocolPlayerUpdates*(
   sim: var SimServer,
   playerIndex: int,
@@ -2806,7 +2860,8 @@ proc buildSpriteProtocolPlayerUpdates*(
   objectIdOffset = 0,
   spriteIdOffset = 0,
   clearObjects = true,
-  addMarkers = true
+  addMarkers = true,
+  debugSprites: seq[uint8] = @[]
 ): seq[uint8] {.measure.} =
   ## Builds sprite protocol updates for one playable player view.
   result = @[]
@@ -3158,6 +3213,7 @@ proc buildSpriteProtocolPlayerUpdates*(
     objectIdOffset,
     spriteIdOffset
   )
+  currentIds.addDebugSpritePacket(result, debugSprites, layerId)
   if not state.isNil:
     for objectId in state.objectIds:
       if objectId notin currentIds:
@@ -3172,6 +3228,9 @@ proc replayCommandAt(layer, x, y: int): char =
     localX = x - TransportX
     localY = y - TransportY
   if localY >= 0 and localY < TransportIconHeight:
+    if localX >= TransportDebugX and
+        localX < TransportDebugX + TransportIconSize:
+      return 'd'
     let index = localX div TransportButtonStride
     if index < 0 or index >= TransportIconCount:
       return '\0'
@@ -3289,7 +3348,8 @@ proc buildReplayControlsSprite(
   replayPlaying: bool,
   replaySpeed: int,
   replayLooping: bool,
-  replayEnabled: bool
+  replayEnabled: bool,
+  debugSpritesVisible: bool
 ): tuple[width, height: int, pixels: seq[uint8]] {.measure.} =
   ## Builds the replay transport controls sprite.
   result.width = TransportWidth
@@ -3342,6 +3402,16 @@ proc buildReplayControlsSprite(
       color
     )
     x += TransportSpeedGap
+
+  sim.blitSmallText(
+    result.pixels,
+    TransportWidth,
+    TransportHeight,
+    "D",
+    TransportDebugX,
+    0,
+    if replayEnabled and debugSpritesVisible: 10'u8 else: 1'u8
+  )
 
 proc buildReplayMismatchSprite(
   sim: SimServer,
@@ -3444,7 +3514,8 @@ proc addReplayControls(
   replayMaxTick: int,
   replayPlaying,
   replayLooping,
-  replayEnabled: bool
+  replayEnabled,
+  debugSpritesVisible: bool
 ) {.measure.} =
   ## Adds replay timing controls when replay playback is active.
   if not replayEnabled:
@@ -3466,7 +3537,8 @@ proc addReplayControls(
       replayPlaying,
       replaySpeed,
       replayLooping,
-      replayEnabled
+      replayEnabled,
+      debugSpritesVisible
     )
   currentIds.add(ReplayTickObjectId)
   currentIds.add(ReplayControlsObjectId)
@@ -3532,7 +3604,8 @@ proc buildSpriteProtocolUpdates*(
   replayMaxTick = -1,
   replayLooping = false,
   replayEnabled = false,
-  replayMismatchTick = -1
+  replayMismatchTick = -1,
+  debugSprites: seq[seq[uint8]] = @[]
 ): seq[uint8] {.measure.} =
   ## Builds global viewer object updates for the current tick.
   result = @[]
@@ -3580,7 +3653,9 @@ proc buildSpriteProtocolUpdates*(
           clickX,
           clickY
         )
-        if command != '\0':
+        if command == 'd':
+          nextState.debugSpritesVisible = not nextState.debugSpritesVisible
+        elif command != '\0':
           nextState.replayCommands.add(command)
         elif not nextState.povActive and clickLayer == MapLayerId:
           nextState.toggleSelectedJoinOrder(
@@ -3795,7 +3870,8 @@ proc buildSpriteProtocolUpdates*(
     replayMaxTick,
     replayPlaying,
     replayLooping,
-    replayEnabled
+    replayEnabled,
+    nextState.debugSpritesVisible
   )
   sim.addReplayMismatchWarning(
     nextState.spriteDefs,
@@ -3811,6 +3887,12 @@ proc buildSpriteProtocolUpdates*(
 
   if povActive:
     var povState: PlayerViewerState
+    let povDebugSprites =
+      if replayEnabled and nextState.debugSpritesVisible and
+          povPlayerIndex >= 0 and povPlayerIndex < debugSprites.len:
+        debugSprites[povPlayerIndex]
+      else:
+        @[]
     let povPacket = sim.buildSpriteProtocolPlayerUpdates(
       povPlayerIndex,
       nextState.povState,
@@ -3819,7 +3901,8 @@ proc buildSpriteProtocolUpdates*(
       PovObjectIdOffset,
       PovSpriteIdOffset,
       false,
-      false
+      false,
+      povDebugSprites
     )
     for value in povPacket:
       result.add(value)
