@@ -1,0 +1,72 @@
+# Crewrift Prime — advanced-skill commissioner ruleset config.
+#
+# Same shape as the stock among_them.yaml, with the Qualifiers second stage
+# renamed to `skill_gate`. The CrewriftPrimeSkillCommissioner subclass detects
+# the `skill_gate` stage (by label) and, for that stage only, schedules the three
+# scenario drills (scn_vote_basic / scn_hunt_isolated / scn_task_pressure) and
+# replaces the score-only transition with the strict three-skill AND gate. The
+# crash_check stage and the Competition division are handled by the stock base
+# unchanged.
+#
+# Loaded via RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml in the image.
+
+scoring:
+  round_score: mean
+  leaderboard:
+    type: ewma
+    half_life_hours: 2
+
+defaults:
+  seating: rolling_window
+  fill_seats: duplicate
+  min_entries_to_start: 1
+  stage:
+    label: Round
+    episodes: 12
+    min_episodes_per_entrant: 12
+
+divisions:
+  qualifiers:
+    name: Qualifiers
+    level: -99
+    match:
+      name: Qualifiers
+      type: staging
+    entrants: qualifying
+    min_entries_to_start: 1
+    stages:
+      # ONE combined qualifier game ("one game and we're in"). The
+      # CrewriftPrimeSkillCommissioner subclass detects the staging (Qualifiers)
+      # division and fully overrides scheduling + completion for it: it schedules
+      # exactly ONE 8-seat self-play episode of the `scn_qualifier` variant and
+      # reads all three skills (voting/hunting/tasks) from that single game,
+      # promoting to Competition on pass or holding (substatus skill_gate) to
+      # re-run next round. Crash safety is folded into the game (a completed game
+      # with results is not a crash; non-completion DQs; infra/dispatch holds).
+      # The schedule/transition below are placeholders for the stock machinery
+      # the subclass bypasses; they only need to select the qualifying entrant.
+      - id: qualifier
+        entrants:
+          status: qualifying
+          match_substatus: false
+        schedule:
+          label: qualifier
+          self_play: true
+          episodes: 1
+          min_episodes_per_entrant: 1
+        on_episode_complete:
+          - id: qualifier_default_hold
+            name: Awaiting qualifier evaluation
+            criteria: otherwise
+            actions:
+              - type: update_membership
+                status: qualifying
+                substatus: skill_gate
+
+  competition:
+    name: Competition
+    previous_name: Daily
+    level: 1
+    match:
+      type: competition
+    entrants: champions

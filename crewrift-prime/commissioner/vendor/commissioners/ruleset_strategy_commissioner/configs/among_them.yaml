@@ -1,0 +1,77 @@
+scoring:
+  round_score: mean
+  leaderboard:
+    type: ewma
+    half_life_hours: 2
+
+defaults:
+  seating: rolling_window
+  fill_seats: duplicate
+  min_entries_to_start: 8
+  stage:
+    label: Round
+    episodes: 100
+    min_episodes_per_entrant: 100
+
+divisions:
+  qualifiers:
+    name: Qualifiers
+    level: -99
+    match:
+      name: Qualifiers
+      type: staging
+    entrants: qualifying
+    min_entries_to_start: 1
+    stages:
+      - id: crash_check
+        schedule:
+          label: Crash check
+          self_play: true
+          attempts: 2
+          min_episodes_per_entrant: 2
+        on_episode_complete:
+          - id: failed_crash_check
+            name: Failed crash test
+            criteria:
+              completed_episodes_lte: 0
+            actions:
+              - type: update_membership
+                status: disqualified
+                substatus: inactive
+          - id: passed_crash_check
+            name: Passed crash test
+            criteria: otherwise
+            actions:
+              - type: update_membership
+                status: qualifying
+                substatus: score_gate
+
+      - id: score_gate
+        schedule:
+          label: Score gate
+          episodes: 2
+        on_episode_complete:
+          - id: passed_score_gate
+            name: Passed score gate
+            criteria:
+              score_gt: 0
+            actions:
+              - type: update_membership
+                division: competition
+                status: competing
+                substatus: champion
+          - id: failed_score_gate
+            name: Score <= 0
+            criteria: otherwise
+            actions:
+              - type: update_membership
+                status: disqualified
+                substatus: inactive
+
+  competition:
+    name: Competition
+    previous_name: Daily
+    level: 1
+    match:
+      type: competition
+    entrants: champions

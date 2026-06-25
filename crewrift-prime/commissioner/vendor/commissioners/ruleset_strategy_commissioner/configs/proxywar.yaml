@@ -1,0 +1,64 @@
+schedule_interval_minutes: 30
+
+scoring:
+  round_score: mean
+  leaderboard:
+    type: ewma
+    half_life_hours: 2
+
+dispatch_throttle:
+  enabled: true
+  min_in_flight: 4
+  max_in_flight: 50
+  startup_buffer_seconds: 30
+  target_load: 0.75
+  worker_seconds_per_episode: 45
+
+defaults:
+  seating: rolling_window
+  fill_seats: duplicate
+  min_entries_to_start: 2
+  stage:
+    label: ProxyWar round
+    episodes: 1
+    min_episodes_per_entrant: 8
+
+divisions:
+  qualifiers:
+    name: Qualifiers
+    level: -99
+    match:
+      name: Qualifiers
+      type: staging
+    entrants: qualifying
+    min_entries_to_start: 1
+    stages:
+      - id: crash_check
+        schedule:
+          label: Crash check
+          self_play: true
+          attempts: 2
+          min_episodes_per_entrant: 2
+        on_round_complete:
+          - id: qualified
+            criteria:
+              completed_episodes_gt: 0
+            actions:
+              - type: update_membership
+                division: competition
+                status: competing
+                substatus: champion
+          - id: disqualified
+            criteria: otherwise
+            actions:
+              - type: update_membership
+                status: disqualified
+                substatus: inactive
+
+  competition:
+    name: Competition
+    previous_name: Daily
+    level: 1
+    match:
+      type: competition
+    entrants: champions
