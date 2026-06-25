@@ -19,6 +19,19 @@ Softmax play prompt or Coworld CLI issues, file against
 ids, logs or replay links, and the smallest repro instead of silently working
 around the issue.
 
+## Coworld source ownership
+
+Crewrift's game server, bundled `notsus` player, reporter, and any
+Crewrift-specific commissioner should live in this repo. Shared reusable pieces
+come from <https://github.com/Metta-AI/coworld-tools>.
+
+If you are fixing the Crewrift commissioner, first decide whether the change is
+shared or Crewrift-specific. Shared `ruleset_strategy` fixes belong in
+`coworld-tools/commissioners`. Crewrift-specific commissioner behavior belongs
+beside this game, with `coworld_manifest.json` updated to point
+`commissioner[].source_url` at this repo. Do not patch the archived
+`Metta-AI/commissioners` repo.
+
 ## Crewrift Rules
 
 Crewrift is a multiplayer social deduction Coworld used for social AI benchmarks. Sandbox to make the AI learn and grow in a confined game environment.
