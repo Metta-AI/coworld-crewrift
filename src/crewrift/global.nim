@@ -1,6 +1,6 @@
 import
   std/os,
-  supersnappy,
+  chroma, supersnappy,
   bitworld/pixelfonts, bitworld/profile, bitworld/spriteprotocol, bitworld/server,
   sim
 
@@ -137,24 +137,6 @@ const
   MeetingCallRightIconX = 80
   MeetingCallButtonX = MeetingCallRightIconX + 1
   MeetingCallButtonY = MeetingCallIconY + 1
-  PlayerColorNames = [
-    "red",
-    "orange",
-    "yellow",
-    "light blue",
-    "pink",
-    "lime",
-    "blue",
-    "pale blue",
-    "gray",
-    "white",
-    "dark brown",
-    "brown",
-    "dark teal",
-    "green",
-    "dark navy",
-    "black"
-  ]
 
 type
   TrailDot = object
@@ -271,6 +253,18 @@ proc putRgbaPixel(pixels: var seq[uint8], pixelIndex: int, color: uint8) =
   pixels[offset + 2] = rgba.b
   pixels[offset + 3] = rgba.a
 
+proc putRgbaPixel(
+  pixels: var seq[uint8],
+  pixelIndex: int,
+  color: ColorRGBA
+) =
+  ## Writes one true-color global protocol RGBA pixel.
+  let offset = pixelIndex * 4
+  pixels[offset] = color.r
+  pixels[offset + 1] = color.g
+  pixels[offset + 2] = color.b
+  pixels[offset + 3] = color.a
+
 proc newRgbaPixels(width, height: int): seq[uint8] =
   ## Allocates a transparent RGBA sprite buffer.
   newSeq[uint8](width * height * 4)
@@ -311,9 +305,9 @@ proc putCrewPixel(
   if a < 20'u8:
     return
   if crewPixelIsTint(r, g, b, a):
-    pixels.putRgbaPixel(pixelIndex, tint)
+    pixels.putRgbaPixel(pixelIndex, playerColorRgba(tint))
   elif crewPixelIsShade(r, g, b, a):
-    pixels.putRgbaPixel(pixelIndex, ShadowMap[tint and 0x0f])
+    pixels.putRgbaPixel(pixelIndex, playerShadeRgba(tint))
   else:
     pixels.putRawRgbaPixel(pixelIndex, r, g, b, a)
 
@@ -335,6 +329,14 @@ proc playerColorName(index: int): string =
   if index >= 0 and index < PlayerColorNames.len:
     return PlayerColorNames[index]
   "unknown"
+
+proc actorRgba(colorIndex, tint: uint8): ColorRGBA =
+  ## Returns the true-color RGBA value for actor wildcard pixels.
+  if colorIndex == TintColor:
+    return playerColorRgba(tint)
+  if colorIndex == ShadeTintColor:
+    return playerShadeRgba(tint)
+  Palette[colorIndex and 0x0f]
 
 proc crewSpriteForSlot(sim: SimServer, slotId: int): CrewSprite =
   ## Returns the crew sprite assigned to one player slot.
@@ -528,10 +530,7 @@ proc buildSpriteProtocolActorSprite(
       let colorIndex = sprite.pixels[sprite.spriteIndex(srcX, y)]
       if colorIndex == TransparentColorIndex:
         continue
-      result.putRgbaPixel(
-        outIndex(x + 1, y + 1),
-        actorColor(colorIndex, tint)
-      )
+      result.putRgbaPixel(outIndex(x + 1, y + 1), actorRgba(colorIndex, tint))
 
 proc buildCrewProtocolActorSprite(
   sprite: CrewSprite,
@@ -610,6 +609,15 @@ proc buildSolidSprite(
   for i in 0 ..< width * height:
     result.putRgbaPixel(i, color)
 
+proc buildSolidSprite(
+  width, height: int,
+  color: ColorRGBA
+): seq[uint8] {.measure.} =
+  ## Builds a solid true-color protocol sprite.
+  result = newRgbaPixels(width, height)
+  for i in 0 ..< width * height:
+    result.putRgbaPixel(i, color)
+
 proc buildTransparentBlackSprite(width, height: int): seq[uint8] {.measure.} =
   ## Builds a fully transparent black protocol sprite.
   newRgbaPixels(width, height)
@@ -674,25 +682,19 @@ proc buildVoteBorderSprite(width, height: int): seq[uint8] {.measure.} =
     result.putRgbaPixel(y * width, 2'u8)
     result.putRgbaPixel(y * width + width - 1, 2'u8)
 
-proc buildVoteMarkerSprite(color: uint8): seq[uint8] {.measure.} =
+proc buildVoteMarkerSprite(colorIndex: int): seq[uint8] {.measure.} =
   ## Builds the current-voter marker sprite.
   result = newRgbaPixels(2, 1)
-  if color == SpaceColor:
-    result.putRgbaPixel(0, 2'u8)
-    result.putRgbaPixel(1, 12'u8)
-  else:
-    result.putRgbaPixel(0, color)
-    result.putRgbaPixel(1, color)
+  let color = PlayerColorPalette[colorIndex]
+  result.putRgbaPixel(0, color)
+  result.putRgbaPixel(1, color)
 
-proc buildVoteDotSprite(color: uint8): seq[uint8] {.measure.} =
+proc buildVoteDotSprite(colorIndex: int): seq[uint8] {.measure.} =
   ## Builds a compact vote marker sprite.
   result = newRgbaPixels(2, 1)
-  if color == SpaceColor:
-    result.putRgbaPixel(0, 12'u8)
-    result.putRgbaPixel(1, 2'u8)
-  else:
-    result.putRgbaPixel(0, color)
-    result.putRgbaPixel(1, color)
+  let color = PlayerColorPalette[colorIndex]
+  result.putRgbaPixel(0, color)
+  result.putRgbaPixel(1, color)
 
 proc buildImposterBarSprite(
   cooldown, maxCooldown: int
@@ -712,9 +714,10 @@ proc buildImposterBarSprite(
     for x in 0 ..< filled:
       result.putRgbaPixel(y * ImposterBarWidth + x, ImposterBarReadyColor)
 
-proc buildTrailDotSprite(color: uint8): seq[uint8] {.measure.} =
+proc buildTrailDotSprite(colorIndex: int): seq[uint8] {.measure.} =
   ## Builds one global-only player trail dot sprite.
   result = newRgbaPixels(TrailDotSize, TrailDotSize)
+  let color = PlayerColorPalette[colorIndex]
   for i in 0 ..< TrailDotSize * TrailDotSize:
     result.putRgbaPixel(i, color)
 
@@ -1945,7 +1948,7 @@ proc addSpriteProtocolInterstitialSprites(
       ),
       2,
       1,
-      buildVoteMarkerSprite(PlayerColors[i]),
+      buildVoteMarkerSprite(i),
       "vote self marker " & playerColorName(i)
     )
     packet.addSpriteChanged(
@@ -1955,7 +1958,7 @@ proc addSpriteProtocolInterstitialSprites(
       ),
       2,
       1,
-      buildVoteDotSprite(PlayerColors[i]),
+      buildVoteDotSprite(i),
       "vote dot " & playerColorName(i)
     )
 
@@ -2008,7 +2011,7 @@ proc buildSpriteProtocolInit(
       TrailDotSpriteBase + i,
       TrailDotSize,
       TrailDotSize,
-      buildTrailDotSprite(PlayerColors[i]),
+      buildTrailDotSprite(i),
       "trail " & playerColorName(i)
     )
   sim.addSpriteProtocolInterstitialSprites(spriteDefs, result)
@@ -2460,7 +2463,11 @@ proc addScoreboard(
       pipSpriteId,
       ScoreboardPipSize,
       ScoreboardPipSize,
-      buildSolidSprite(ScoreboardPipSize, ScoreboardPipSize, player.color),
+      buildSolidSprite(
+        ScoreboardPipSize,
+        ScoreboardPipSize,
+        playerColorRgba(player.color)
+      ),
       "score pip " & playerColorName(colorIndex)
     )
     packet.addObject(

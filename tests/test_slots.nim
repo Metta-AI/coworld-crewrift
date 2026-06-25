@@ -30,11 +30,29 @@ const
     {"role":"crew","color":"red"},
     {"role":"crew","color":"blue"},
     {"role":"crew","color":"green"},
+    {"role":"crew","color":"pink"},
+    {"role":"crew","color":"orange"},
     {"role":"crew","color":"yellow"},
-    {"role":"crew","color":"lime"},
-    {"role":"crew","color":"cyan"},
-    {"role":"imposter","color":"pink"},
-    {"role":"imposter","color":"orange"}
+    {"role":"imposter","color":"purple"},
+    {"role":"imposter","color":"cyan"}
+  ]}"""
+  AllPlayerColorsJson = """{"slots":[
+    {"color":"red"},
+    {"color":"blue"},
+    {"color":"green"},
+    {"color":"pink"},
+    {"color":"orange"},
+    {"color":"yellow"},
+    {"color":"purple"},
+    {"color":"cyan"},
+    {"color":"lime"},
+    {"color":"brown"},
+    {"color":"beige"},
+    {"color":"navy"},
+    {"color":"teal"},
+    {"color":"rose"},
+    {"color":"maroon"},
+    {"color":"gray"}
   ]}"""
 
 proc initCrewriftForTest(config: GameConfig): SimServer =
@@ -118,11 +136,11 @@ suite "player slots":
     check config.slots[0].hasColor
     check config.slots[0].color == PlayerColors[0]
     check config.slots[5].hasColor
-    check config.slots[5].color == PlayerColors[3]
+    check config.slots[5].color == PlayerColors[5]
     check config.slots[7].name == "player8"
     check config.slots[7].hasRole
     check config.slots[7].role == Imposter
-    check config.slots[7].color == PlayerColors[1]
+    check config.slots[7].color == PlayerColors[7]
 
     let serialized = parseJson(config.configJson())
     check serialized["tokens"].len == 8
@@ -132,13 +150,32 @@ suite "player slots":
     check serialized["slots"].len == 8
     check not serialized["slots"][6].hasKey("name")
     check not serialized["slots"][6].hasKey("token")
-    check serialized["slots"][5]["color"].getStr() == "light blue"
+    check serialized["slots"][5]["color"].getStr() == "yellow"
 
     var roundTrip = defaultGameConfig()
     roundTrip.update($serialized)
     check roundTrip.slots.len == 8
     check roundTrip.slots[7].role == Imposter
-    check roundTrip.slots[7].color == PlayerColors[1]
+    check roundTrip.slots[7].color == PlayerColors[7]
+
+  test "config parses all player colors":
+    var config = defaultGameConfig()
+    config.update(AllPlayerColorsJson)
+
+    check PlayerColors.len == PlayerColorNames.len
+    check PlayerColors.len == PlayerColorPalette.len
+    check config.slots.len == PlayerColors.len
+    for i in 0 ..< PlayerColors.len:
+      check config.slots[i].hasColor
+      check config.slots[i].color == PlayerColors[i]
+
+  test "player palette does not replace shared palette":
+    loadPalette()
+    let expectedPalette = Palette
+
+    discard initCrewriftForTest(defaultGameConfig())
+
+    check Palette == expectedPalette
 
   test "matching name and token assigns configured slot":
     var config = defaultGameConfig()
@@ -148,7 +185,7 @@ suite "player slots":
     sim.addExamplePlayers(6)
     let playerIndex = sim.addPlayer("player7", -1, "0xBADA55_6")
     check sim.players[playerIndex].joinOrder == 6
-    check sim.players[playerIndex].color == PlayerColors[4]
+    check sim.players[playerIndex].color == PlayerColors[6]
 
   test "trusted replay join uses configured name":
     var config = defaultGameConfig()
@@ -158,7 +195,7 @@ suite "player slots":
     sim.addExamplePlayers(7)
     let playerIndex = sim.addPlayer("player8", trusted = true)
     check sim.players[playerIndex].joinOrder == 7
-    check sim.players[playerIndex].color == PlayerColors[1]
+    check sim.players[playerIndex].color == PlayerColors[7]
 
   test "bad configured name or token is rejected":
     var config = defaultGameConfig()

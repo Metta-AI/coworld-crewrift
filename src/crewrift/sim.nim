@@ -3,7 +3,7 @@ import
   bitworld/aseprite, bitworld/client as bitworldClient,
   bitworld/pixelfonts, bitworld/profile, bitworld/spriteprotocol, bitworld/resources,
   bitworld/server,
-  jsony, pixie,
+  chroma, jsony, pixie,
   tasks as taskAssignments
 
 const
@@ -126,39 +126,57 @@ const
   SelectedViewportObjectId* = 4001
   PlayerColors* = [
     3'u8,
+    14,
+    10,
+    4,
     7,
     8,
-    14,
-    4,
-    11,
     13,
     15,
-    1,
-    2,
-    5,
+    11,
     6,
-    9,
-    10,
+    2,
     12,
+    5,
+    1,
+    9,
     0
   ]
   PlayerColorNames* = [
     "red",
+    "blue",
+    "green",
+    "pink",
     "orange",
     "yellow",
-    "light blue",
-    "pink",
+    "purple",
+    "cyan",
     "lime",
-    "blue",
-    "pale blue",
-    "gray",
-    "white",
-    "dark brown",
     "brown",
-    "dark teal",
-    "green",
-    "dark navy",
-    "black"
+    "beige",
+    "navy",
+    "teal",
+    "rose",
+    "maroon",
+    "gray"
+  ]
+  PlayerColorPalette* = [
+    parseHtmlColor("#c51111").rgba,
+    parseHtmlColor("#132ed1").rgba,
+    parseHtmlColor("#117f2d").rgba,
+    parseHtmlColor("#ed54ba").rgba,
+    parseHtmlColor("#ef7d0d").rgba,
+    parseHtmlColor("#f5f557").rgba,
+    parseHtmlColor("#6b2fbb").rgba,
+    parseHtmlColor("#38fedc").rgba,
+    parseHtmlColor("#50ef39").rgba,
+    parseHtmlColor("#71491e").rgba,
+    parseHtmlColor("#f0d7b7").rgba,
+    parseHtmlColor("#1b2148").rgba,
+    parseHtmlColor("#38a9a5").rgba,
+    parseHtmlColor("#f4a6c8").rgba,
+    parseHtmlColor("#6b2b3a").rgba,
+    parseHtmlColor("#282a30").rgba
   ]
   ShadowMap* = [
     0'u8,  #  0 black       -> black
@@ -1132,47 +1150,74 @@ proc normalizedSlotColor(text: string): string =
   result = result.replace("-", " ")
   result = result.replace(" ", "")
 
-proc playerColorText*(color: uint8): string =
-  ## Returns the readable player color name.
+proc playerColorIndex*(color: uint8): int =
+  ## Returns the player color list index for one color id.
   for i in 0 ..< PlayerColors.len:
     if PlayerColors[i] == color:
-      return PlayerColorNames[i]
+      return i
+  -1
+
+proc playerColorText*(color: uint8): string =
+  ## Returns the readable player color name.
+  let index = playerColorIndex(color)
+  if index >= 0:
+    return PlayerColorNames[index]
   "unknown"
+
+proc shadeRgba(color: ColorRGBA): ColorRGBA =
+  ## Returns a darkened copy of one true-color pixel.
+  rgba(
+    uint8((int(color.r) * 48) div 100),
+    uint8((int(color.g) * 48) div 100),
+    uint8((int(color.b) * 48) div 100),
+    color.a
+  )
+
+proc playerColorRgba*(color: uint8): ColorRGBA =
+  ## Returns the true-color RGBA value for one player color id.
+  let index = playerColorIndex(color)
+  if index >= 0:
+    return PlayerColorPalette[index]
+  Palette[color and 0x0f]
+
+proc playerShadeRgba*(color: uint8): ColorRGBA =
+  ## Returns the true-color shaded RGBA value for one player color id.
+  playerColorRgba(color).shadeRgba()
 
 proc readSlotColor(text: string, slotIndex: int): uint8 =
   ## Reads one slot color string.
   case text.normalizedSlotColor()
   of "red":
     PlayerColors[0]
-  of "orange":
-    PlayerColors[1]
-  of "yellow":
-    PlayerColors[2]
-  of "lightblue", "cyan":
-    PlayerColors[3]
-  of "pink":
-    PlayerColors[4]
-  of "lime":
-    PlayerColors[5]
   of "blue":
+    PlayerColors[1]
+  of "green":
+    PlayerColors[2]
+  of "pink":
+    PlayerColors[3]
+  of "orange":
+    PlayerColors[4]
+  of "yellow":
+    PlayerColors[5]
+  of "purple":
     PlayerColors[6]
-  of "paleblue":
+  of "cyan", "lightblue", "paleblue":
     PlayerColors[7]
-  of "gray", "grey":
+  of "lime":
     PlayerColors[8]
-  of "white":
+  of "brown", "darkbrown":
     PlayerColors[9]
-  of "darkbrown":
+  of "beige", "tan", "white":
     PlayerColors[10]
-  of "brown":
+  of "navy", "darknavy":
     PlayerColors[11]
   of "darkteal", "teal":
     PlayerColors[12]
-  of "green":
+  of "rose":
     PlayerColors[13]
-  of "darknavy", "navy":
+  of "maroon":
     PlayerColors[14]
-  of "black":
+  of "gray", "grey", "black":
     PlayerColors[15]
   else:
     raise newException(
@@ -1237,7 +1282,7 @@ proc readConfigPlayers(node: JsonNode, slots: var seq[PlayerSlotConfig]) =
   if items.len > MaxPlayers:
     raise newException(
       CrewriftError,
-      "Config field players cannot have more than 16 entries."
+      "Config field players cannot have more than " & $MaxPlayers & " entries."
     )
   if slots.len < items.len:
     slots.setLen(items.len)
@@ -1284,7 +1329,7 @@ proc readConfigTokens(
   if items.len > MaxPlayers:
     raise newException(
       CrewriftError,
-      "Config field tokens cannot have more than 16 entries."
+      "Config field tokens cannot have more than " & $MaxPlayers & " entries."
     )
   if slots.len < items.len:
     slots.setLen(items.len)
@@ -1319,7 +1364,10 @@ proc validate(config: GameConfig) =
   if config.minPlayers < 1:
     raise newException(CrewriftError, "Config field minPlayers must be at least 1.")
   if config.minPlayers > MaxPlayers:
-    raise newException(CrewriftError, "can't do more than 16 players.")
+    raise newException(
+      CrewriftError,
+      "can't do more than " & $MaxPlayers & " players."
+    )
   if config.imposterCount < 0:
     raise newException(CrewriftError, "Config field imposterCount must be non-negative.")
   if config.speed notin [1, 2, 3, 4, 8, 16]:
@@ -1356,7 +1404,10 @@ proc validate(config: GameConfig) =
       config.maxGames < 0:
     raise newException(CrewriftError, "Timer config fields must not be negative.")
   if config.slots.len > MaxPlayers:
-    raise newException(CrewriftError, "Config field slots cannot have more than 16 entries.")
+    raise newException(
+      CrewriftError,
+      "Config field slots cannot have more than " & $MaxPlayers & " entries."
+    )
   if config.closedRoster and config.slots.len < config.minPlayers:
     raise newException(
       CrewriftError,

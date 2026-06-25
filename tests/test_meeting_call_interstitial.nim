@@ -122,7 +122,7 @@ suite "meeting call interstitial":
       playerObject = messages.objectForId(ProtocolMeetingIconObjectBase)
       bodyObject = messages.objectForId(ProtocolMeetingIconObjectBase + 1)
     check messages.hasSpriteLabel("Red reported")
-    check messages.hasSpriteLabel("Blue's body")
+    check messages.hasSpriteLabel("Purple's body")
     check messages.spriteLabelForObject(
       sprites,
       ProtocolMeetingIconObjectBase
@@ -130,7 +130,7 @@ suite "meeting call interstitial":
     check messages.spriteLabelForObject(
       sprites,
       ProtocolMeetingIconObjectBase + 1
-    ) == "body blue"
+    ) == "body purple"
     check playerObject.x == MeetingLeftObjectX
     check playerObject.y == MeetingIconObjectY
     check bodyObject.x == MeetingRightObjectX

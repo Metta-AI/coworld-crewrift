@@ -112,24 +112,6 @@ const
   GhostMinStablePixels = 6
   GhostMinTintPixels = 6
   PlayerColorCount = PlayerColors.len
-  PlayerColorNames = [
-    "red",
-    "orange",
-    "yellow",
-    "light blue",
-    "pink",
-    "lime",
-    "blue",
-    "pale blue",
-    "gray",
-    "white",
-    "dark brown",
-    "brown",
-    "dark teal",
-    "green",
-    "dark navy",
-    "black"
-  ]
   VoteActorSize = sim.VoteActorSize
   VoteCellW = sim.VoteCellW
   VoteCellH = sim.VoteCellH

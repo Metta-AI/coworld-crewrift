@@ -61,7 +61,7 @@ suite "ascii text":
         TextCase(text: "red sus", x: 0, y: 0),
         TextCase(text: "body in nav", x: 21, y: 48),
         TextCase(text: "pink saw blue", x: 7, y: 83),
-        TextCase(text: "light blue sus", x: 30, y: 14),
+        TextCase(text: "purple sus", x: 30, y: 14),
         TextCase(text: "where?", x: 72, y: 119),
         TextCase(text: "red, sus!", x: 12, y: 101)
       ]

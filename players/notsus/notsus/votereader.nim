@@ -21,24 +21,6 @@ const
   CrewmateMaxMisses = 8
   CrewmateMinBodyPixels = 8
   CrewmateMinStablePixels = 8
-  VoteReaderColorNames* = [
-    "red",
-    "orange",
-    "yellow",
-    "light blue",
-    "pink",
-    "lime",
-    "blue",
-    "pale blue",
-    "gray",
-    "white",
-    "dark brown",
-    "brown",
-    "dark teal",
-    "green",
-    "dark navy",
-    "black"
-  ]
 
 type
   VoteReaderSlot* = object
@@ -583,7 +565,7 @@ proc voteReaderChatSusColorIndex*(text: string): int {.measure.} =
     bestSus = -1
     bestGap = high(int)
     bestLen = -1
-  for i, name in VoteReaderColorNames:
+  for i, name in PlayerColorNames:
     let colorNeedle = " " & name.normalizeChatText() & " "
     var colorPos = padded.find(colorNeedle)
     while colorPos >= 0:
