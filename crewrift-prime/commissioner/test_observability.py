@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import unittest
 import unittest.mock
 from contextlib import redirect_stdout
@@ -619,6 +620,122 @@ class CompetitionSchedulingTest(unittest.TestCase):
                 os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = prev
 
 
+class FillerPolicyResolutionTest(unittest.TestCase):
+    """Filler set precedence (env override > league-config API > empty) AND the
+    bare-UUID -> ``league_<uuid>`` path normalization the live v2 route requires.
+
+    The commissioner protocol hands ``round_start.league.id`` as a BARE
+    ``uuid.UUID``, but ``GET /v2/leagues/{league_id}/filler-policies`` validates
+    its path param as a ``PrefixedId`` (``^league_<uuid>$``) and returns HTTP 422
+    *before the handler* for a bare UUID. That 422 was previously caught and
+    silently degraded to "no fillers" — the exact reason a configured filler
+    (e.g. ``crewborg-aaln:v16``) was never seated. These tests pin the fix.
+    """
+
+    def setUp(self) -> None:
+        self._prev_env = os.environ.get("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS")
+        os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
+
+    def tearDown(self) -> None:
+        if self._prev_env is None:
+            os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
+        else:
+            os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = self._prev_env
+
+    def test_api_served_fillers_used_when_env_unset(self) -> None:
+        api_a, api_b = uuid4(), uuid4()
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a), str(api_b)])
+        league_id = uuid4()
+        resolved = commissioner._filler_policy_version_ids(league_id)
+        self.assertEqual(resolved, [api_a, api_b])
+        # The API was queried with the league_id.
+        self.assertEqual(commissioner._xp_client.filler_lookups, [str(league_id)])
+
+    def test_env_override_wins_over_api(self) -> None:
+        env_a = uuid4()
+        api_a = uuid4()
+        os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = str(env_a)
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a)])
+        resolved = commissioner._filler_policy_version_ids(uuid4())
+        self.assertEqual(resolved, [env_a])
+        # Env override short-circuits: the API is never consulted.
+        self.assertEqual(commissioner._xp_client.filler_lookups, [])
+
+    def test_api_failure_falls_back_gracefully(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            filler_error=XpRequestInfraError("GET filler-policies -> HTTP 503")
+        )
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            resolved = commissioner._filler_policy_version_ids(uuid4())
+        self.assertEqual(resolved, [])
+        self.assertIn("WARNING", buffer.getvalue())
+
+    def test_empty_api_list_falls_back_to_no_filler(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[])
+        self.assertEqual(commissioner._filler_policy_version_ids(uuid4()), [])
+
+    def test_real_client_seats_fillers_through_prefixed_league_route(self) -> None:
+        # REGRESSION (full chain, REAL XpRequestClient with mocked transport, no
+        # network): round_start.league.id is a BARE uuid.UUID, but the v2
+        # filler-policies path param is the prefixed LeagueId (^league_<uuid>$).
+        # Before the fix the client sent the bare UUID -> HTTP 422 *before the
+        # handler* -> caught -> empty -> NO fillers seated (the exact symptom).
+        # Assert the real client builds the league_<uuid> URL and the served
+        # filler is seated into the empty seats of the closed 8-seat roster.
+        from xp_request_client import LEAGUE_ID_PREFIX, XpRequestClient
+
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc) -> bool:
+                return False
+
+        served_filler = uuid4()
+        body = {"filler_policy_versions": [{"policy_version_id": str(served_filler)}]}
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG001 - signature parity
+            captured["url"] = req.full_url
+            return _FakeResponse(json.dumps(body).encode("utf-8"))
+
+        commissioner = _commissioner()
+        commissioner._xp_client = XpRequestClient(
+            base="https://example.test/observatory", token="tok-abc"
+        )
+        entrants = [uuid4(), uuid4(), uuid4()]
+        rs = CompetitionSchedulingTest()._competition_round_start(entrants)
+        # round_start.league.id is a bare UUID (LeagueInfo.id: UUID).
+        self.assertNotIn(LEAGUE_ID_PREFIX, str(rs.league.id))
+
+        with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
+            schedule = commissioner.schedule_episodes_for_round_start(rs)
+
+        # The real client hit the PREFIXED league route, not the bare UUID.
+        url = str(captured.get("url", ""))
+        self.assertTrue(
+            url.endswith(f"/v2/leagues/{LEAGUE_ID_PREFIX}{rs.league.id}/filler-policies"),
+            f"expected prefixed league route, got: {url}",
+        )
+        # And the served filler actually fills the empty seats 3..7.
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(ep.tags["filler_seats"], "3,4,5,6,7")
+            self.assertEqual(set(ep.policy_version_ids[3:]), {served_filler})
+
+
 class XpRequestPayloadTest(unittest.TestCase):
     """The qualifier POST body must match the live V2CreateExperienceRequestRequest.
 
@@ -706,6 +823,87 @@ class XpRequestPayloadTest(unittest.TestCase):
         assert isinstance(headers, dict)
         # urllib title-cases header keys; X-Auth-Token -> X-auth-token.
         self.assertEqual(headers.get("X-auth-token"), "tok-abc")
+
+    def _capture_filler_get(self, league_id: str, *, body: dict | None = None):
+        from xp_request_client import XpRequestClient
+
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc) -> bool:
+                return False
+
+        resp_body = body if body is not None else {"filler_policy_versions": []}
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG001 - signature parity
+            captured["method"] = req.get_method()
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return _FakeResponse(json.dumps(resp_body).encode("utf-8"))
+
+        client = XpRequestClient(base="https://example.test/observatory", token="tok-abc")
+        with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
+            ids = client.get_filler_policy_versions(league_id)
+        return ids, captured
+
+    def test_get_filler_policy_versions_parses_payload(self) -> None:
+        # The league-config GET reuses the same authenticated client/transport and
+        # returns the ordered policy_version_id strings from filler_policy_versions.
+        body = {
+            "filler_policy_versions": [
+                {"policy_version_id": "pv-1", "policy_id": "p-1", "policy_name": "notsus", "version": 3},
+                {"policy_version_id": "pv-2", "policy_id": "p-2", "policy_name": "notsus", "version": 4},
+            ]
+        }
+        ids, captured = self._capture_filler_get("league_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", body=body)
+        self.assertEqual(ids, ["pv-1", "pv-2"])
+        self.assertEqual(captured["method"], "GET")
+        self.assertTrue(
+            str(captured["url"]).endswith(
+                "/v2/leagues/league_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/filler-policies"
+            )
+        )
+        # Same auth header as the rest of the client.
+        self.assertEqual(dict(captured["headers"]).get("X-auth-token"), "tok-abc")
+
+    def test_get_filler_policy_versions_prefixes_bare_uuid_league_id(self) -> None:
+        # REGRESSION: the commissioner protocol hands a BARE uuid.UUID
+        # (round_start.league.id), but the v2 path param is a PrefixedId validated
+        # against ^league_<uuid>$ — a bare UUID is rejected with HTTP 422 *before*
+        # the handler, which previously degraded silently to "no fillers". The
+        # client must prepend the ``league_`` prefix so the real endpoint matches.
+        from xp_request_client import LEAGUE_ID_PREFIX
+
+        league_uuid = str(uuid4())  # bare UUID, exactly what LeagueInfo.id carries
+        pv = str(uuid4())
+        body = {"filler_policy_versions": [{"policy_version_id": pv}]}
+        ids, captured = self._capture_filler_get(league_uuid, body=body)
+        self.assertEqual(ids, [pv])
+        url = str(captured["url"])
+        self.assertTrue(
+            url.endswith(f"/v2/leagues/{LEAGUE_ID_PREFIX}{league_uuid}/filler-policies"),
+            f"bare UUID must be normalized to league_<uuid>, got URL: {url}",
+        )
+        self.assertNotIn(f"/v2/leagues/{league_uuid}/filler-policies", url)
+
+    def test_get_filler_policy_versions_leaves_already_prefixed_id(self) -> None:
+        # An already-prefixed league_<uuid> passes through untouched (no double prefix).
+        from xp_request_client import LEAGUE_ID_PREFIX
+
+        prefixed = f"{LEAGUE_ID_PREFIX}{uuid4()}"
+        _ids, captured = self._capture_filler_get(prefixed)
+        url = str(captured["url"])
+        self.assertTrue(url.endswith(f"/v2/leagues/{prefixed}/filler-policies"))
+        self.assertNotIn(f"{LEAGUE_ID_PREFIX}{LEAGUE_ID_PREFIX}", url)
 
 
 class ObservabilityHelpersTest(unittest.TestCase):
