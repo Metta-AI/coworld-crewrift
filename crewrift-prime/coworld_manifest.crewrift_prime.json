@@ -793,6 +793,9 @@
         "CREWRIFT_PRIME_GRADE_CHAT_CONTENT": "1",
         "CREWRIFT_PRIME_INTERVIEW_MODEL": "claude-haiku-4-5-20251001"
       },
+      "secret_env": {
+        "SOFTMAX_API_TOKEN": "SOFTMAX_API_TOKEN"
+      },
       "run": [],
       "name": "Crewrift Social Deduction Commissioner",
       "type": "commissioner",
