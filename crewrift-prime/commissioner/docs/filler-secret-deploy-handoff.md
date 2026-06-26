@@ -110,12 +110,21 @@ unset TOKEN
 
 ## STEP 2 — Redeploy the commissioner with the #77 image + the secret wiring
 
-The deployed image must include the league-id-prefix fix (PR #77, commit
-`43e2d7f`). Determine/confirm an Observatory image that contains #77 (build + push
-the commissioner image per the commissioner README "Build / wire" section if none
-exists — that requires registry access), then patch the canonical coworld AND attach
-the secret_env in one command (requires the new metta `--secret-env` flag from the
-metta PR, and a team `usr_` token — clear any active player session first):
+CONFIRMED: the currently-deployed canonical commissioner image
+(`img_98af83c6-627a-4806-9e3e-d90e33a5b0cc`, coworld `crewrift_prime` v0.4.9) was
+built **2026-06-26 05:46 UTC**, ~10h BEFORE the #77 fix was committed
+(`43e2d7f`, 2026-06-26 16:18 UTC). So the deployed image does **NOT** contain the
+league-id-prefix fix — a fresh image build + redeploy is required, not just a
+config patch.
+
+The new image must be built from coworld-crewrift at/after commit `43e2d7f` (the
+deploy branch `aaln/crewrift-prime-qualification-deploy` HEAD already includes it).
+Build + push per the commissioner README "Build / wire" section (Docker build from
+the repo ROOT so the Nim expander stage can reach the game source; requires
+Observatory registry access), then patch the canonical coworld AND attach the
+secret_env in one command (requires the new metta `--secret-env` flag from
+Metta-AI/metta#16818, and a team `usr_` token — clear any active player session
+first):
 
 ```sh
 cd metta/packages/coworld
