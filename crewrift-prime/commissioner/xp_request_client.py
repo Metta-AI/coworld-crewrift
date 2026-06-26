@@ -53,6 +53,36 @@ _USER_AGENT = "crewrift-prime-commissioner/1.0 (+https://softmax.com)"
 # length, so the roster MUST carry exactly this many participants.
 DEFAULT_SEAT_COUNT = 8
 
+# The platform's v2 ``LeagueId`` path param is a ``PrefixedId`` validated against
+# ``^league_<uuid>$`` (see metta ``app_backend/v2/models.py``: ``LeagueId.prefix``).
+# A bare UUID is rejected with HTTP 422 *before the route handler* — so any
+# league-scoped GET MUST carry this prefix.
+LEAGUE_ID_PREFIX = "league_"
+
+# A bare UUID (8-4-4-4-12 hex), case-insensitive — the form the commissioner
+# protocol hands us via ``round_start.league.id``.
+_BARE_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _as_prefixed_league_id(league_id: str) -> str:
+    """Return ``league_<uuid>`` for the v2 path param, accepting a bare UUID.
+
+    The commissioner protocol's ``LeagueInfo.id`` / ``LeagueSnapshot.id`` is a
+    plain ``uuid.UUID``, but the ``GET /v2/leagues/{league_id}/filler-policies``
+    path param is the prefixed ``LeagueId`` (``league_<uuid>``). Passing a bare
+    UUID yields an HTTP 422 (rejected before the handler) which the caller would
+    silently treat as "no fillers". Normalize: if the value is already prefixed
+    (any ``*_<uuid>`` form) we leave it untouched; if it's a bare UUID we add the
+    ``league_`` prefix; otherwise we pass it through unchanged (the server decides).
+    """
+    raw = str(league_id).strip()
+    if _BARE_UUID_RE.match(raw):
+        return f"{LEAGUE_ID_PREFIX}{raw}"
+    return raw
+
+
 # Run statuses that mean "stop polling": a terminal outcome.
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "error"})
 # Episode statuses that count as "settled" (no longer in flight).
@@ -327,8 +357,16 @@ class XpRequestClient:
         client's authenticated transport, so any HTTP/auth/network failure is
         normalized to :class:`XpRequestInfraError` (the caller falls back rather
         than crashing a round). An absent/empty list returns ``[]``.
+
+        The ``league_id`` path segment MUST be the platform's prefixed ``LeagueId``
+        (``league_<uuid>``). The commissioner protocol hands us a BARE UUID
+        (``round_start.league.id`` is a plain ``uuid.UUID``), but the v2 route's
+        path param is a ``PrefixedId`` validated against ``^league_<uuid>$`` — a
+        bare UUID is rejected with HTTP 422 *before the handler runs*, which would
+        surface here as an :class:`XpRequestInfraError` and silently degrade to
+        "no fillers". We therefore normalize a bare UUID to the prefixed form.
         """
-        path = f"/v2/leagues/{urllib.parse.quote(str(league_id))}/filler-policies"
+        path = f"/v2/leagues/{urllib.parse.quote(_as_prefixed_league_id(league_id))}/filler-policies"
         payload = self._get(path)
         if not isinstance(payload, dict):
             raise XpRequestInfraError(f"filler policies for {league_id}: unexpected shape {type(payload)}")
