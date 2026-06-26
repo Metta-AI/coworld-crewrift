@@ -311,14 +311,25 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
 - `app.py` — ASGI entrypoint; imports the subclass (registers key
   `crewrift_prime_skill`) then builds `commissioner_app()`.
 - `debug_decision.py` — local offline debug/decision script.
-- `Dockerfile` — installs `vendor/` + `openskill` then overlays the above.
+- `Dockerfile` — multi-stage: a Nim builder stage compiles the repo's
+  `tools/expand_replay.nim` into a `crewrift-expand-replay` binary (re-simulates
+  a `.bitreplay` for `replay_parser.py`); the final stage installs `vendor/` +
+  `openskill`, overlays the above, and copies in only the expander binary +
+  `data/`. **Built with the repo root as context** (so the builder can reach the
+  game source) — see "Build / wire" below.
 - `vendor/` — vendored upstream `Metta-AI/commissioners` package (see
   `vendor/VENDOR_PROVENANCE.txt`). Not modified.
 
 ## Build / wire (recorded for reproducibility)
 
 ```sh
-docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v8 .
+# Build from the REPO ROOT (not crewrift-prime/commissioner/): the Dockerfile's
+# first stage compiles tools/expand_replay.nim against the game source (src/,
+# tools/, data/, nimby.lock), so the build context must include them.
+cd "$(git rev-parse --show-toplevel)"
+docker build --platform=linux/amd64 \
+  -f crewrift-prime/commissioner/Dockerfile \
+  -t crewrift-prime-commissioner:v9 .
 
 # Team-only mutation: clear any active player session so get-token returns the
 # usr_ token (patch-commissioner needs team auth, not a ply_ token).
@@ -328,7 +339,7 @@ uv run python -c "from softmax.auth import clear_active_player_session; clear_ac
 # Repoint the coworld's commissioner runnable image; this pushes to Observatory's
 # registry, rewrites the manifest image to an img_ id, bumps the coworld version,
 # and re-certifies (hosted smoke) to canonical.
-uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v8 \
+uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v9 \
   --runnable-id among-them-commissioner
 ```
 

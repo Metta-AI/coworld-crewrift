@@ -1,0 +1,877 @@
+{
+  "game": {
+    "docs": {
+      "pages": [
+        {
+          "id": "notsus.md",
+          "title": "notsus Bot Player",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/players/notsus/README.md"
+          }
+        },
+        {
+          "id": "rules.md",
+          "title": "Rules",
+          "content": {
+            "type": "uri",
+            "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md"
+          }
+        },
+        {
+          "id": "play_crewrift.md",
+          "title": "Play Crewrift Daily",
+          "content": {
+            "type": "uri",
+            "value": "https://softmax.com/play_crewrift.md"
+          }
+        }
+      ],
+      "readme": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md"
+      }
+    },
+    "name": "crewrift_prime",
+    "owner": "treeform@softmax.com",
+    "version": "0.1.0",
+    "runnable": {
+      "env": {},
+      "run": [
+        "/bin/crewrift"
+      ],
+      "type": "game",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-2:downloaded",
+      "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master"
+    },
+    "protocols": {
+      "global": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      },
+      "player": {
+        "type": "uri",
+        "value": "https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md"
+      }
+    },
+    "description": "Crewrift Prime \u2014 a forked social-deduction Crewrift coworld seeded for skill-tested play, with config-only scenario-parameterization variants (hunting, voting, task-pressure drills) per the parameterized-coworlds research. Derived league display name: \"Crewrift Prime\".",
+    "config_schema": {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "tokens",
+        "players"
+      ],
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "default": -1,
+          "minimum": -1,
+          "description": "Random seed. Use -1 to pick a time-based seed."
+        },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "enum": [
+                  "crew",
+                  "imposter"
+                ],
+                "type": "string"
+              },
+              "color": {
+                "enum": [
+                  "red",
+                  "orange",
+                  "yellow",
+                  "light blue",
+                  "pink",
+                  "lime",
+                  "blue",
+                  "pale blue",
+                  "gray",
+                  "white",
+                  "dark brown",
+                  "brown",
+                  "dark teal",
+                  "green",
+                  "dark navy",
+                  "black"
+                ],
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": [],
+          "maxItems": 16,
+          "description": "Optional fixed player slot role, color, and token settings."
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "maxItems": 8,
+          "minItems": 8,
+          "description": "One connection token per player slot, indexed by slot."
+        },
+        "mapPath": {
+          "type": "string",
+          "default": "data/croatoan.resources",
+          "description": "Resource map file path."
+        },
+        "players": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 8,
+          "minItems": 8,
+          "description": "One player display-name object per player slot, indexed by slot."
+        },
+        "maxGames": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum games before shutdown."
+        },
+        "maxTicks": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 0,
+          "description": "Maximum task-phase game ticks, where 0 means no limit."
+        },
+        "killRange": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 0,
+          "description": "Kill interaction range."
+        },
+        "ventRange": {
+          "type": "integer",
+          "default": 16,
+          "minimum": 0,
+          "description": "Vent interaction range."
+        },
+        "minPlayers": {
+          "type": "integer",
+          "default": 8,
+          "maximum": 16,
+          "minimum": 1,
+          "description": "Players needed before the game countdown starts."
+        },
+        "buttonCalls": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "description": "Emergency button calls allowed per player."
+        },
+        "reportRange": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 0,
+          "description": "Body report interaction range."
+        },
+        "closedRoster": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reject players outside the configured token/slot roster."
+        },
+        "gameOverTicks": {
+          "type": "integer",
+          "default": 360,
+          "minimum": 0,
+          "description": "Game over display duration in ticks."
+        },
+        "imposterCount": {
+          "type": "integer",
+          "default": 2,
+          "maximum": 15,
+          "minimum": 0,
+          "description": "Fixed imposter count when autoImposterCount is false."
+        },
+        "showTaskArrows": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show arrows pointing to tasks."
+        },
+        "startWaitTicks": {
+          "type": "integer",
+          "default": 120,
+          "minimum": 0,
+          "description": "Lobby countdown ticks after enough players join."
+        },
+        "tasksPerPlayer": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 0,
+          "description": "Tasks assigned to each crewmate."
+        },
+        "voteTimerTicks": {
+          "type": "integer",
+          "default": 1200,
+          "minimum": 1,
+          "description": "Voting phase duration in ticks."
+        },
+        "roleRevealTicks": {
+          "type": "integer",
+          "default": 120,
+          "minimum": 0,
+          "description": "Role reveal duration in ticks."
+        },
+        "showTaskBubbles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show task bubbles."
+        },
+        "voteResultTicks": {
+          "type": "integer",
+          "default": 72,
+          "minimum": 0,
+          "description": "Vote result display duration in ticks."
+        },
+        "showPlayerLabels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show player labels."
+        },
+        "autoImposterCount": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically choose imposter count from player count."
+        },
+        "killCooldownTicks": {
+          "type": "integer",
+          "default": 500,
+          "minimum": 0,
+          "description": "Kill cooldown duration in ticks."
+        },
+        "taskCompleteTicks": {
+          "type": "integer",
+          "default": 72,
+          "minimum": 0,
+          "description": "Task completion duration in ticks."
+        },
+        "connectTimeoutTicks": {
+          "type": "integer",
+          "default": 2880,
+          "minimum": 0,
+          "description": "Initial connection grace duration in ticks."
+        },
+        "messageCooldownTicks": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 0,
+          "description": "Chat message cooldown in ticks."
+        },
+        "disconnectTimeoutTicks": {
+          "type": "integer",
+          "default": 720,
+          "minimum": 0,
+          "description": "Reconnect grace duration in ticks."
+        }
+      },
+      "additionalProperties": false
+    },
+    "results_schema": {
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "required": [
+        "scores"
+      ],
+      "properties": {
+        "win": {
+          "type": "array",
+          "items": {
+            "type": "boolean"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One win flag per player slot."
+        },
+        "crew": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "maximum": 1,
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One 1 or 0 flag for whether the player was crew."
+        },
+        "kills": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One kill count per player slot."
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One player name or address per player slot."
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One completed task count per player slot."
+        },
+        "scores": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One scalar score per player slot."
+        },
+        "imposter": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "maximum": 1,
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One 1 or 0 flag for whether the player was an imposter."
+        },
+        "vote_skip": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One count of explicit skip votes per player slot."
+        },
+        "vote_players": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One count of votes cast for a player per player slot."
+        },
+        "vote_timeout": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One count of vote timeouts per player slot."
+        },
+        "connect_timeout": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One count of initial connection timeouts per player slot."
+        },
+        "disconnect_timeout": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "description": "One count of reconnect timeouts per player slot."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "grader": [
+    {
+      "id": "crewrift-grader",
+      "env": {},
+      "run": [],
+      "name": "Crewrift Grader",
+      "type": "grader",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-3:downloaded",
+      "source_url": "https://github.com/Metta-AI/graders/tree/main/graders/crewrift/crewrift_grader",
+      "description": "Reference Crewrift grader that scores social-deduction episodes from wins, score spread, tasks, kills, and voting activity."
+    }
+  ],
+  "player": [
+    {
+      "id": "notsus",
+      "env": {},
+      "run": [
+        "/bin/notsus"
+      ],
+      "name": "notsus",
+      "type": "player",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-0:downloaded",
+      "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master/players/notsus",
+      "description": "Sprite-protocol Crewrift bot used for local smoke episodes."
+    }
+  ],
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "reporter": [
+    {
+      "id": "crewrift-eventlog-reporter",
+      "env": {},
+      "run": [],
+      "name": "Crewrift Event-Log Reporter",
+      "type": "reporter",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-1:downloaded",
+      "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/master/reporters/eventlog",
+      "description": "Expands a completed Crewrift episode replay into a structured categorical event log: {ts, player, key, value} JSON rows served over the reporter WebSocket contract."
+    },
+    {
+      "id": "crewrift-event-reporter",
+      "env": {},
+      "run": [],
+      "name": "Crewrift Event Reporter",
+      "type": "reporter",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-5:downloaded",
+      "source_url": "https://github.com/Metta-AI/reporters/tree/main/crewrift-event-reporter",
+      "description": "Episode-level Crewrift event reporter that expands a completed replay into an events.parquet artifact using the reporter WebSocket contract."
+    },
+    {
+      "id": "crewrift-sportscaster",
+      "env": {},
+      "run": [],
+      "name": "Crewrift Sportscaster",
+      "type": "reporter",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-4:downloaded",
+      "source_url": "https://github.com/Metta-AI/reporters/tree/main/crewrift-sportscaster",
+      "description": "Round-level Crewrift sportscaster reporter that builds a static HTML, CSS, and JavaScript report from completed episode bundles."
+    }
+  ],
+  "variants": [
+    {
+      "id": "default",
+      "name": "Default",
+      "description": "Eight-player Crewrift tournament episode using the default balanced game settings.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Player1"
+          },
+          {
+            "name": "Player2"
+          },
+          {
+            "name": "Player3"
+          },
+          {
+            "name": "Player4"
+          },
+          {
+            "name": "Player5"
+          },
+          {
+            "name": "Player6"
+          },
+          {
+            "name": "Player7"
+          },
+          {
+            "name": "Player8"
+          }
+        ],
+        "seed": -1,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 2,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 8,
+        "startWaitTicks": 120,
+        "roleRevealTicks": 120,
+        "gameOverTicks": 360,
+        "maxTicks": 10000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 1200,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 500,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_hunt_isolated",
+      "name": "Scenario: Hunt \u2014 isolated imposter",
+      "description": "Config-only imposter mechanical drill (research \u00a73.3): slot 0 forced to imposter, short maxTicks, low killCooldownTicks, crew fill. Zero engine change.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Hunter"
+          },
+          {
+            "name": "Prey1"
+          },
+          {
+            "name": "Prey2"
+          },
+          {
+            "name": "Prey3"
+          },
+          {
+            "name": "Prey4"
+          },
+          {
+            "name": "Prey5"
+          },
+          {
+            "name": "Prey6"
+          },
+          {
+            "name": "Prey7"
+          }
+        ],
+        "slots": [
+          {
+            "role": "imposter"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          }
+        ],
+        "seed": 2001,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 1,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 4,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 2000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 200,
+        "buttonCalls": 0,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_vote_basic",
+      "name": "Scenario: Basic Vote \u2014 single clear imposter",
+      "description": "Config-only voting PARTICIPATION drill (research \u00a73.1). A meeting is reached via kill->body->report: the forced imposter (slot 0) kills early (low killCooldownTicks) while crew roam a long task phase (high tasksPerPlayer prevents an instant crew task-win), so a body is found and reported, opening a vote. The commissioner's voting assurance passes a policy that votes when a meeting occurs (and does not penalize episodes where no meeting is reached). True mid-game vote seeding remains a Phase-4 engine change.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Suspect"
+          },
+          {
+            "name": "Voter1"
+          },
+          {
+            "name": "Voter2"
+          },
+          {
+            "name": "Voter3"
+          },
+          {
+            "name": "Voter4"
+          },
+          {
+            "name": "Voter5"
+          },
+          {
+            "name": "Voter6"
+          },
+          {
+            "name": "Voter7"
+          }
+        ],
+        "slots": [
+          {
+            "role": "imposter"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          }
+        ],
+        "seed": 1001,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 1,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 12,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 4500,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "voteResultTicks": 72,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 90,
+        "buttonCalls": 1,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_task_pressure",
+      "name": "Scenario: Task Pressure",
+      "description": "Config-only crew task-throughput drill (research \u00a76 Phase-1): tasksPerPlayer raised under a shortened maxTicks to stress crew task completion. Zero engine change.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Crew1"
+          },
+          {
+            "name": "Crew2"
+          },
+          {
+            "name": "Crew3"
+          },
+          {
+            "name": "Crew4"
+          },
+          {
+            "name": "Crew5"
+          },
+          {
+            "name": "Crew6"
+          },
+          {
+            "name": "Crew7"
+          },
+          {
+            "name": "Crew8"
+          }
+        ],
+        "seed": 3001,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 1,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 12,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 4000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 500,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_qualifier",
+      "name": "Scenario: Qualifier (single combined game)",
+      "description": "ONE 8-seat self-play game that surfaces all three qualifier signals at once. Natural roles (imposterCount 2) with a low killCooldownTicks so the imposter seats kill early (hunting) and produce a body that crew report -> meeting (voting); a long task phase (tasksPerPlayer up, maxTicks up) so crew complete tasks (tasks) without instant-winning. A generous connectTimeoutTicks gives all 8 self-play agents time to connect. The commissioner schedules exactly one episode of this variant per entrant and reads voting/hunting/tasks from its per-slot results.",
+      "game_config": {
+        "players": [
+          {"name": "Player1"},
+          {"name": "Player2"},
+          {"name": "Player3"},
+          {"name": "Player4"},
+          {"name": "Player5"},
+          {"name": "Player6"},
+          {"name": "Player7"},
+          {"name": "Player8"}
+        ],
+        "seed": -1,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 2,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 8,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 6000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "voteResultTicks": 72,
+        "connectTimeoutTicks": 3600,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 90,
+        "buttonCalls": 1,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    }
+  ],
+  "diagnoser": [],
+  "optimizer": [],
+  "commissioner": [
+    {
+      "id": "among-them-commissioner",
+      "env": {
+        "CREWRIFT_PRIME_EXPAND_REPLAY_CMD": "/usr/local/bin/crewrift-expand-replay --format jsonl",
+        "CREWRIFT_PRIME_GAME_DIR": "/opt/crewrift-game",
+        "CREWRIFT_PRIME_QUALIFIER_EPISODES": "1",
+        "CREWRIFT_PRIME_INTERVIEW_ENABLED": "0"
+      },
+      "run": [],
+      "name": "Crewrift Social Deduction Commissioner",
+      "type": "commissioner",
+      "image": "coworld/cow_50ee07cf-44d5-41a8-aeab-29c1b73f388d/crewrift-0.1.54-6:downloaded",
+      "source_url": "https://github.com/Metta-AI/commissioners/tree/main/commissioners/ruleset_strategy_commissioner",
+      "description": "Social-deduction commissioner shared with Among Them. It schedules seat-rotated episodes, computes rankings, and supports promotion-style leagues for Crewrift Daily."
+    }
+  ],
+  "certification": {
+    "players": [
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      },
+      {
+        "player_id": "notsus"
+      }
+    ],
+    "game_config": {
+      "seed": -1,
+      "mapPath": "data/croatoan.resources",
+      "players": [
+        {
+          "name": "Player1"
+        },
+        {
+          "name": "Player2"
+        },
+        {
+          "name": "Player3"
+        },
+        {
+          "name": "Player4"
+        },
+        {
+          "name": "Player5"
+        },
+        {
+          "name": "Player6"
+        },
+        {
+          "name": "Player7"
+        },
+        {
+          "name": "Player8"
+        }
+      ],
+      "maxGames": 1,
+      "maxTicks": 300,
+      "minPlayers": 8,
+      "closedRoster": true,
+      "gameOverTicks": 1,
+      "imposterCount": 2,
+      "showTaskArrows": false,
+      "startWaitTicks": 0,
+      "tasksPerPlayer": 1,
+      "voteTimerTicks": 120,
+      "roleRevealTicks": 0,
+      "showTaskBubbles": false,
+      "showPlayerLabels": true,
+      "autoImposterCount": false,
+      "killCooldownTicks": 500,
+      "connectTimeoutTicks": 2880,
+      "disconnectTimeoutTicks": 720
+    }
+  }
+}
