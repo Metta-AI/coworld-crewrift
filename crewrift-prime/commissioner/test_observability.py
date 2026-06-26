@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import unittest
 import unittest.mock
 from contextlib import redirect_stdout
@@ -54,7 +55,7 @@ from crewrift_prime_skill_commissioner import (
     _emit_decision_log,
     _looks_like_dispatch_failure,
 )
-from xp_request_client import EpisodeRow, XpRequestError, XpRequestInfraError, XpRequestRun
+from xp_request_client import EpisodeRow, XpRequestInfraError, XpRequestRun
 from replay_parser import ReplayParseError
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "crewrift_prime.yaml"
@@ -619,6 +620,73 @@ class CompetitionSchedulingTest(unittest.TestCase):
                 os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = prev
 
 
+class FillerPolicyResolutionTest(unittest.TestCase):
+    """Filler set precedence: env override > league-config API > empty (graceful)."""
+
+    def setUp(self) -> None:
+        self._prev_env = os.environ.get("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS")
+        os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
+
+    def tearDown(self) -> None:
+        if self._prev_env is None:
+            os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
+        else:
+            os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = self._prev_env
+
+    def test_api_served_fillers_used_when_env_unset(self) -> None:
+        api_a, api_b = uuid4(), uuid4()
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a), str(api_b)])
+        league_id = uuid4()
+        resolved = commissioner._filler_policy_version_ids(league_id)
+        self.assertEqual(resolved, [api_a, api_b])
+        # The API was queried with the league_id.
+        self.assertEqual(commissioner._xp_client.filler_lookups, [str(league_id)])
+
+    def test_env_override_wins_over_api(self) -> None:
+        env_a = uuid4()
+        api_a = uuid4()
+        os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = str(env_a)
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a)])
+        resolved = commissioner._filler_policy_version_ids(uuid4())
+        self.assertEqual(resolved, [env_a])
+        # Env override short-circuits: the API is never consulted.
+        self.assertEqual(commissioner._xp_client.filler_lookups, [])
+
+    def test_api_failure_falls_back_gracefully(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            filler_error=XpRequestInfraError("GET filler-policies -> HTTP 503")
+        )
+        # No env set, API raises -> empty (cycle-real-entrants fallback), no crash.
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            resolved = commissioner._filler_policy_version_ids(uuid4())
+        self.assertEqual(resolved, [])
+        self.assertIn("WARNING", buffer.getvalue())
+
+    def test_empty_api_list_falls_back_to_no_filler(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[])
+        self.assertEqual(commissioner._filler_policy_version_ids(uuid4()), [])
+
+    def test_api_served_fillers_top_up_competition_seats(self) -> None:
+        # End-to-end at the scheduling seam: with env unset and 3 real entrants,
+        # the API-served fillers top up seats 3..7 of the closed 8-seat roster.
+        api_a, api_b = uuid4(), uuid4()
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a), str(api_b)])
+        entrants = [uuid4(), uuid4(), uuid4()]
+        rs = CompetitionSchedulingTest()._competition_round_start(entrants)
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(len(ep.policy_version_ids), NUM_SEATS)
+            self.assertEqual(ep.tags["filler_seats"], "3,4,5,6,7")
+            self.assertTrue(set(ep.policy_version_ids[3:]) <= {api_a, api_b})
+
+
 class XpRequestPayloadTest(unittest.TestCase):
     """The qualifier POST body must match the live V2CreateExperienceRequestRequest.
 
@@ -706,6 +774,49 @@ class XpRequestPayloadTest(unittest.TestCase):
         assert isinstance(headers, dict)
         # urllib title-cases header keys; X-Auth-Token -> X-auth-token.
         self.assertEqual(headers.get("X-auth-token"), "tok-abc")
+
+    def test_get_filler_policy_versions_parses_payload(self) -> None:
+        # The league-config GET reuses the same authenticated client/transport and
+        # returns the ordered policy_version_id strings from filler_policy_versions.
+        from xp_request_client import XpRequestClient
+
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc) -> bool:
+                return False
+
+        body = {
+            "filler_policy_versions": [
+                {"policy_version_id": "pv-1", "policy_id": "p-1", "policy_name": "notsus", "version": 3},
+                {"policy_version_id": "pv-2", "policy_id": "p-2", "policy_name": "notsus", "version": 4},
+            ]
+        }
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG001 - signature parity
+            captured["method"] = req.get_method()
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return _FakeResponse(json.dumps(body).encode("utf-8"))
+
+        client = XpRequestClient(base="https://example.test/observatory", token="tok-abc")
+        with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
+            ids = client.get_filler_policy_versions("lg-123")
+
+        self.assertEqual(ids, ["pv-1", "pv-2"])
+        self.assertEqual(captured["method"], "GET")
+        self.assertTrue(str(captured["url"]).endswith("/v2/leagues/lg-123/filler-policies"))
+        # Same auth header as the rest of the client.
+        self.assertEqual(dict(captured["headers"]).get("X-auth-token"), "tok-abc")
 
 
 class ObservabilityHelpersTest(unittest.TestCase):
