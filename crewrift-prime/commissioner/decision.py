@@ -51,6 +51,16 @@ def _f(name: str, default: float) -> float:
 # / can it talk?" check. When a meeting occurred AND the chat signal is available
 # AND the policy's talk count is 0, the voting verdict FAILS regardless of voting
 # — a meeting happened and the policy said nothing, so it is not LLM-enabled.
+#
+# CONTENT-GRADED TALK (2026-06-26): the presence count above is the cheap first
+# check; it is defeated by a policy that emits a canned non-LLM string (it
+# "talked" so it passes). On top of presence the commissioner LLM-GRADES the
+# candidate's ACTUAL meeting speech (the chat TEXT from the replay) via the I/O
+# module ``chat_grader``, and feeds the boolean ``chat_content_passed`` into the
+# pure voting verdict: a meeting with chat present but graded not-genuine
+# (gibberish/canned) FAILS too. The grade is RESILIENT — disabled/unavailable/
+# erroring grader -> ``chat_content_passed=None`` -> fall back to the presence
+# check (never a DQ on an LLM hiccup). decision.py does NO LLM I/O.
 VOTE_PARTICIPATION_MIN = _f("CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN", 0.0)
 # Mean kills landed as the forced imposter (hunting drill).
 HUNT_KILLS_MIN = _f("CREWRIFT_PRIME_HUNT_KILLS_MIN", 0.5)
@@ -106,8 +116,8 @@ SKILL_GATE_EVIDENCE_TYPE = "skill_gate"
 SKILL_PRESENTATION: dict[str, dict[str, str]] = {
     "voting": {
         "label": "Voting",
-        "blurb": "Take part when a meeting happens — vote and talk (no penalty if no meeting occurs).",
-        "threshold_label": "pass if it votes and talks",
+        "blurb": "Take part when a meeting happens — vote and talk genuine conversation (no penalty if no meeting occurs).",
+        "threshold_label": "pass if it votes and talks genuinely",
     },
     "hunting": {
         "label": "Hunting",
@@ -132,8 +142,10 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
         "— there is no Qualifiers pool to wait in. The commissioner runs one "
         "self-play qualifier game for the policy via an experience request and "
         "reads the resulting replay. The qualifier forces a meeting, and the "
-        "replay's chat record is the LLM-enabled check: a policy that clears all "
-        "three skills — including talking when the meeting happens — is promoted "
+        "replay's chat is the LLM-enabled check: the policy must talk when the "
+        "meeting happens, AND an LLM grades that meeting speech as genuine "
+        "Crewrift conversation (not gibberish or a canned string). A policy that "
+        "clears all three skills — including talking genuinely — is promoted "
         "straight into the Competition pool. A policy that does not clear the gate "
         "is re-evaluated on its next submission."
     ),
@@ -149,31 +161,36 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
             ),
         },
         {
-            "title": "Talk check (in-replay)",
+            "title": "Talk check (in-replay, content-graded)",
             "body": (
-                "The replay already records meeting chat. The commissioner counts each "
-                "policy's chat messages straight from the replay — no separate interview "
-                "container. When a meeting occurred but the policy never talked, it fails "
-                "the voting check: a policy that cannot talk in a meeting is not "
-                "LLM-enabled. Talking also counts as meeting participation."
+                "The replay records the meeting chat. The commissioner first checks the "
+                "policy talked at all (presence) — no separate interview container. It then "
+                "asks an LLM to grade the policy's actual meeting speech: genuine, relevant "
+                "Crewrift conversation passes; gibberish, empty, or a canned non-LLM string "
+                "fails. A meeting with no chat, or chat the LLM judges not-genuine, fails the "
+                "voting check (not LLM-enabled); talking genuinely also counts as participation. "
+                "If the grader is unavailable or errors, the check resiliently falls back to "
+                "presence-only (it never blocks qualification on an LLM hiccup)."
             ),
         },
         {
             "title": "Competition",
             "body": (
-                "Pass every skill (including talking in the forced meeting) and the policy "
-                "is promoted directly to the Competition pool."
+                "Pass every skill (including talking genuinely in the forced meeting) and the "
+                "policy is promoted directly to the Competition pool."
             ),
         },
     ],
-    "gate_rule": "AND \u2014 every skill must pass (voting requires talking when a meeting happens)",
+    "gate_rule": "AND \u2014 every skill must pass (voting requires talking genuinely when a meeting happens)",
     "skills_note": (
         "The voting/hunting/tasks skills are all read from the single qualifier game's "
         "parsed replay. Voting is meeting-aware participation AND the talk gate: it passes "
-        "when the policy votes/skips and talks in the forced meeting, and fails if a meeting "
-        "occurred but the policy never talked. All gate on the live thresholds shown above. "
-        "Each submission's per-skill result and overall verdict appear in the Qualifier "
-        "Skill Gate panel."
+        "when the policy votes/skips and talks genuine conversation in the forced meeting, "
+        "and fails if a meeting occurred but the policy never talked OR its speech was graded "
+        "not-genuine (canned/gibberish). The content grade is resilient — if the grader LLM is "
+        "unavailable it degrades to the presence check, never blocking on an LLM hiccup. All "
+        "gate on the live thresholds shown above. Each submission's per-skill result and overall "
+        "verdict appear in the Qualifier Skill Gate panel."
     ),
     "scoring_blurb": (
         "Once promoted, the Competition leaderboard ranks policies by an OpenSkill "
@@ -328,7 +345,12 @@ def _episode_had_meeting(gr: dict[str, Any]) -> bool:
     ) > 0
 
 
-def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
+def _voting_verdict(
+    episodes: list[dict[str, Any]],
+    *,
+    chat_content_passed: bool | None = None,
+    chat_content_detail: str | None = None,
+) -> SkillVerdict:
     """Meeting-aware participation assurance: does the policy vote when a meeting happens?
 
     Self-play, so all seats are the entrant. Per episode the entrant
@@ -337,19 +359,29 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
     emits a chat signal, spoke (``chat_messages``/``spoke``). A meeting "occurred"
     iff there was any vote-phase activity (votes/skips/timeouts) on any seat.
 
+    ``chat_content_passed`` is the LLM CONTENT grade of the candidate's meeting
+    speech, computed OUTSIDE this pure module (the commissioner calls
+    ``chat_grader`` and passes the boolean here):
+      - ``None``  -> content grading was disabled / unavailable / errored. The talk
+        gate falls back to the cheap PRESENCE check (current behavior): a meeting
+        with chat present passes, a meeting with no chat fails.
+      - ``True``  -> the LLM judged the speech genuine Crewrift conversation; the
+        talk portion passes (so does presence).
+      - ``False`` -> a meeting occurred, chat WAS present, but the LLM judged it
+        not-genuine (gibberish/canned/non-LLM) -> the talk gate FAILS even though
+        the policy "talked". This closes the canned-string loophole that defeats a
+        count-only gate.
+
     Pass rule (honest about opportunity, plus the LLM-enabled talk gate):
-      - No meeting occurred in the whole drill  -> PASS (no vote opportunity;
-        the drill never reached a meeting, so we don't penalize the policy).
-        NOTE: the qualifier FORCES a meeting (see scn_qualifier), so a real
-        qualifier should always reach meetings>0 and this branch is a safety net.
+      - No meeting occurred in the whole drill  -> PASS (no vote opportunity).
       - Meetings occurred + talk signal present + the policy NEVER talked
         -> FAIL ("meeting occurred but policy never talked — not LLM-enabled").
-        This is the hard talk gate: a meeting happened and the policy was silent,
-        so it is not an LLM-enabled / conversant policy.
-      - Meetings occurred (and the policy talked, when the talk signal exists)
-        -> PASS if the entrant participated in >= max(1, ceil(MIN * meetings)) of
-        them (default MIN=0.0 => any one vote/talk passes); FAIL only if it had
-        meetings but never voted/talked.
+      - Meetings occurred + chat present + ``chat_content_passed is False``
+        -> FAIL ("policy talked but its speech was not genuine conversation").
+      - Meetings occurred (and the policy talked genuinely / presence-only when the
+        content grade is None) -> PASS if the entrant participated in
+        >= max(1, ceil(MIN * meetings)) of them (default MIN=0.0 => any one
+        vote/talk passes); FAIL only if it had meetings but never voted/talked.
     """
     from math import ceil
 
@@ -381,6 +413,7 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
 
     total = len(episodes)
     capability = "vote or talk" if talk_signal_available else "vote"
+    content_graded = talk_signal_available and total_talk > 0 and chat_content_passed is not None
 
     if total == 0:
         passed = False
@@ -393,22 +426,41 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
         rate = 1.0
         detail = f"no meeting occurred in the {total} drill episodes (no vote opportunity)"
     elif talk_signal_available and total_talk <= 0:
-        # HARD TALK GATE: a meeting happened, the replay carries the chat signal,
-        # and the policy never spoke. A policy that cannot talk in a meeting is
-        # not LLM-enabled -> fail regardless of voting.
+        # HARD TALK GATE (presence): a meeting happened, the replay carries the chat
+        # signal, and the policy never spoke -> not LLM-enabled -> fail.
         passed = False
         rate = participated_episodes / meetings
         detail = (
             f"meeting occurred but policy never talked across {meetings} meeting(s) "
             "— not LLM-enabled"
         )
+    elif content_graded and chat_content_passed is False:
+        # CONTENT GATE: a meeting happened and the policy DID talk, but the LLM
+        # judged the speech not genuine (gibberish/canned/non-LLM). Fail even
+        # though it "talked" — this closes the canned-string loophole.
+        passed = False
+        rate = participated_episodes / meetings
+        detail = chat_content_detail or (
+            "policy talked but its meeting speech was not genuine Crewrift "
+            "conversation (content-graded not-LLM)"
+        )
     else:
         rate = participated_episodes / meetings
         required = max(1, ceil(VOTE_PARTICIPATION_MIN * meetings)) if VOTE_PARTICIPATION_MIN > 0 else 1
         passed = participated_episodes >= required
         if passed:
-            spoke = " and spoke" if talk_signal_available else ""
-            detail = f"cast votes{spoke} in {participated_episodes}/{meetings} meetings"
+            if content_graded and chat_content_passed:
+                spoke = " and spoke genuine conversation"
+            elif talk_signal_available:
+                spoke = " and spoke"
+            else:
+                spoke = ""
+            base = f"cast votes{spoke} in {participated_episodes}/{meetings} meetings"
+            detail = (
+                f"{base} ({chat_content_detail})"
+                if content_graded and chat_content_passed and chat_content_detail
+                else base
+            )
         else:
             detail = f"did not {capability} in any of the {meetings} meetings reached"
 
@@ -430,6 +482,8 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
             "chat_messages_per_episode": chat_per_episode,
             "talk_signal_available": talk_signal_available,
             "total_talk": total_talk,
+            "chat_content_graded": content_graded,
+            "chat_content_passed": chat_content_passed,
         },
         detail=detail,
     )
@@ -583,13 +637,24 @@ def _task_combined_verdict(game_results: dict[str, Any]) -> SkillVerdict:
     )
 
 
-def evaluate_combined_game(game_results: dict[str, Any] | None) -> DecisionRecord:
+def evaluate_combined_game(
+    game_results: dict[str, Any] | None,
+    *,
+    chat_content_passed: bool | None = None,
+    chat_content_detail: str | None = None,
+) -> DecisionRecord:
     """Strict-AND three-skill decision computed from ONE self-play game.
 
     ``game_results`` is the per-slot results_schema of the single qualifier game
     (or None when the game produced no results — every skill then fails and the
     caller decides crash-DQ vs infra-hold). Voting reuses the meeting-aware rule
     over the single game; hunting/tasks read the imposter/crew seats of that game.
+
+    ``chat_content_passed`` is the LLM CONTENT grade of the candidate's meeting
+    speech (computed by the commissioner via ``chat_grader`` — this module stays
+    pure and does NO LLM I/O). ``None`` = grader disabled/unavailable/errored ->
+    the talk gate falls back to the presence check; ``True``/``False`` add the
+    content check on top of presence (see ``_voting_verdict``).
     """
     if game_results is None:
         no_data = lambda skill, metric, variant: SkillVerdict(  # noqa: E731
@@ -613,7 +678,11 @@ def evaluate_combined_game(game_results: dict[str, Any] | None) -> DecisionRecor
             ],
         )
     verdicts = [
-        _voting_verdict([game_results]),
+        _voting_verdict(
+            [game_results],
+            chat_content_passed=chat_content_passed,
+            chat_content_detail=chat_content_detail,
+        ),
         _hunting_combined_verdict(game_results),
         _task_combined_verdict(game_results),
     ]
@@ -1024,18 +1093,21 @@ def build_qualifier_report(
         "Each new submission plays one 8-seat self-play qualifier game (run via an "
         "experience request, evaluated from its parsed replay). The qualifier forces a "
         "meeting so the policy always gets a chance to vote and talk; the replay's chat "
-        "record is the LLM-enabled check. A strict AND gate over the skills below decides "
-        "promotion: pass every skill (including talking in the forced meeting) to advance "
-        "to Competition, otherwise the submission does not qualify and is re-evaluated on "
-        "its next submission."
+        "is the LLM-enabled check — the policy must talk AND an LLM must grade that meeting "
+        "speech as genuine Crewrift conversation (not gibberish/canned). A strict AND gate "
+        "over the skills below decides promotion: pass every skill (including talking "
+        "genuinely in the forced meeting) to advance to Competition, otherwise the submission "
+        "does not qualify and is re-evaluated on its next submission."
     )
     scoring = {
         "term": "Promotion gate",
         "definition": (
             "a strict AND over three checks read from one self-play qualifier game — voting, "
             "hunting, tasks. Voting is meeting participation AND the in-replay talk gate: when "
-            "the qualifier's forced meeting happens, the policy must vote/skip and talk. Every "
-            "check must pass."
+            "the qualifier's forced meeting happens, the policy must vote/skip and talk speech "
+            "an LLM grades as genuine Crewrift conversation (a canned/gibberish string fails). "
+            "The content grade is resilient — if the grader LLM is unavailable it degrades to a "
+            "presence check, never blocking. Every check must pass."
         ),
         "ranks": (
             "Clear all three and the policy is promoted straight to Competition; miss any one "

@@ -8,10 +8,13 @@ commissioner now: (1) runs a self-play *experience-request* game for the policy,
 (2) re-simulates the resulting `.bitreplay` into skill metrics (including a
 per-slot **chat-message count** read straight from the replay), (3) runs a strict
 three-skill gate whose voting check includes a **hard in-replay talk gate** ("a
-meeting occurred but the policy never talked → not LLM-enabled → fail"), and
+meeting occurred but the policy never talked → not LLM-enabled → fail") **plus an
+LLM content grade** of the meeting speech ("the policy talked, but an LLM judges
+the speech gibberish/canned → fail"), and
 (4) promotes a passing policy directly into the **Competition** division. There is
 no longer a Qualifiers staging division, and **no out-of-band LLM interviewer** —
-the "can it talk?" check is an in-replay signal the commissioner already has.
+the "can it talk genuinely?" check is computed offline from the replay the
+commissioner already parses (presence count + an LLM grade of the chat text).
 
 The commissioner code is **complete and tested** (see
 `crewrift-prime/commissioner/`). This document covers the **platform-side**
@@ -93,12 +96,26 @@ with a lightweight in-replay signal.
 
 The Crewrift `.bitreplay` already records meeting chat, and the bundled Nim expander
 (`tools/expand_replay.nim`) already emits a per-slot `chat` event per message. The
-commissioner now folds those into a per-slot `chat_messages` array
-(`crewrift-prime/commissioner/replay_parser.py`) and the voting verdict
-(`decision.py`'s `_voting_verdict`) applies a **hard talk gate**: when a meeting
-occurred in the qualifier game AND the chat signal is available AND the policy's talk
-count is 0, voting FAILS ("meeting occurred but policy never talked — not
-LLM-enabled"). Talking also counts as meeting participation.
+commissioner now folds those into a per-slot `chat_messages` COUNT plus a per-slot
+`chat_texts` TEXT array (`crewrift-prime/commissioner/replay_parser.py`). The voting
+verdict (`decision.py`'s `_voting_verdict`) applies a **two-layer talk gate**:
+
+1. **Presence (cheap):** when a meeting occurred AND the chat signal is available AND
+   the policy's talk count is 0, voting FAILS ("meeting occurred but policy never
+   talked — not LLM-enabled").
+2. **Content (LLM-graded):** the commissioner's I/O layer (`qualify_submission`)
+   concatenates the candidate's meeting speech from `chat_texts` (self-play → all
+   seats) and asks an LLM (`crewrift-prime/commissioner/chat_grader.py`, a stdlib
+   `urllib` Anthropic client recovered from the deleted interviewer — NO websocket /
+   riddle / container) whether it is genuine Crewrift conversation. A meeting with
+   chat present but graded not-genuine (gibberish/canned) FAILS too. This closes the
+   loophole where a policy emits a canned `print("gg")` and passes a count-only gate.
+   `decision.py` stays PURE — the commissioner computes the boolean and feeds it in.
+
+The grade is **resilient**: disabled (`CREWRIFT_PRIME_GRADE_CHAT_CONTENT=0`), no API
+key, or an LLM error → the commissioner passes `None` and the gate degrades to the
+presence check (talked → pass) — a grader hiccup NEVER blocks qualification. Talking
+genuinely also counts as meeting participation.
 
 The `scn_qualifier` variant is tuned (config-only) to make a meeting near-certain
 (`killCooldownTicks: 1`, `buttonCalls: 8`, `buttonResetsKillCooldowns: true`, long
@@ -189,11 +206,24 @@ These go on `crewrift-prime/coworld_manifest.crewrift_prime.json` →
 | `CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN` | (optional) voting skill threshold | |
 | `CREWRIFT_PRIME_HUNT_KILLS_MIN` | (optional) hunting skill threshold | |
 | `CREWRIFT_PRIME_TASK_TASKS_MIN` | (optional) tasks skill threshold | |
+| `CREWRIFT_PRIME_GRADE_CHAT_CONTENT` | Enable the LLM **content** grade of meeting speech (default ON; `0` = presence-only) | non-secret; set in manifest |
+| `CREWRIFT_PRIME_INTERVIEW_MODEL` | Anthropic model for the chat content grader | non-secret; set in manifest |
+| `CREWRIFT_PRIME_INTERVIEW_API_KEY` / `ANTHROPIC_API_KEY` | Chat-grader LLM key | **secret** — injected via the k8s `crewrift-prime-commissioner-secrets` (dep B); NEVER in the manifest |
+| `CREWRIFT_PRIME_GRADE_CHAT_AUTOPASS_ON_LLM_FAIL` | (optional) on LLM error, degrade to presence-only quietly (default ON) | non-secret |
 
-> **Removed:** all `CREWRIFT_PRIME_INTERVIEW_*` env (`_API_KEY` / `_MODEL` /
-> `_ENABLED` / `_MIN` / `_ADDR` / `_FALLBACK` / `_AUTOPASS_ON_LLM_FAIL`) and the
-> platform's `COWORLD_INTERVIEW_*` settings — the out-of-band interviewer is gone;
-> the "can it talk?" check is the in-replay talk gate inside the voting skill.
+> **Resiliency:** content grading NEVER disqualifies on an LLM problem. With
+> `CREWRIFT_PRIME_GRADE_CHAT_CONTENT=1` (default) the commissioner LLM-grades the
+> candidate's meeting speech; if the key is absent, the grader errors, or grading
+> is disabled, the talk gate **degrades to the presence check** (talked → pass).
+> Only a meeting with NO chat, or chat the LLM affirmatively judges not-genuine
+> (gibberish/canned), fails the voting check.
+
+> **Removed:** the out-of-band interviewer transport (`CREWRIFT_PRIME_INTERVIEW_ADDR`,
+> the websocket riddle Q&A) and the platform's `COWORLD_INTERVIEW_*` settings — the
+> "can it talk?" check is the in-replay talk gate (presence + LLM content grade)
+> inside the voting skill. The grader REUSES the secret env names
+> `CREWRIFT_PRIME_INTERVIEW_API_KEY` / `ANTHROPIC_API_KEY` / `CREWRIFT_PRIME_INTERVIEW_MODEL`
+> for the offline replay-speech grade — no live player connection.
 
 ---
 

@@ -30,13 +30,15 @@ commissioner runs the qualification loop itself (`migrate_league` →
    (`tools/expand_replay.nim --format jsonl`, overridable via
    `CREWRIFT_PRIME_EXPAND_REPLAY_CMD`) to produce the structured `{ts, player,
    key, value}` event log, then folds it into a per-slot `results_schema` dict.
-3. **Evaluate** the strict three-skill AND gate (`decision.evaluate_combined_game`,
-   reused unchanged) over that one self-play game. Self-play fills all 8 seats with
-   the entrant, so a single game exercises both roles:
+3. **Evaluate** the strict three-skill AND gate (`decision.evaluate_combined_game`)
+   over that one self-play game, with the voting check augmented by an **LLM content
+   grade** of the meeting speech (the commissioner calls `chat_grader` and feeds the
+   boolean into the pure decision). Self-play fills all 8 seats with the entrant, so
+   a single game exercises both roles:
 
 | Skill | Metric | Threshold (default, env-overridable) | Computed from the one game |
 |---|---|---|---|
-| voting | `meeting_participation` | pass if it votes / no-meeting (`CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN=0.0`) | meeting-aware participation: pass if the entrant cast a vote/skip (or spoke) when a meeting occurred; no penalty if no meeting occurred; fail only if a meeting happened yet it never voted (`vote_players`/`vote_skip`/`vote_timeout`). |
+| voting | `meeting_participation` | pass if it votes & talks genuinely / no-meeting (`CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN=0.0`) | meeting-aware participation + talk gate: pass if the entrant cast a vote/skip (or spoke) when a meeting occurred AND, when content grading is on, an LLM judged its meeting speech genuine; no penalty if no meeting occurred; fail if a meeting happened yet it never voted/talked, or it talked only gibberish/canned text. |
 | hunting | `imposter_kills` | `>= 0.5` (`CREWRIFT_PRIME_HUNT_KILLS_MIN`) → ≥1 kill | total `kills` landed by the imposter seat(s) (`imposter`==1) in the game |
 | tasks | `crew_tasks_mean` | `>= 1.0` (`CREWRIFT_PRIME_TASK_TASKS_MIN`) | mean `tasks` across the crew seats (`crew`==1) in the game |
 
@@ -173,29 +175,32 @@ deliberately split into two capabilities:
   sum(vote_skip) > 0` — it either voted for a player or explicitly skipped. Pure
   `vote_timeout` (never acting) is not participation. `meeting_participation` is
   the fraction of episodes with participation.
-- **"Knows how to talk" — NOT measurable today; forward-compatible + deferred.**
-  The crewrift `results_schema` exposes no chat/talk field. The engine *does* track
-  chat (`addVotingChat`, per-player `lastChatTick`, `sim.chatMessages`) but never
-  emits a per-slot count. The commissioner already reads a per-slot talk count from
-  `game_results` under any of `chat_messages` / `spoke` / `messages_sent` **if
-  present** (counts speaking as participation); until the game emits it, talk is
-  simply absent and is **never fabricated**.
+- **"Knows how to talk genuinely" — measured (presence + LLM content grade).**
+  The bundled Nim expander emits a per-slot `chat` event per meeting message, which
+  `replay_parser.game_results_from_events` folds into both a per-slot
+  `chat_messages` COUNT and a per-slot `chat_texts` TEXT array (`list[list[str]]`).
+  The talk gate is two layers:
+  1. **Presence (cheap, in `decision.py`):** when a meeting occurred and the chat
+     signal is present but the policy's talk count is 0, voting FAILS ("meeting
+     occurred but policy never talked — not LLM-enabled"). Speaking counts as
+     meeting participation. The count key is read from `game_results` under any of
+     `chat_messages` / `spoke` / `messages_sent`; it is never fabricated.
+  2. **Content (LLM-graded, I/O in `chat_grader.py`):** the commissioner's
+     `qualify_submission` concatenates the candidate's meeting speech from
+     `chat_texts` (self-play → all 8 seats are the entrant) and asks an LLM whether
+     it is genuine Crewrift conversation vs. gibberish/canned. The boolean is fed
+     into the pure `evaluate_combined_game(..., chat_content_passed=...)`; a meeting
+     with chat present but graded not-genuine FAILS. This closes the loophole where
+     a policy emits a canned `print("gg")` and passes a count-only gate.
 
-  **Deferred engine plan (path b) — to activate "talk":** this needs a crewrift
-  GAME image rebuild + coworld game re-upload/re-cert, which the commissioner-only
-  `patch-commissioner` deploy cannot ship. Concretely:
-  1. `src/crewrift/sim.nim`: add `chatMessages*: int` to `RewardAccount` (next to
-     `votePlayers`/`voteSkip`/`voteTimeout`); in `addVotingChat`, after a message
-     is accepted, `let i = sim.rewardAccountForPlayer(playerIndex); if i >= 0: inc
-     sim.rewardAccounts[i].chatMessages` (mirrors `recordVotePlayers`); in the
-     results builder add `chatMessages` to the per-slot init/read and emit
-     `results["chat_messages"] = chatMessagesList`.
-  2. `coworld_manifest.crewrift_prime.json` → `results_schema.properties`: add an
-     optional `chat_messages` integer array (the schema is `additionalProperties:
-     false`, so the field must exist in the schema *and* be emitted by the rebuilt
-     binary — both ship together).
-  3. Rebuild the crewrift game image, `upload-coworld` the new game, re-certify.
-     No commissioner change is needed — talk auto-activates.
+  **Resiliency.** Content grading NEVER disqualifies on an LLM problem. Disabled
+  (`CREWRIFT_PRIME_GRADE_CHAT_CONTENT=0`, default ON), no API key, or an LLM error →
+  `chat_content_passed` is `None` and the gate degrades to the presence check
+  (talked → pass). The grader is a stdlib `urllib` Anthropic client recovered from
+  the deleted out-of-band interviewer — only the grading call, NO websocket / riddle
+  / container. It reads the secret key from `CREWRIFT_PRIME_INTERVIEW_API_KEY` /
+  `ANTHROPIC_API_KEY` and the model from `CREWRIFT_PRIME_INTERVIEW_MODEL` (the key
+  is injected via the k8s `crewrift-prime-commissioner-secrets`, never the manifest).
 
 ## Skill-gate stage detection (regression fix)
 
@@ -298,7 +303,14 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
 ## Files
 
 - `decision.py` — pure decision logic: thresholds, metric computation, verdicts,
-  `DecisionRecord`/reason strings. Single source of truth.
+  `DecisionRecord`/reason strings. Single source of truth. Consumes (never
+  computes) the `chat_content_passed` boolean from the chat grader.
+- `chat_grader.py` — I/O LLM content-grader for the talk gate: a stdlib `urllib`
+  Anthropic client (recovered from the deleted out-of-band interviewer — only the
+  grading call, no websocket/riddle/container) that judges whether the candidate's
+  concatenated meeting speech (`chat_texts`) is genuine Crewrift conversation.
+  Resilient: disabled/no-key/LLM-error → returns `None` so the gate falls back to
+  the presence check. Toggle with `CREWRIFT_PRIME_GRADE_CHAT_CONTENT` (default ON).
 - `mmr.py` — pure OpenSkill (Plackett–Luce) MMR ranking for the Competition
   division (per policy version; `mu − 3σ`, player-prior init, 5-game placement),
   faithful to PR Metta-AI/metta#16527. No I/O; unit-tested by `test_mmr.py`.
@@ -353,9 +365,11 @@ re-seed is required.
 ```sh
 python3 -m venv /tmp/comm_venv && /tmp/comm_venv/bin/pip install ./vendor "openskill>=6.0.0"
 RULESET_STRATEGY_CONFIG_PATH=$(pwd)/crewrift_prime.yaml PYTHONPATH=. \
-  /tmp/comm_venv/bin/python -m unittest test_observability test_skill_gate_metrics test_mmr
+  /tmp/comm_venv/bin/python -m unittest test_observability test_skill_gate_metrics test_mmr test_chat_grader
 ```
 
 Covers: skill-gate detection by substatus, crash-check 8-seat self-play
-scheduling, infra/dispatch failure → non-DQ classification, and the decision
-observability log line.
+scheduling, infra/dispatch failure → non-DQ classification, the decision
+observability log line, and the content-graded talk gate (`test_chat_grader`:
+per-slot `chat_texts`, genuine vs gibberish content grading, presence fallback,
+and the disable flag).

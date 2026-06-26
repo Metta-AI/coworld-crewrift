@@ -140,6 +140,18 @@ class GameResultsLoaderTest(unittest.TestCase):
         assert coerced is not None
         self.assertTrue(has_results_schema_arrays(coerced))
 
+    def test_chat_texts_list_of_lists_passes_through(self) -> None:
+        # The new per-slot chat_texts (list[list[str]]) must survive coercion
+        # untouched (coerce passes unknown keys through; it must not choke on a
+        # list-of-lists-of-strings).
+        full = _full_hunt_episode()
+        full["chat_texts"] = [["sus red"], [], ["skip"], [], [], [], [], []]
+        coerced = coerce_results_schema(full)
+        assert coerced is not None
+        self.assertEqual(coerced["chat_texts"][0], ["sus red"])
+        self.assertEqual(coerced["chat_texts"][2], ["skip"])
+        self.assertFalse(is_metadata_stub(full))
+
 
 class SkillGateMetricsTest(unittest.TestCase):
     def test_stub_game_results_yield_zero_skill_metrics(self) -> None:
@@ -458,6 +470,11 @@ class ReplayParserTest(unittest.TestCase):
         self.assertEqual(gr["chat_messages"][2], 2.0)
         self.assertEqual(gr["chat_messages"][3], 1.0)
         self.assertEqual(gr["chat_messages"][0], 0.0)
+        # chat TEXT is also kept per-slot (for the LLM content grader).
+        self.assertEqual(gr["chat_texts"][2], ["I saw red vent", "vote red"])
+        self.assertEqual(gr["chat_texts"][3], ["skip, not sure"])
+        self.assertEqual(gr["chat_texts"][0], [])
+        self.assertEqual(len(gr["chat_texts"]), 8)
         self.assertEqual(gr["win"][0], True)
         self.assertEqual(gr["win"][1], True)
 

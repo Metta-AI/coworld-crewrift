@@ -99,6 +99,7 @@ from commissioners.common.utils import (
 )
 
 from game_results_loader import coerce_results_schema
+from chat_grader import concat_candidate_chat, content_grading_enabled, grade_chat_content
 from mmr import MMR_PLACEMENT_MIN_GAMES, RatedRoundResult, rank_by_mmr
 from decision import (
     DECISION_LOG_TAG,
@@ -527,17 +528,28 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             # episode -> genuine non-completion (crash DQ).
             return self._crash_dq_event(membership, run)
 
-        # The skill gate now includes the in-replay talk check: the voting verdict
+        # The skill gate includes the in-replay talk check. The voting verdict
         # FAILS when the qualifier's forced meeting occurred but the policy never
-        # talked (the "is this policy LLM-enabled?" gate, replacing the old
-        # out-of-band interviewer). No separate interview I/O is needed.
-        record = evaluate_combined_game(game_results)
+        # talked (the cheap PRESENCE gate). On top of that, when content grading
+        # is enabled and an LLM key is available, we LLM-GRADE the candidate's
+        # actual meeting speech: a policy that "talked" only canned/gibberish text
+        # fails the content check too. The LLM call lives in chat_grader (I/O);
+        # decision.py stays pure and only consumes the boolean. Resilient: a
+        # disabled/absent/erroring grader returns None and we fall back to the
+        # presence gate (talked -> pass) — a grader hiccup NEVER blocks a candidate.
+        chat_content_passed, chat_content_detail = self._grade_chat_content(game_results)
+        record = evaluate_combined_game(
+            game_results,
+            chat_content_passed=chat_content_passed,
+            chat_content_detail=chat_content_detail,
+        )
 
         _emit_decision_log(
             {
                 "policy_version_id": policy_version_id,
                 "xreq_id": run.xreq_id,
                 "single_game": True,
+                "chat_content_passed": chat_content_passed,
                 **record.to_dict(),
             }
         )
@@ -569,6 +581,39 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             notes=record.reason,
             evidence=[evidence],
         )
+
+    def _grade_chat_content(
+        self, game_results: dict | None
+    ) -> tuple[bool | None, str | None]:
+        """LLM-grade the candidate's meeting speech (I/O). Resilient: None degrades.
+
+        In 8-seat SELF-PLAY the candidate occupies EVERY seat, so we concatenate
+        all seats' ``chat_texts`` utterances and ask the grader whether that speech
+        is genuine Crewrift conversation (real LLM reasoning) vs canned/gibberish.
+
+        Returns ``(chat_content_passed, detail)``:
+          - ``(None, None)`` when content grading is disabled, no chat text exists,
+            the grader LLM is unavailable (no key), or the LLM errored — the caller
+            then falls back to the cheap presence gate (never a DQ).
+          - ``(True/False, reason)`` when the LLM graded the speech.
+        """
+        if game_results is None or not content_grading_enabled():
+            return None, None
+        chat_text = concat_candidate_chat(game_results)  # self-play -> all seats
+        if not chat_text:
+            return None, None
+        try:
+            result = grade_chat_content(chat_text)
+        except Exception as exc:  # noqa: BLE001  (grader must never crash the gate)
+            print(
+                f"WARNING: crewrift-prime chat content grade raised ({exc}); "
+                "falling back to presence gate (no DQ).",
+                flush=True,
+            )
+            return None, None
+        if result is None:
+            return None, None
+        return result.passed, result.reason or None
 
     def _game_results_from_run(
         self, run: XpRequestRun
