@@ -775,8 +775,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         The score is ``imposter_wins + crew_wins`` — one point for each player
         (seat) the entrant occupies that won as imposter, plus one for each that
         won as crew. The imposter/crew split is surfaced in the decision log,
-        result_metadata, and round_display. The cumulative leaderboard sums these
-        per-round point totals (see ``rank_division``).
+        result_metadata, and round_display. The per-round score and finishing
+        rank feed the OpenSkill MMR leaderboard (see ``rank_division``).
 
         FILLER/duplicate seats (the top-up seats this round scheduled to fill a
         closed-roster 8-seat game when fewer than ``NUM_SEATS`` real entrants are

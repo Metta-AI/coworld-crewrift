@@ -57,24 +57,47 @@ commissioner runs the qualification loop itself (`migrate_league` →
 > hook) when a policy is submitted for qualification to fire promptly. See the
 > repo-root `crewrift-prime/README.md` "Qualifier" section.
 
-## Competition division — score = WINNING PLAYERS (1 point per winning seat, by role)
+## Competition division — score = WINNING PLAYERS (per round), ranked by OpenSkill MMR
 
-Once promoted, a policy competes in the **Competition** division, where the round
-score counts **every winning player (seat)**: **1 point for each seat that won as
-imposter, plus 1 point for each seat that won as crew** (score =
+Once promoted, a policy competes in the **Competition** division. Each round's
+**score** counts **every winning player (seat)**: **1 point for each seat that won
+as imposter, plus 1 point for each seat that won as crew** (score =
 `imposter_wins + crew_wins`). A seat scores if its per-slot `game_results.win` is
 True; the role of that winning seat (imposter vs crew) comes from the per-slot
 `imposter`/`crew` arrays. An entrant occupying several winning seats in one game
-scores once **per winning seat** (not once per winning episode).
+scores once **per winning seat** (not once per winning episode). That per-round
+score/finishing-rank is the *match outcome* fed to the rating — it is no longer
+summed directly into the leaderboard.
 
 - `_complete_competition_round` (subclass override) sets each entrant's per-round
   score = winning players that round, with `imposter_wins`/`crew_wins` in
   `result_metadata` and a `competition_wins` breakdown in `round_display`. A
   `COMMISSIONER_DECISION {"decision":"COMPETITION_WINS", ...}` line is logged per
   entrant.
-- `rank_division` (subclass override) ranks the Competition leaderboard by
-  **cumulative points** — the SUM of per-round winning-player counts (no ewma decay) — so the
-  leaderboard is a running win total. Other divisions keep the stock ranking.
+- `rank_division` (subclass override) ranks the Competition leaderboard by a
+  **per-policy OpenSkill (Plackett–Luce) MMR** (see `mmr.py`), faithful to upstream
+  PR [Metta-AI/metta#16527](https://github.com/Metta-AI/metta/pull/16527). It
+  replays the division's completed rounds **oldest-first**; each round is one
+  Plackett–Luce match decided by the finishing rank above. The displayed MMR is the
+  conservative ordinal **`mu − 3σ`**; a player's leaderboard row is their **best
+  out-of-placement policy version** (falling back to their best in-placement policy
+  when none has cleared placement). Other divisions keep the stock ranking.
+
+### MMR placement (rated but unranked)
+
+A freshly promoted policy is **rated but shows no numeric rank** until it has
+played `CREWRIFT_PRIME_MMR_PLACEMENT_MIN_GAMES` (default **5**) rated Competition
+rounds — so single-round variance can't rocket a new policy to #1. This placement
+gate is *inside* Competition and is orthogonal to the Qualifiers→Competition skill
+gate above (which still decides admission). A `COMMISSIONER_DECISION
+{"decision":"MMR_RANK", ...}` line is logged per player with `mmr`/`mu`/`sigma`,
+W/L, `games_played`, and `in_placement`. A brand-new policy version from a player
+who already has a rated policy starts from that player's best established `mu`
+(wide σ), so its first ranks aren't insane; placement then tightens σ.
+
+> **Behavior change vs. the old board:** the leaderboard was previously a
+> monotonic *cumulative win total*; MMR can go **down**. Wins/losses (first-place
+> finishes vs. the rest) are still tracked per policy for the W/L display.
 
 ### Seating — at most ONE real policy per seat, default fillers top up the rest
 
@@ -84,11 +107,22 @@ more than one seat in a round). When fewer than 8 real policies are competing, t
 remaining seats are **topped up with the standard default filler policies** so the
 game can still dispatch.
 
-- The default filler set is configured via the **`CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS`**
-  env var (comma-separated `policy_version_id` UUIDs) set on the hosted
-  commissioner runnable's `env` — same tuning mechanism as the gate thresholds, so
-  no rebuild is needed. The `notsus` bot version(s) are the intended default (its
-  concrete UUID is environment-specific, hence env-supplied, not hard-coded).
+- The default filler set is resolved at scheduling time with a clear precedence
+  (see `_filler_policy_version_ids`):
+  1. the **`CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS`** env var (comma-separated
+     `policy_version_id` UUIDs, settable on the hosted runnable's `env` with no
+     rebuild) is an explicit **override/fallback** when set and non-empty; else
+  2. the **per-league fillers served by the league-config API** —
+     `GET /v2/leagues/{league_id}/filler-policies` (an admin configures them in the
+     web app). The commissioner reuses its existing authenticated Observatory client
+     (`xp_request_client.py`, `X-Auth-Token`) and the `league_id` from
+     `round_start.league.id`; else
+  3. no fillers.
+
+  An API lookup that is unavailable, errors, or returns an empty list **degrades
+  gracefully** (logs a `WARNING`, then falls back to env → no-filler seating) — a
+  filler lookup never crashes a competition round. The `notsus` bot version(s) are
+  the intended default (its concrete UUID is environment-specific).
 - **Filler results never count.** Filler (and, when no fillers are configured, the
   duplicate real-entrant top-up) seats are recorded in the episode's
   `filler_seats` tag and **excluded** from scoring, `result_metadata`, the
@@ -265,22 +299,26 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
 
 - `decision.py` — pure decision logic: thresholds, metric computation, verdicts,
   `DecisionRecord`/reason strings. Single source of truth.
+- `mmr.py` — pure OpenSkill (Plackett–Luce) MMR ranking for the Competition
+  division (per policy version; `mu − 3σ`, player-prior init, 5-game placement),
+  faithful to PR Metta-AI/metta#16527. No I/O; unit-tested by `test_mmr.py`.
 - `crewrift_prime_skill_commissioner.py` — `CrewriftPrimeSkillCommissioner`
   subclass: schedules the three drills in the `skill_gate` stage, calls
-  `decision.evaluate_entrants`, emits the three observability channels.
+  `decision.evaluate_entrants`, ranks the Competition leaderboard via `mmr.py`,
+  emits the observability channels.
 - `crewrift_prime.yaml` — ruleset config (Qualifiers `crash_check` + `skill_gate`
   stages, Competition division). Loaded via `RULESET_STRATEGY_CONFIG_PATH`.
 - `app.py` — ASGI entrypoint; imports the subclass (registers key
   `crewrift_prime_skill`) then builds `commissioner_app()`.
 - `debug_decision.py` — local offline debug/decision script.
-- `Dockerfile` — installs `vendor/` then overlays the above.
+- `Dockerfile` — installs `vendor/` + `openskill` then overlays the above.
 - `vendor/` — vendored upstream `Metta-AI/commissioners` package (see
   `vendor/VENDOR_PROVENANCE.txt`). Not modified.
 
 ## Build / wire (recorded for reproducibility)
 
 ```sh
-docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v7 .
+docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v8 .
 
 # Team-only mutation: clear any active player session so get-token returns the
 # usr_ token (patch-commissioner needs team auth, not a ply_ token).
@@ -290,7 +328,7 @@ uv run python -c "from softmax.auth import clear_active_player_session; clear_ac
 # Repoint the coworld's commissioner runnable image; this pushes to Observatory's
 # registry, rewrites the manifest image to an img_ id, bumps the coworld version,
 # and re-certifies (hosted smoke) to canonical.
-uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v7 \
+uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v8 \
   --runnable-id among-them-commissioner
 ```
 
@@ -302,9 +340,9 @@ re-seed is required.
 ### Unit tests
 
 ```sh
-python3 -m venv /tmp/comm_venv && /tmp/comm_venv/bin/pip install ./vendor
+python3 -m venv /tmp/comm_venv && /tmp/comm_venv/bin/pip install ./vendor "openskill>=6.0.0"
 RULESET_STRATEGY_CONFIG_PATH=$(pwd)/crewrift_prime.yaml PYTHONPATH=. \
-  /tmp/comm_venv/bin/python -m unittest test_observability test_skill_gate_metrics
+  /tmp/comm_venv/bin/python -m unittest test_observability test_skill_gate_metrics test_mmr
 ```
 
 Covers: skill-gate detection by substatus, crash-check 8-seat self-play

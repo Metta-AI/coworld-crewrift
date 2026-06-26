@@ -54,7 +54,7 @@ from crewrift_prime_skill_commissioner import (
     _emit_decision_log,
     _looks_like_dispatch_failure,
 )
-from xp_request_client import EpisodeRow, XpRequestError, XpRequestInfraError, XpRequestRun
+from xp_request_client import EpisodeRow, XpRequestInfraError, XpRequestRun
 from replay_parser import ReplayParseError
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "crewrift_prime.yaml"

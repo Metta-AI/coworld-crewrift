@@ -270,12 +270,54 @@ class ScheduleEpisodes(BaseModel):
         return data
 
 
+class CommissionerCalcStep(BaseModel):
+    """One step in deriving an entrant's outcome: a human label + the value it produced."""
+
+    label: str
+    value: Any = None
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    passed: bool | None = None
+
+
+class CommissionerEntrantReport(BaseModel):
+    """How one entrant's round outcome was calculated, end to end (the scoring trace)."""
+
+    policy_version_id: UUID
+    player_id: str | None = None
+    outcome: str
+    score: float | None = None
+    passed: bool | None = None
+    steps: list[CommissionerCalcStep] = Field(default_factory=list)
+    summary: str | None = None
+
+
+class CommissionerRoundReport(BaseModel):
+    """Structured, game-agnostic explanation of how a commissioner scored a round.
+
+    Mirrors ``coworld.commissioner.protocol.CommissionerRoundReport`` so this
+    commissioner's wire output is parsed by the platform's observability layer.
+    """
+
+    rule_id: str
+    rule_description: str
+    division_id: UUID | None = None
+    entrants: list[CommissionerEntrantReport] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
+    # Self-contained, safe HTML the commissioner authors to render its own view of
+    # the round. Served under the platform's safe-render CSP in a sandboxed iframe.
+    render_html: str | None = None
+
+
 class RoundComplete(BaseModel):
     results: list[DivisionRanking] = Field(default_factory=list)
     policy_membership_events: list[PolicyMembershipEventChange] = Field(default_factory=list)
     membership_changes: list[MembershipChange] = Field(default_factory=list)
     round_display: dict[str, Any] | None = None
     state: Any = None
+    # Structured observability report (how this round was scored). Parsed by the
+    # platform into rounds.commissioner_report and rendered in the Observatory.
+    observability: CommissionerRoundReport | None = None
 
     @field_validator("state")
     @classmethod
