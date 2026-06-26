@@ -1,0 +1,52 @@
+# Crewrift Prime — advanced-skill commissioner ruleset config.
+#
+# Event-driven qualification: there is NO "Qualifiers" staging division. When a
+# new policy is submitted to the league, the CrewriftPrimeSkillCommissioner
+# subclass runs the qualification loop itself (see its `migrate_league` /
+# `qualify_submission`): it creates a self-play experience-request game for the
+# policy, downloads and parses the resulting `.bitreplay` to derive the three
+# skill metrics, evaluates the strict AND gate, and on pass promotes the policy
+# DIRECTLY into the Competition division (on fail it holds `qualifying` for retry,
+# or disqualifies on a genuine non-completion). The Competition division and its
+# win-count scoring are declared here and handled by the subclass.
+#
+# Because only the Competition division is declared, the stock
+# `migration_divisions` (derived from `divisions:`) declares ONLY Competition —
+# the platform migration no longer creates a qualifier/staging division.
+#
+# Loaded via RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml in the image.
+
+scoring:
+  round_score: mean
+  leaderboard:
+    type: ewma
+    half_life_hours: 2
+
+defaults:
+  seating: rolling_window
+  # fill_seats applies to the stock vendor scheduler; the Competition division uses
+  # this commissioner's own 8-seat scheduler (see CrewriftPrimeSkillCommissioner.
+  # _schedule_competition_round), which seats each REAL policy at most once per seat
+  # and tops up the remaining seats of the closed-roster 8-seat game with the
+  # standard DEFAULT FILLER player policies. The filler set is configured via the
+  # env var CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS (comma-separated
+  # policy_version_id UUIDs; the `notsus` bot version(s) are the intended default),
+  # set on the hosted commissioner runnable's `env`. Filler/duplicate seats never
+  # earn score, ranking, or leaderboard credit. When the env var is unset, no
+  # fillers are injected and empty seats fall back to cycling real entrants (still
+  # excluded from scoring) so the game can dispatch.
+  fill_seats: duplicate
+  min_entries_to_start: 1
+  stage:
+    label: Round
+    episodes: 12
+    min_episodes_per_entrant: 12
+
+divisions:
+  competition:
+    name: Competition
+    previous_name: Daily
+    level: 1
+    match:
+      type: competition
+    entrants: champions

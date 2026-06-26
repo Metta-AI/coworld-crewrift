@@ -207,6 +207,10 @@ proc initGlobalViewerState*(): GlobalViewerState =
   new(result.povState)
   result.replaySeekTick = -1
   result.replayCommands = @[]
+  # Default the replay debug-sprite overlay on so it renders without first
+  # clicking the "D" transport toggle. Only affects replay rendering, which is
+  # gated on replayEnabled; the "D" button still toggles it back off.
+  result.debugSpritesVisible = true
 
 proc initPlayerViewerState*(): PlayerViewerState =
   ## Returns the default state for one sprite player viewer.

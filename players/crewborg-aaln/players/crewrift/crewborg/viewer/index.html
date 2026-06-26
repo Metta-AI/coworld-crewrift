@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Crewborg Trace Replay</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="panel left-panel">
+        <div class="brand-block">
+          <div class="eyebrow">Crewborg</div>
+          <h1>Trace Replay</h1>
+          <div id="fileStatus" class="subtle">Drop a trace log or choose one.</div>
+        </div>
+
+        <label class="file-button">
+          <input id="traceFile" type="file" accept=".log,.jsonl,.json,text/plain" />
+          <span>Open Trace</span>
+        </label>
+
+        <section class="control-section">
+          <div class="section-title">Playback</div>
+          <div class="transport-row">
+            <button id="jumpStart" title="First frame" aria-label="First frame">&lt;&lt;</button>
+            <button id="stepBack" title="Previous frame" aria-label="Previous frame">&lt;</button>
+            <button id="playPause" title="Play or pause" aria-label="Play or pause">&gt;</button>
+            <button id="stepForward" title="Next frame" aria-label="Next frame">&gt;</button>
+            <button id="jumpEnd" title="Last frame" aria-label="Last frame">&gt;&gt;</button>
+          </div>
+          <input id="timeline" type="range" min="0" max="0" value="0" />
+          <div class="time-row">
+            <span id="frameReadout">0 / 0</span>
+            <label>
+              <span>Speed</span>
+              <select id="speedSelect">
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+                <option value="8">8x</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <div class="section-title">Overlays</div>
+          <div id="overlayToggles" class="toggle-list"></div>
+        </section>
+
+        <section class="control-section stat-grid">
+          <div>
+            <span class="stat-label">Tick</span>
+            <strong id="tickValue">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Phase</span>
+            <strong id="phaseValue">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Role</span>
+            <strong id="roleValue">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Intent</span>
+            <strong id="intentValue">-</strong>
+          </div>
+        </section>
+      </aside>
+
+      <main class="stage">
+        <header class="stage-topbar">
+          <div>
+            <div id="modeName" class="mode-name">No trace loaded</div>
+            <div id="modeReason" class="mode-reason">Viewer frames appear when logs contain domain.viewer_frame.</div>
+          </div>
+          <div class="stage-actions">
+            <button id="fitMap" title="Fit map" aria-label="Fit map">Fit</button>
+            <button id="clearTrace" title="Clear trace" aria-label="Clear trace">Clear</button>
+          </div>
+        </header>
+        <div id="dropZone" class="canvas-wrap">
+          <canvas id="mapCanvas"></canvas>
+          <div id="emptyState" class="empty-state">
+            <h2>Agent-perspective replay</h2>
+            <p>Load a crewborg stderr JSONL trace generated with <code>CREWBORG_TRACE=viewer</code> or <code>CREWBORG_TRACE=debug</code>.</p>
+          </div>
+        </div>
+      </main>
+
+      <aside class="panel right-panel">
+        <section class="inspector-section">
+          <div class="section-title">Mode</div>
+          <dl class="details-list">
+            <div><dt>Name</dt><dd id="modeDetailName">-</dd></div>
+            <div><dt>Source</dt><dd id="modeSource">-</dd></div>
+            <div><dt>Age</dt><dd id="modeAge">-</dd></div>
+            <div><dt>Params</dt><dd><pre id="modeParams">{}</pre></dd></div>
+          </dl>
+        </section>
+
+        <section class="inspector-section">
+          <div class="section-title">Navigation</div>
+          <dl class="details-list">
+            <div><dt>Target</dt><dd id="navTarget">-</dd></div>
+            <div><dt>Waypoint</dt><dd id="navWaypoint">-</dd></div>
+            <div><dt>Route</dt><dd id="navRoute">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="inspector-section">
+          <div class="section-title">Occupancy</div>
+          <dl class="details-list">
+            <div><dt>Top cell</dt><dd id="occTopCell">-</dd></div>
+            <div><dt>Expected</dt><dd id="occExpected">-</dd></div>
+            <div><dt>Tracked</dt><dd id="occTracked">-</dd></div>
+          </dl>
+        </section>
+
+        <section class="inspector-section event-section">
+          <div class="section-title">Events This Tick</div>
+          <div id="eventList" class="event-list"></div>
+        </section>
+
+        <section class="inspector-section raw-section">
+          <div class="section-title">Frame JSON</div>
+          <pre id="rawFrame" class="raw-frame">{}</pre>
+        </section>
+      </aside>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

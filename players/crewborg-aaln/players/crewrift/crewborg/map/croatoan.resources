@@ -1,0 +1,782 @@
+/* vents */
+
+position: absolute;
+width: 714px;
+height: 470px;
+left: 222px;
+top: 108px;
+
+
+
+/* vent4 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 733px;
+top: 334px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent4 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 922px;
+top: 479px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent4 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 922px;
+top: 111px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent3 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 494px;
+top: 334px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent3 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 222px;
+top: 338px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent2 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 545px;
+top: 378px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent2 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 503px;
+top: 514px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent2 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 347px;
+top: 564px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent1 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 545px;
+top: 282px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent1 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 316px;
+top: 108px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* vent1 */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 607px;
+top: 111px;
+
+background: rgba(255, 0, 0, 0.4);
+
+
+/* tasks */
+
+position: absolute;
+width: 905px;
+height: 467px;
+left: 87px;
+top: 111px;
+
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 196px;
+top: 265px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 170px;
+top: 265px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 196px;
+top: 415px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 226px;
+top: 355px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 87px;
+top: 336px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 298px;
+top: 564px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 451px;
+top: 539px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 437px;
+top: 514px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 494px;
+top: 539px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 510px;
+top: 525px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 378px;
+top: 338px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 431px;
+top: 318px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 420px;
+top: 362px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 541px;
+top: 304px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 299px;
+top: 135px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 355px;
+top: 152px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 541px;
+top: 373px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 641px;
+top: 373px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 641px;
+top: 304px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 552px;
+top: 113px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 552px;
+top: 156px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 614px;
+top: 156px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 745px;
+top: 154px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 702px;
+top: 154px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 614px;
+top: 111px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 680px;
+top: 472px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 680px;
+top: 521px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 724px;
+top: 521px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 877px;
+top: 530px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 964px;
+top: 472px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 964px;
+top: 427px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 912px;
+top: 265px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 964px;
+top: 170px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 964px;
+top: 145px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 955px;
+top: 127px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 978px;
+top: 268px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 978px;
+top: 338px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 912px;
+top: 338px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 728px;
+top: 473px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 284px;
+top: 487px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* task */
+
+position: absolute;
+width: 14px;
+height: 14px;
+left: 170px;
+top: 415px;
+
+background: rgba(85, 255, 0, 0.4);
+
+
+/* rooms */
+
+position: absolute;
+width: 1018px;
+height: 521px;
+left: 10px;
+top: 71px;
+
+
+
+/* Bridge */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 254px;
+height: 251px;
+left: 10px;
+top: 217px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Hydroponics */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 134px;
+height: 113px;
+left: 347px;
+top: 292px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Observatory */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 134px;
+height: 126px;
+left: 268px;
+top: 82px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Shuttle Bay */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 134px;
+height: 124px;
+left: 249px;
+top: 468px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Science Bay */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 148px;
+height: 118px;
+left: 407px;
+top: 473px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Med Bay */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 134px;
+height: 140px;
+left: 641px;
+top: 431px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Engineering Nook */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 54px;
+height: 36px;
+left: 861px;
+top: 537px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Storage Deck */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 170px;
+height: 150px;
+left: 517px;
+top: 268px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Reactor */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 136px;
+height: 134px;
+left: 884px;
+top: 244px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Starboard Engine */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 128px;
+height: 130px;
+left: 900px;
+top: 87px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Port Engine */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 128px;
+height: 123px;
+left: 900px;
+top: 405px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Data Storage */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 103px;
+height: 95px;
+left: 681px;
+top: 118px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;
+
+
+/* Engineering */
+
+box-sizing: border-box;
+
+position: absolute;
+width: 137px;
+height: 130px;
+left: 518px;
+top: 71px;
+
+background: rgba(255, 0, 0, 0.09);
+border: 1px solid #FF0000;

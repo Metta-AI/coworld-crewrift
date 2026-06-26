@@ -1,0 +1,32 @@
+# Crewborg "hunter" fork image — the anti-sussyboi policy (strategy/hunter.py).
+#
+# Identical to the main Dockerfile except for the baked behavior flags:
+# CREWBORG_HUNTER=1 enables the timed crew button (jam), the imposter button
+# stakeout, and the early-button-caller suspicion evidence. LLM meetings stay
+# off so votes resolve via the deterministic policy with no latency (sussyboi
+# wins vote races at ~56 ticks; our LLM path averaged ~230).
+#
+# Build (from the repo root):
+#   docker buildx build --platform linux/amd64 \
+#     -f players/crewrift/crewborg/coworld/Dockerfile.hunter \
+#     -t players-crewborg-hunter:dev --load .
+
+FROM --platform=linux/amd64 python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CREWBORG_POLICY_VARIANT=hunter \
+    BE_DUMB=1 \
+    CREWBORG_HUNTER=1 \
+    CREWBORG_DICK_MODE=0 \
+    CREWBORG_LLM_MEETINGS=0
+
+WORKDIR /srv/players
+
+COPY pyproject.toml README.md ./
+COPY players ./players
+RUN pip install --upgrade pip \
+ && pip install -e ".[bedrock]"
+
+ENTRYPOINT ["/srv/players/players/crewrift/crewborg/coworld/entrypoint.sh"]

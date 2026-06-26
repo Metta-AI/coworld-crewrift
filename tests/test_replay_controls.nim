@@ -188,6 +188,9 @@ suite "replay controls":
     check next.mousePressed == false
     check next.mouseReleased == false
 
+  test "debug sprite overlay defaults to visible":
+    check initGlobalViewerState().debugSpritesVisible
+
   test "debug sprite toggle changes viewer state":
     var game = initCrewriftForTest(defaultGameConfig())
     var state = initGlobalViewerState()
@@ -204,7 +207,27 @@ suite "replay controls":
       replayEnabled = true
     )
     state = next
+    check state.debugSpritesVisible
 
+    state.clickReplayLayer(
+      ReplayBottomLeftLayerId,
+      ReplayDebugToggleX,
+      ReplayDebugToggleY
+    )
+    discard game.buildSpriteProtocolUpdates(
+      state,
+      next,
+      replayTick = 100,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 1000,
+      replayLooping = false,
+      replayEnabled = true
+    )
+    check not next.debugSpritesVisible
+    check next.replayCommands.len == 0
+
+    state = next
     state.clickReplayLayer(
       ReplayBottomLeftLayerId,
       ReplayDebugToggleX,
@@ -253,6 +276,7 @@ suite "replay controls":
       globalState = initGlobalViewerState()
       nextGlobalState: GlobalViewerState
     globalState.selectedJoinOrder = game.players[playerIndex].joinOrder
+    globalState.debugSpritesVisible = false
 
     let hiddenPacket = game.buildSpriteProtocolUpdates(
       globalState,
@@ -282,6 +306,41 @@ suite "replay controls":
     )
     check visiblePacket.packetHasSpriteLabel("debug planned path")
     check visiblePacket.packetHasNamespacedDebugObject(PovLayerId)
+
+  test "debug sprites render by default once a pov is selected":
+    var game = initCrewriftForTest(defaultGameConfig())
+    let playerIndex = game.addPlayer("debugger")
+    game.phase = Playing
+    var debugPacket: seq[uint8]
+    debugPacket.addSprite(
+      1,
+      1,
+      1,
+      @[255'u8, 255, 255, 255],
+      "debug planned path"
+    )
+    debugPacket.addObject(2, 3, 4, 0, MapLayerId, 1)
+
+    var
+      globalState = initGlobalViewerState()
+      nextGlobalState: GlobalViewerState
+    globalState.selectedJoinOrder = game.players[playerIndex].joinOrder
+
+    # No manual debugSpritesVisible toggle: the default must expose the overlay.
+    let packet = game.buildSpriteProtocolUpdates(
+      globalState,
+      nextGlobalState,
+      replayTick = 1,
+      replayPlaying = true,
+      replaySpeed = 1,
+      replayMaxTick = 10,
+      replayLooping = false,
+      replayEnabled = true,
+      debugSprites = @[debugPacket]
+    )
+    check nextGlobalState.povActive
+    check packet.packetHasSpriteLabel("debug planned path")
+    check packet.packetHasNamespacedDebugObject(PovLayerId)
 
   test "fast click arriving during frame writeback is preserved":
     var

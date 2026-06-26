@@ -1,0 +1,6 @@
+{
+  "author": "aaronlan95@gmail.com",
+  "name": "crewborg-aaln",
+  "run": ["python", "-m", "players.crewrift.crewborg.coworld.policy_player"],
+  "games": ["crewrift"]
+}

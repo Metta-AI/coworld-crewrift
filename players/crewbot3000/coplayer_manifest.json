@@ -1,0 +1,10 @@
+{
+  "author": "players@softmax.com",
+  "name": "crewbot3000",
+  "run": ["python", "-m", "players.crewrift.crewbot3000.coworld.policy_player"],
+  "interview_run": ["python", "-m", "players.crewrift.crewbot3000.coworld.interview_server"],
+  "interview_protocol": "coworld.interview.v1",
+  "interview_port_env": "CREWRIFT_INTERVIEW_PORT",
+  "interview_default_port": 8770,
+  "games": ["crewrift"]
+}
