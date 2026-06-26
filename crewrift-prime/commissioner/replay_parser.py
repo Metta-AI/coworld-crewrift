@@ -167,6 +167,8 @@ def game_results_from_events(
       - ``vote_skip``           : explicit skip votes the seat cast,
       - ``vote_timeout``        : meetings the seat failed to vote in
                                   (``score`` reason "failing to vote or skip"),
+      - ``chat_messages``       : chat messages the seat sent (``chat`` events) —
+                                  the in-replay "the policy can talk" signal,
       - ``win``                 : True if the seat received a "winning" score,
       - ``scores``              : net score per seat.
 
@@ -186,6 +188,7 @@ def game_results_from_events(
     vote_players = zeros()
     vote_skip = zeros()
     vote_timeout = zeros()
+    chat_messages = zeros()
     scores = zeros()
     joined = [False] * n
     is_imposter = [False] * n
@@ -228,7 +231,10 @@ def game_results_from_events(
                 is_winner[slot] = True
             elif reason == "failing to vote or skip":
                 vote_timeout[slot] += 1.0
-        elif key in ("died", "revived", "body", "started_task", "entered_room", "left_room", "chat"):
+        elif key == "chat":
+            chat_messages[slot] += 1.0
+            joined[slot] = True
+        elif key in ("died", "revived", "body", "started_task", "entered_room", "left_room"):
             joined[slot] = True
 
     imposter = [1 if is_imposter[i] else 0 for i in range(n)]
@@ -243,6 +249,7 @@ def game_results_from_events(
         "vote_players": vote_players,
         "vote_skip": vote_skip,
         "vote_timeout": vote_timeout,
+        "chat_messages": chat_messages,
         "win": win,
         "scores": scores,
     }

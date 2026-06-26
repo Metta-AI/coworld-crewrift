@@ -79,7 +79,8 @@ def _division_snapshots(league_id: UUID) -> list[DivisionSnapshot]:
 
 
 def _good_combined_game() -> dict:
-    # Passes all three skills: imposter kills, crew tasks, a vote cast.
+    # Passes all three skills: imposter kills, crew tasks, a vote cast, and the
+    # policy talks in the meeting (the in-replay talk gate).
     return {
         "imposter": [1, 1, 0, 0, 0, 0, 0, 0],
         "crew": [0, 0, 1, 1, 1, 1, 1, 1],
@@ -88,6 +89,7 @@ def _good_combined_game() -> dict:
         "vote_players": [0, 1, 2, 0, 0, 0, 0, 0],
         "vote_skip": [3, 0, 0, 0, 0, 0, 0, 0],
         "vote_timeout": [0, 0, 0, 0, 0, 0, 0, 0],
+        "chat_messages": [1, 1, 2, 0, 0, 0, 0, 0],
         "win": [True, True, False, False, False, False, False, False],
         "scores": [100, 100, 0, 0, 0, 0, 0, 0],
     }
@@ -97,6 +99,14 @@ def _failing_combined_game() -> dict:
     # No kills => hunting fails.
     game = _good_combined_game()
     game["kills"] = [0, 0, 0, 0, 0, 0, 0, 0]
+    return game
+
+
+def _silent_combined_game() -> dict:
+    # A meeting occurred (votes cast) but NO seat talked -> the in-replay talk
+    # gate fails the voting verdict (the policy is not LLM-enabled).
+    game = _good_combined_game()
+    game["chat_messages"] = [0, 0, 0, 0, 0, 0, 0, 0]
     return game
 
 
@@ -137,55 +147,6 @@ class _FakeXpClient:
         if self._download_error is not None:
             raise self._download_error
         return self._replay_bytes
-
-
-class _FakeInterviewTransport:
-    """A stand-in InterviewTransport that returns a scripted answer frame."""
-
-    def __init__(self, answer: str = "Vote out players with vent evidence; skip when unsure.", degraded: bool = False) -> None:
-        self._answer = answer
-        self._degraded = degraded
-
-    def ask(self, question: str, *, context=None) -> dict:
-        return {"type": "interview_answer", "answer": self._answer, "degraded": self._degraded}
-
-
-class _FakeInterviewLLM:
-    """A stand-in AnthropicRestClient: fixed question + fixed score (no network).
-
-    ``score_error``/``generate_error`` simulate interviewer-LLM failures to
-    exercise the resiliency paths (riddle fallback / scorer auto-pass).
-    """
-
-    model = "fake-interviewer"
-
-    def __init__(self, score: float = 0.9, reason: str = "solid", *,
-                 score_error: Exception | None = None, generate_error: Exception | None = None) -> None:
-        self._score = score
-        self._reason = reason
-        self._score_error = score_error
-        self._generate_error = generate_error
-
-    def generate_question(self) -> str:
-        if self._generate_error is not None:
-            raise self._generate_error
-        return "When should a crewmate skip a vote?"
-
-    def score_answer(self, question: str, answer: str) -> tuple[float, str]:
-        if self._score_error is not None:
-            raise self._score_error
-        return self._score, self._reason
-
-
-def _wire_interview(commissioner, *, score: float = 0.9, answer: str = "Vote out players with vent evidence; skip when genuinely unsure.", degraded: bool = False, transport_error: Exception | None = None, llm: object | None = None) -> None:
-    """Inject a passing (or configurable) interview onto a commissioner — no network."""
-    if transport_error is not None:
-        def _provider(_membership):
-            raise transport_error
-        commissioner._interview_transport_provider = _provider
-    else:
-        commissioner._interview_transport_provider = lambda _m: _FakeInterviewTransport(answer=answer, degraded=degraded)
-    commissioner._interview_llm = llm if llm is not None else _FakeInterviewLLM(score=score)
 
 
 def _completed_run(*, replay_url: str = "https://example.test/replay.z") -> XpRequestRun:
@@ -233,7 +194,6 @@ class QualifySubmissionTest(unittest.TestCase):
     def test_passing_replay_promotes_to_competition(self) -> None:
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner)
         membership = _membership("submitted")
         event = self._run_qualify(commissioner, membership, _good_combined_game())
         self.assertEqual(str(event.status), "competing")
@@ -246,85 +206,32 @@ class QualifySubmissionTest(unittest.TestCase):
         for verdict in skills.values():
             self.assertIn("label", verdict)
             self.assertIn("blurb", verdict)
-        # The interview is now a recorded fourth skill.
-        self.assertIn("interview", skills)
-        self.assertTrue(skills["interview"]["passed"])
+        # No separate interview skill any more — the talk check lives in voting.
+        self.assertNotIn("interview", skills)
+        self.assertTrue(skills["voting"]["passed"])
+        self.assertTrue(skills["voting"]["raw_inputs"]["talk_signal_available"])
 
     def test_failing_replay_holds_qualifying(self) -> None:
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner)
         membership = _membership("submitted")
         event = self._run_qualify(commissioner, membership, _failing_combined_game())
         self.assertEqual(str(event.status), "qualifying")
         self.assertEqual(event.to_division_id, membership.division_id)  # held in place
         self.assertNotEqual(str(event.status), "disqualified")
 
-    def test_failing_interview_holds_even_when_skills_pass(self) -> None:
+    def test_meeting_without_talk_holds_even_when_other_skills_pass(self) -> None:
+        # The in-replay talk gate: a meeting occurred but the policy never talked
+        # -> voting fails ("not LLM-enabled") -> does not qualify.
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        # Skills pass, but the interview scores below threshold -> does not qualify.
-        _wire_interview(commissioner, score=0.1)
         membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
+        event = self._run_qualify(commissioner, membership, _silent_combined_game())
         self.assertEqual(str(event.status), "qualifying")
         self.assertNotEqual(str(event.status), "competing")
         skills = event.evidence[0].metadata["skills"]
-        self.assertFalse(skills["interview"]["passed"])
-
-    def test_degraded_interview_holds_even_when_skills_pass(self) -> None:
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        # A degraded player answer never passes regardless of score.
-        _wire_interview(commissioner, score=0.95, degraded=True)
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertNotEqual(str(event.status), "competing")
-        self.assertFalse(event.evidence[0].metadata["skills"]["interview"]["passed"])
-
-    def test_interview_infra_failure_holds_not_dq(self) -> None:
-        from interview import InterviewInfraError as _InfraErr
-
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner, transport_error=_InfraErr("player interview server unreachable"))
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertEqual(str(event.status), "qualifying")
-        self.assertNotEqual(str(event.status), "disqualified")
-        self.assertEqual(event.evidence[0].type, "crewrift_prime_interview_failure")
-
-    def test_scorer_llm_failure_auto_passes_and_promotes(self) -> None:
-        # An answer WAS received but the SCORER LLM fails -> auto-pass: the
-        # interview qualifies (given skills pass) and the policy is promoted.
-        from interview import InterviewInfraError as _InfraErr
-
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner, llm=_FakeInterviewLLM(score_error=_InfraErr("grader HTTP 500")))
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertEqual(str(event.status), "competing")
-        skills = event.evidence[0].metadata["skills"]
-        self.assertTrue(skills["interview"]["passed"])
-        interview_meta = event.evidence[0].metadata["interview"]
-        self.assertTrue(interview_meta["auto_passed"])
-        self.assertIn("auto-passed", skills["interview"]["detail"])
-
-    def test_riddle_gen_llm_failure_uses_fallback_and_still_gates(self) -> None:
-        # Riddle generation fails -> fallback question used, answer scored
-        # normally; a strong score still passes the interview and promotes.
-        from interview import InterviewInfraError as _InfraErr
-
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner, llm=_FakeInterviewLLM(score=0.9, generate_error=_InfraErr("no gen key")))
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertEqual(str(event.status), "competing")
-        interview_meta = event.evidence[0].metadata["interview"]
-        self.assertTrue(interview_meta["fallback_question"])
-        self.assertFalse(interview_meta["auto_passed"])
+        self.assertFalse(skills["voting"]["passed"])
+        self.assertIn("never talked", skills["voting"]["detail"])
 
     def test_xp_request_infra_failure_holds_not_dq(self) -> None:
         commissioner = _commissioner()
@@ -367,7 +274,6 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
     def test_migrate_league_qualifies_submitted_only(self) -> None:
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner)
         league_id = uuid4()
         submitted = _membership("submitted")
         qualifying = _membership("qualifying")

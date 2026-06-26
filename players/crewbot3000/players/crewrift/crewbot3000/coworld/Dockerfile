@@ -27,13 +27,4 @@ COPY players ./players
 RUN pip install --upgrade pip \
  && pip install -e ".[bedrock]"
 
-# Interview mode (out-of-band league qualification gate): the alternate
-# entrypoint coworld/interview_entrypoint.sh starts a websocket SERVER that the
-# commissioner connects to, to interview the policy about Crewrift voting
-# strategy (see coworld/interview_server.py, protocol coworld.interview.v1). The
-# platform launches the container with that entrypoint and reaches it on this
-# port. EXPOSE is documentation/metadata only; the platform must publish/route
-# the port. The default (game) entrypoint below is unchanged.
-EXPOSE 8770
-
 ENTRYPOINT ["/srv/players/players/crewrift/crewbot3000/coworld/entrypoint.sh"]

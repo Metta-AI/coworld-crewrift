@@ -116,7 +116,6 @@ COPY crewrift-prime/commissioner/mmr.py /app/mmr.py
 COPY crewrift-prime/commissioner/game_results_loader.py /app/game_results_loader.py
 COPY crewrift-prime/commissioner/xp_request_client.py /app/xp_request_client.py
 COPY crewrift-prime/commissioner/replay_parser.py /app/replay_parser.py
-COPY crewrift-prime/commissioner/interview.py /app/interview.py
 COPY crewrift-prime/commissioner/crewrift_prime_skill_commissioner.py /app/crewrift_prime_skill_commissioner.py
 COPY crewrift-prime/commissioner/app.py /app/app.py
 COPY crewrift-prime/commissioner/debug_decision.py /app/debug_decision.py

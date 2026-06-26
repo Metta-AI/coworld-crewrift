@@ -744,7 +744,7 @@
     {
       "id": "scn_qualifier",
       "name": "Scenario: Qualifier (single combined game)",
-      "description": "ONE 8-seat self-play game that surfaces all three qualifier signals at once. Natural roles (imposterCount 2) with a low killCooldownTicks so the imposter seats kill early (hunting) and produce a body that crew report -> meeting (voting); a long task phase (tasksPerPlayer up, maxTicks up) so crew complete tasks (tasks) without instant-winning. A generous connectTimeoutTicks gives all 8 self-play agents time to connect. The commissioner schedules exactly one episode of this variant per entrant and reads voting/hunting/tasks from its per-slot results.",
+      "description": "ONE 8-seat self-play game that surfaces all three qualifier signals at once. Natural roles (imposterCount 2) with a low killCooldownTicks so the imposter seats kill early (hunting) and produce a body that crew report -> meeting (voting + the in-replay talk gate); a long task phase (tasksPerPlayer up, maxTicks up) so crew complete tasks (tasks) without instant-winning. A generous connectTimeoutTicks gives all 8 self-play agents time to connect. MEETING-FORCING (config-only, 2026-06-26): the Crewrift game has NO config knob that deterministically seeds/forces a meeting (a meeting only arises from an emergent kill->body->report or an agent pressing the emergency button — both are agent-behavior-dependent; see GameConfig in src/crewrift/sim.nim, which has buttonCalls/killCooldownTicks but no forceMeeting/meetingOnTick). We therefore make a meeting NEAR-CERTAIN with config alone: killCooldownTicks is dropped to its minimum (1) so both imposter seats kill as early as the engine allows (bodies appear within the first ticks), buttonCalls is raised to 8 so EVERY seat can call an emergency meeting (more chances for the talk gate's opportunity), buttonResetsKillCooldowns lets repeated meetings stay cheap, and the long maxTicks/connectTimeoutTicks leave ample time for a report or button press. A FULLY-GUARANTEED meeting would need an engine/harness change (e.g. a forced emergency on a tick) and is intentionally NOT done here. The commissioner schedules exactly one episode of this variant per entrant and reads voting (participation + talk)/hunting/tasks from its per-slot results.",
       "game_config": {
         "players": [
           {"name": "Player1"},
@@ -772,8 +772,9 @@
         "voteResultTicks": 72,
         "connectTimeoutTicks": 3600,
         "disconnectTimeoutTicks": 720,
-        "killCooldownTicks": 90,
-        "buttonCalls": 1,
+        "killCooldownTicks": 1,
+        "buttonResetsKillCooldowns": true,
+        "buttonCalls": 8,
         "showTaskArrows": true,
         "showTaskBubbles": true,
         "showPlayerLabels": true
@@ -788,10 +789,7 @@
       "env": {
         "CREWRIFT_PRIME_EXPAND_REPLAY_CMD": "/usr/local/bin/crewrift-expand-replay --format jsonl",
         "CREWRIFT_PRIME_GAME_DIR": "/opt/crewrift-game",
-        "CREWRIFT_PRIME_QUALIFIER_EPISODES": "1",
-        "CREWRIFT_PRIME_INTERVIEW_ENABLED": "1",
-        "CREWRIFT_PRIME_INTERVIEW_MODEL": "claude-haiku-4-5-20251001",
-        "CREWRIFT_PRIME_INTERVIEW_MIN": "0.5"
+        "CREWRIFT_PRIME_QUALIFIER_EPISODES": "1"
       },
       "run": [],
       "name": "Crewrift Social Deduction Commissioner",

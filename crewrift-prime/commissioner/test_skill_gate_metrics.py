@@ -18,9 +18,11 @@ from decision import (
 from game_results_loader import coerce_results_schema, has_results_schema_arrays, is_metadata_stub
 
 
-def _combined_game(*, imposter_kills: int = 2, crew_tasks: int = 4, votes: bool = True) -> dict:
+def _combined_game(*, imposter_kills: int = 2, crew_tasks: int = 4, votes: bool = True, talks: bool | None = None) -> dict:
     # One 8-seat self-play game: 2 imposters (seats 0,1), 6 crew (seats 2..7).
-    return {
+    # ``talks``: None omits the chat signal entirely (talk gate inert); True/False
+    # include a per-seat ``chat_messages`` array with/without talk (talk gate active).
+    game = {
         "imposter": [1, 1, 0, 0, 0, 0, 0, 0],
         "crew": [0, 0, 1, 1, 1, 1, 1, 1],
         "kills": [imposter_kills, 0, 0, 0, 0, 0, 0, 0],
@@ -31,6 +33,11 @@ def _combined_game(*, imposter_kills: int = 2, crew_tasks: int = 4, votes: bool 
         "win": [True, True, False, False, False, False, False, False],
         "scores": [100, 100, 0, 0, 0, 0, 0, 0],
     }
+    if talks is True:
+        game["chat_messages"] = [1, 1, 2, 0, 0, 0, 0, 0]
+    elif talks is False:
+        game["chat_messages"] = [0, 0, 0, 0, 0, 0, 0, 0]
+    return game
 
 
 def _full_vote_episode() -> dict:
@@ -79,8 +86,8 @@ def _skip_vote_episode() -> dict:
 
 
 def _talk_only_episode() -> dict:
-    # Forward-compat: a future game build emits a per-slot chat count. No votes,
-    # but the policy spoke => participation (talk signal).
+    # The policy talked but cast no vote: chat counts as meeting participation
+    # (the in-replay talk signal). Timeouts mark that a meeting occurred.
     return {
         "imposter": [1, 0, 0, 0, 0, 0, 0, 0],
         "vote_players": [0, 0, 0, 0, 0, 0, 0, 0],
@@ -221,12 +228,24 @@ class VotingParticipationAssuranceTest(unittest.TestCase):
         self.assertEqual(verdict.raw_inputs["participated_episodes"], 1)
         self.assertTrue(verdict.passed)
 
-    def test_talk_signal_forward_compat(self) -> None:
-        # No votes, but the (future) chat signal is present and non-zero => participation.
+    def test_talk_counts_as_participation(self) -> None:
+        # The policy talked (chat signal present and non-zero) but cast no vote =>
+        # participation (talking is meeting participation).
         verdict = evaluate_entrant({VOTE_VARIANT: [_talk_only_episode()] * 4}).verdicts[0]
         self.assertTrue(verdict.raw_inputs["talk_signal_available"])
         self.assertTrue(verdict.passed)
         self.assertIn("spoke", verdict.detail)
+
+    def test_meeting_with_talk_signal_but_no_talk_fails_hard_gate(self) -> None:
+        # The hard talk gate: a meeting occurred, the chat signal is present, but
+        # the policy never talked => FAIL ("not LLM-enabled"), even though it voted.
+        episode = _full_vote_episode()
+        episode["chat_messages"] = [0, 0, 0, 0, 0, 0, 0, 0]
+        verdict = evaluate_entrant({VOTE_VARIANT: [episode] * 4}).verdicts[0]
+        self.assertTrue(verdict.raw_inputs["talk_signal_available"])
+        self.assertEqual(verdict.raw_inputs["total_talk"], 0.0)
+        self.assertFalse(verdict.passed)
+        self.assertIn("never talked", verdict.detail)
 
 
 class CombinedSingleGameTest(unittest.TestCase):
@@ -251,6 +270,37 @@ class CombinedSingleGameTest(unittest.TestCase):
         record = evaluate_combined_game(None)
         self.assertFalse(record.passed)
         self.assertTrue(all(not v.passed for v in record.verdicts))
+
+    def test_meeting_with_talk_passes_voting(self) -> None:
+        # Meeting occurred + the talk signal is present and non-zero => voting passes
+        # (and the whole gate, given hunting/tasks pass).
+        record = evaluate_combined_game(_combined_game(imposter_kills=2, crew_tasks=4, votes=True, talks=True))
+        skills = {v.skill: v for v in record.verdicts}
+        self.assertTrue(skills["voting"].passed)
+        self.assertTrue(skills["voting"].raw_inputs["talk_signal_available"])
+        self.assertTrue(record.passed)
+
+    def test_meeting_without_talk_fails_voting_hard_gate(self) -> None:
+        # The hard talk gate: a meeting occurred but the policy never talked =>
+        # voting FAILS ("not LLM-enabled"), so the whole gate fails even though
+        # hunting and tasks pass.
+        record = evaluate_combined_game(_combined_game(imposter_kills=2, crew_tasks=4, votes=True, talks=False))
+        skills = {v.skill: v for v in record.verdicts}
+        self.assertFalse(skills["voting"].passed)
+        self.assertEqual(skills["voting"].raw_inputs["total_talk"], 0.0)
+        self.assertIn("never talked", skills["voting"].detail)
+        self.assertTrue(skills["hunting"].passed)
+        self.assertTrue(skills["tasks"].passed)
+        self.assertFalse(record.passed)
+
+    def test_talk_signal_absent_does_not_block(self) -> None:
+        # When the replay carries no chat signal at all (talks=None), the talk gate
+        # is inert and voting passes on vote actions alone (legacy behavior).
+        record = evaluate_combined_game(_combined_game(imposter_kills=2, crew_tasks=4, votes=True, talks=None))
+        skills = {v.skill: v for v in record.verdicts}
+        self.assertFalse(skills["voting"].raw_inputs["talk_signal_available"])
+        self.assertTrue(skills["voting"].passed)
+        self.assertTrue(record.passed)
 
 
 class CompetitionWinCountTest(unittest.TestCase):
@@ -387,6 +437,9 @@ class ReplayParserTest(unittest.TestCase):
             {"ts": 71, "player": 3, "key": "completed_task", "value": {"task": 2}},
             {"ts": 80, "player": 2, "key": "vote_cast", "value": {"target_slot": 0}},
             {"ts": 81, "player": 3, "key": "vote_cast", "value": {"target": "skip"}},
+            {"ts": 82, "player": 2, "key": "chat", "value": {"text": "I saw red vent"}},
+            {"ts": 83, "player": 2, "key": "chat", "value": {"text": "vote red"}},
+            {"ts": 84, "player": 3, "key": "chat", "value": {"text": "skip, not sure"}},
             {"ts": 90, "player": 1, "key": "score", "value": {"amount": 10, "reason": "killing"}},
             {"ts": 95, "player": 4, "key": "score", "value": {"amount": -10, "reason": "failing to vote or skip"}},
             {"ts": 100, "player": 0, "key": "score", "value": {"amount": 100, "reason": "winning"}},
@@ -401,6 +454,10 @@ class ReplayParserTest(unittest.TestCase):
         self.assertEqual(gr["vote_players"][2], 1.0)
         self.assertEqual(gr["vote_skip"][3], 1.0)
         self.assertEqual(gr["vote_timeout"][4], 1.0)
+        # chat events fold into a per-slot chat_messages count (the talk signal).
+        self.assertEqual(gr["chat_messages"][2], 2.0)
+        self.assertEqual(gr["chat_messages"][3], 1.0)
+        self.assertEqual(gr["chat_messages"][0], 0.0)
         self.assertEqual(gr["win"][0], True)
         self.assertEqual(gr["win"][1], True)
 
@@ -415,13 +472,14 @@ class ReplayParserTest(unittest.TestCase):
             {"ts": 70, "player": 2, "key": "completed_task", "value": {}},
             {"ts": 71, "player": 2, "key": "completed_task", "value": {}},
             {"ts": 80, "player": 2, "key": "vote_cast", "value": {"target_slot": 0}},
+            {"ts": 81, "player": 2, "key": "chat", "value": {"text": "vote 0"}},
         ]
         gr = game_results_from_events(events, num_seats=8)
         record = evaluate_combined_game(gr)
         skills = {v.skill: v for v in record.verdicts}
         self.assertTrue(skills["hunting"].passed)  # 1 kill >= 0.5
         self.assertTrue(skills["tasks"].passed)     # crew seat 2 has 2 tasks >= 1.0
-        self.assertTrue(skills["voting"].passed)    # a vote was cast in the meeting
+        self.assertTrue(skills["voting"].passed)    # voted AND talked in the meeting
 
     def test_out_of_range_and_malformed_rows_are_ignored(self) -> None:
         from replay_parser import game_results_from_events
