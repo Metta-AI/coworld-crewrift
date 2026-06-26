@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import unittest
 import unittest.mock
 from contextlib import redirect_stdout
@@ -78,7 +79,8 @@ def _division_snapshots(league_id: UUID) -> list[DivisionSnapshot]:
 
 
 def _good_combined_game() -> dict:
-    # Passes all three skills: imposter kills, crew tasks, a vote cast.
+    # Passes all three skills: imposter kills, crew tasks, a vote cast, and the
+    # policy talks in the meeting (the in-replay talk gate).
     return {
         "imposter": [1, 1, 0, 0, 0, 0, 0, 0],
         "crew": [0, 0, 1, 1, 1, 1, 1, 1],
@@ -87,6 +89,7 @@ def _good_combined_game() -> dict:
         "vote_players": [0, 1, 2, 0, 0, 0, 0, 0],
         "vote_skip": [3, 0, 0, 0, 0, 0, 0, 0],
         "vote_timeout": [0, 0, 0, 0, 0, 0, 0, 0],
+        "chat_messages": [1, 1, 2, 0, 0, 0, 0, 0],
         "win": [True, True, False, False, False, False, False, False],
         "scores": [100, 100, 0, 0, 0, 0, 0, 0],
     }
@@ -96,6 +99,14 @@ def _failing_combined_game() -> dict:
     # No kills => hunting fails.
     game = _good_combined_game()
     game["kills"] = [0, 0, 0, 0, 0, 0, 0, 0]
+    return game
+
+
+def _silent_combined_game() -> dict:
+    # A meeting occurred (votes cast) but NO seat talked -> the in-replay talk
+    # gate fails the voting verdict (the policy is not LLM-enabled).
+    game = _good_combined_game()
+    game["chat_messages"] = [0, 0, 0, 0, 0, 0, 0, 0]
     return game
 
 
@@ -136,55 +147,6 @@ class _FakeXpClient:
         if self._download_error is not None:
             raise self._download_error
         return self._replay_bytes
-
-
-class _FakeInterviewTransport:
-    """A stand-in InterviewTransport that returns a scripted answer frame."""
-
-    def __init__(self, answer: str = "Vote out players with vent evidence; skip when unsure.", degraded: bool = False) -> None:
-        self._answer = answer
-        self._degraded = degraded
-
-    def ask(self, question: str, *, context=None) -> dict:
-        return {"type": "interview_answer", "answer": self._answer, "degraded": self._degraded}
-
-
-class _FakeInterviewLLM:
-    """A stand-in AnthropicRestClient: fixed question + fixed score (no network).
-
-    ``score_error``/``generate_error`` simulate interviewer-LLM failures to
-    exercise the resiliency paths (riddle fallback / scorer auto-pass).
-    """
-
-    model = "fake-interviewer"
-
-    def __init__(self, score: float = 0.9, reason: str = "solid", *,
-                 score_error: Exception | None = None, generate_error: Exception | None = None) -> None:
-        self._score = score
-        self._reason = reason
-        self._score_error = score_error
-        self._generate_error = generate_error
-
-    def generate_question(self) -> str:
-        if self._generate_error is not None:
-            raise self._generate_error
-        return "When should a crewmate skip a vote?"
-
-    def score_answer(self, question: str, answer: str) -> tuple[float, str]:
-        if self._score_error is not None:
-            raise self._score_error
-        return self._score, self._reason
-
-
-def _wire_interview(commissioner, *, score: float = 0.9, answer: str = "Vote out players with vent evidence; skip when genuinely unsure.", degraded: bool = False, transport_error: Exception | None = None, llm: object | None = None) -> None:
-    """Inject a passing (or configurable) interview onto a commissioner — no network."""
-    if transport_error is not None:
-        def _provider(_membership):
-            raise transport_error
-        commissioner._interview_transport_provider = _provider
-    else:
-        commissioner._interview_transport_provider = lambda _m: _FakeInterviewTransport(answer=answer, degraded=degraded)
-    commissioner._interview_llm = llm if llm is not None else _FakeInterviewLLM(score=score)
 
 
 def _completed_run(*, replay_url: str = "https://example.test/replay.z") -> XpRequestRun:
@@ -232,7 +194,6 @@ class QualifySubmissionTest(unittest.TestCase):
     def test_passing_replay_promotes_to_competition(self) -> None:
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner)
         membership = _membership("submitted")
         event = self._run_qualify(commissioner, membership, _good_combined_game())
         self.assertEqual(str(event.status), "competing")
@@ -245,85 +206,32 @@ class QualifySubmissionTest(unittest.TestCase):
         for verdict in skills.values():
             self.assertIn("label", verdict)
             self.assertIn("blurb", verdict)
-        # The interview is now a recorded fourth skill.
-        self.assertIn("interview", skills)
-        self.assertTrue(skills["interview"]["passed"])
+        # No separate interview skill any more — the talk check lives in voting.
+        self.assertNotIn("interview", skills)
+        self.assertTrue(skills["voting"]["passed"])
+        self.assertTrue(skills["voting"]["raw_inputs"]["talk_signal_available"])
 
     def test_failing_replay_holds_qualifying(self) -> None:
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner)
         membership = _membership("submitted")
         event = self._run_qualify(commissioner, membership, _failing_combined_game())
         self.assertEqual(str(event.status), "qualifying")
         self.assertEqual(event.to_division_id, membership.division_id)  # held in place
         self.assertNotEqual(str(event.status), "disqualified")
 
-    def test_failing_interview_holds_even_when_skills_pass(self) -> None:
+    def test_meeting_without_talk_holds_even_when_other_skills_pass(self) -> None:
+        # The in-replay talk gate: a meeting occurred but the policy never talked
+        # -> voting fails ("not LLM-enabled") -> does not qualify.
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        # Skills pass, but the interview scores below threshold -> does not qualify.
-        _wire_interview(commissioner, score=0.1)
         membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
+        event = self._run_qualify(commissioner, membership, _silent_combined_game())
         self.assertEqual(str(event.status), "qualifying")
         self.assertNotEqual(str(event.status), "competing")
         skills = event.evidence[0].metadata["skills"]
-        self.assertFalse(skills["interview"]["passed"])
-
-    def test_degraded_interview_holds_even_when_skills_pass(self) -> None:
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        # A degraded player answer never passes regardless of score.
-        _wire_interview(commissioner, score=0.95, degraded=True)
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertNotEqual(str(event.status), "competing")
-        self.assertFalse(event.evidence[0].metadata["skills"]["interview"]["passed"])
-
-    def test_interview_infra_failure_holds_not_dq(self) -> None:
-        from interview import InterviewInfraError as _InfraErr
-
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner, transport_error=_InfraErr("player interview server unreachable"))
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertEqual(str(event.status), "qualifying")
-        self.assertNotEqual(str(event.status), "disqualified")
-        self.assertEqual(event.evidence[0].type, "crewrift_prime_interview_failure")
-
-    def test_scorer_llm_failure_auto_passes_and_promotes(self) -> None:
-        # An answer WAS received but the SCORER LLM fails -> auto-pass: the
-        # interview qualifies (given skills pass) and the policy is promoted.
-        from interview import InterviewInfraError as _InfraErr
-
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner, llm=_FakeInterviewLLM(score_error=_InfraErr("grader HTTP 500")))
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertEqual(str(event.status), "competing")
-        skills = event.evidence[0].metadata["skills"]
-        self.assertTrue(skills["interview"]["passed"])
-        interview_meta = event.evidence[0].metadata["interview"]
-        self.assertTrue(interview_meta["auto_passed"])
-        self.assertIn("auto-passed", skills["interview"]["detail"])
-
-    def test_riddle_gen_llm_failure_uses_fallback_and_still_gates(self) -> None:
-        # Riddle generation fails -> fallback question used, answer scored
-        # normally; a strong score still passes the interview and promotes.
-        from interview import InterviewInfraError as _InfraErr
-
-        commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner, llm=_FakeInterviewLLM(score=0.9, generate_error=_InfraErr("no gen key")))
-        membership = _membership("submitted")
-        event = self._run_qualify(commissioner, membership, _good_combined_game())
-        self.assertEqual(str(event.status), "competing")
-        interview_meta = event.evidence[0].metadata["interview"]
-        self.assertTrue(interview_meta["fallback_question"])
-        self.assertFalse(interview_meta["auto_passed"])
+        self.assertFalse(skills["voting"]["passed"])
+        self.assertIn("never talked", skills["voting"]["detail"])
 
     def test_xp_request_infra_failure_holds_not_dq(self) -> None:
         commissioner = _commissioner()
@@ -366,7 +274,6 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
     def test_migrate_league_qualifies_submitted_only(self) -> None:
         commissioner = _commissioner()
         commissioner._xp_client = _FakeXpClient(run=_completed_run())
-        _wire_interview(commissioner)
         league_id = uuid4()
         submitted = _membership("submitted")
         qualifying = _membership("qualifying")
@@ -619,6 +526,122 @@ class CompetitionSchedulingTest(unittest.TestCase):
                 os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = prev
 
 
+class FillerPolicyResolutionTest(unittest.TestCase):
+    """Filler set precedence (env override > league-config API > empty) AND the
+    bare-UUID -> ``league_<uuid>`` path normalization the live v2 route requires.
+
+    The commissioner protocol hands ``round_start.league.id`` as a BARE
+    ``uuid.UUID``, but ``GET /v2/leagues/{league_id}/filler-policies`` validates
+    its path param as a ``PrefixedId`` (``^league_<uuid>$``) and returns HTTP 422
+    *before the handler* for a bare UUID. That 422 was previously caught and
+    silently degraded to "no fillers" — the exact reason a configured filler
+    (e.g. ``crewborg-aaln:v16``) was never seated. These tests pin the fix.
+    """
+
+    def setUp(self) -> None:
+        self._prev_env = os.environ.get("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS")
+        os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
+
+    def tearDown(self) -> None:
+        if self._prev_env is None:
+            os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
+        else:
+            os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = self._prev_env
+
+    def test_api_served_fillers_used_when_env_unset(self) -> None:
+        api_a, api_b = uuid4(), uuid4()
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a), str(api_b)])
+        league_id = uuid4()
+        resolved = commissioner._filler_policy_version_ids(league_id)
+        self.assertEqual(resolved, [api_a, api_b])
+        # The API was queried with the league_id.
+        self.assertEqual(commissioner._xp_client.filler_lookups, [str(league_id)])
+
+    def test_env_override_wins_over_api(self) -> None:
+        env_a = uuid4()
+        api_a = uuid4()
+        os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = str(env_a)
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[str(api_a)])
+        resolved = commissioner._filler_policy_version_ids(uuid4())
+        self.assertEqual(resolved, [env_a])
+        # Env override short-circuits: the API is never consulted.
+        self.assertEqual(commissioner._xp_client.filler_lookups, [])
+
+    def test_api_failure_falls_back_gracefully(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            filler_error=XpRequestInfraError("GET filler-policies -> HTTP 503")
+        )
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            resolved = commissioner._filler_policy_version_ids(uuid4())
+        self.assertEqual(resolved, [])
+        self.assertIn("WARNING", buffer.getvalue())
+
+    def test_empty_api_list_falls_back_to_no_filler(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(filler_ids=[])
+        self.assertEqual(commissioner._filler_policy_version_ids(uuid4()), [])
+
+    def test_real_client_seats_fillers_through_prefixed_league_route(self) -> None:
+        # REGRESSION (full chain, REAL XpRequestClient with mocked transport, no
+        # network): round_start.league.id is a BARE uuid.UUID, but the v2
+        # filler-policies path param is the prefixed LeagueId (^league_<uuid>$).
+        # Before the fix the client sent the bare UUID -> HTTP 422 *before the
+        # handler* -> caught -> empty -> NO fillers seated (the exact symptom).
+        # Assert the real client builds the league_<uuid> URL and the served
+        # filler is seated into the empty seats of the closed 8-seat roster.
+        from xp_request_client import LEAGUE_ID_PREFIX, XpRequestClient
+
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc) -> bool:
+                return False
+
+        served_filler = uuid4()
+        body = {"filler_policy_versions": [{"policy_version_id": str(served_filler)}]}
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG001 - signature parity
+            captured["url"] = req.full_url
+            return _FakeResponse(json.dumps(body).encode("utf-8"))
+
+        commissioner = _commissioner()
+        commissioner._xp_client = XpRequestClient(
+            base="https://example.test/observatory", token="tok-abc"
+        )
+        entrants = [uuid4(), uuid4(), uuid4()]
+        rs = CompetitionSchedulingTest()._competition_round_start(entrants)
+        # round_start.league.id is a bare UUID (LeagueInfo.id: UUID).
+        self.assertNotIn(LEAGUE_ID_PREFIX, str(rs.league.id))
+
+        with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
+            schedule = commissioner.schedule_episodes_for_round_start(rs)
+
+        # The real client hit the PREFIXED league route, not the bare UUID.
+        url = str(captured.get("url", ""))
+        self.assertTrue(
+            url.endswith(f"/v2/leagues/{LEAGUE_ID_PREFIX}{rs.league.id}/filler-policies"),
+            f"expected prefixed league route, got: {url}",
+        )
+        # And the served filler actually fills the empty seats 3..7.
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(ep.tags["filler_seats"], "3,4,5,6,7")
+            self.assertEqual(set(ep.policy_version_ids[3:]), {served_filler})
+
+
 class XpRequestPayloadTest(unittest.TestCase):
     """The qualifier POST body must match the live V2CreateExperienceRequestRequest.
 
@@ -706,6 +729,87 @@ class XpRequestPayloadTest(unittest.TestCase):
         assert isinstance(headers, dict)
         # urllib title-cases header keys; X-Auth-Token -> X-auth-token.
         self.assertEqual(headers.get("X-auth-token"), "tok-abc")
+
+    def _capture_filler_get(self, league_id: str, *, body: dict | None = None):
+        from xp_request_client import XpRequestClient
+
+        captured: dict[str, object] = {}
+
+        class _FakeResponse:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return self._payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc) -> bool:
+                return False
+
+        resp_body = body if body is not None else {"filler_policy_versions": []}
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ARG001 - signature parity
+            captured["method"] = req.get_method()
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return _FakeResponse(json.dumps(resp_body).encode("utf-8"))
+
+        client = XpRequestClient(base="https://example.test/observatory", token="tok-abc")
+        with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
+            ids = client.get_filler_policy_versions(league_id)
+        return ids, captured
+
+    def test_get_filler_policy_versions_parses_payload(self) -> None:
+        # The league-config GET reuses the same authenticated client/transport and
+        # returns the ordered policy_version_id strings from filler_policy_versions.
+        body = {
+            "filler_policy_versions": [
+                {"policy_version_id": "pv-1", "policy_id": "p-1", "policy_name": "notsus", "version": 3},
+                {"policy_version_id": "pv-2", "policy_id": "p-2", "policy_name": "notsus", "version": 4},
+            ]
+        }
+        ids, captured = self._capture_filler_get("league_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", body=body)
+        self.assertEqual(ids, ["pv-1", "pv-2"])
+        self.assertEqual(captured["method"], "GET")
+        self.assertTrue(
+            str(captured["url"]).endswith(
+                "/v2/leagues/league_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/filler-policies"
+            )
+        )
+        # Same auth header as the rest of the client.
+        self.assertEqual(dict(captured["headers"]).get("X-auth-token"), "tok-abc")
+
+    def test_get_filler_policy_versions_prefixes_bare_uuid_league_id(self) -> None:
+        # REGRESSION: the commissioner protocol hands a BARE uuid.UUID
+        # (round_start.league.id), but the v2 path param is a PrefixedId validated
+        # against ^league_<uuid>$ — a bare UUID is rejected with HTTP 422 *before*
+        # the handler, which previously degraded silently to "no fillers". The
+        # client must prepend the ``league_`` prefix so the real endpoint matches.
+        from xp_request_client import LEAGUE_ID_PREFIX
+
+        league_uuid = str(uuid4())  # bare UUID, exactly what LeagueInfo.id carries
+        pv = str(uuid4())
+        body = {"filler_policy_versions": [{"policy_version_id": pv}]}
+        ids, captured = self._capture_filler_get(league_uuid, body=body)
+        self.assertEqual(ids, [pv])
+        url = str(captured["url"])
+        self.assertTrue(
+            url.endswith(f"/v2/leagues/{LEAGUE_ID_PREFIX}{league_uuid}/filler-policies"),
+            f"bare UUID must be normalized to league_<uuid>, got URL: {url}",
+        )
+        self.assertNotIn(f"/v2/leagues/{league_uuid}/filler-policies", url)
+
+    def test_get_filler_policy_versions_leaves_already_prefixed_id(self) -> None:
+        # An already-prefixed league_<uuid> passes through untouched (no double prefix).
+        from xp_request_client import LEAGUE_ID_PREFIX
+
+        prefixed = f"{LEAGUE_ID_PREFIX}{uuid4()}"
+        _ids, captured = self._capture_filler_get(prefixed)
+        url = str(captured["url"])
+        self.assertTrue(url.endswith(f"/v2/leagues/{prefixed}/filler-policies"))
+        self.assertNotIn(f"{LEAGUE_ID_PREFIX}{LEAGUE_ID_PREFIX}", url)
 
 
 class ObservabilityHelpersTest(unittest.TestCase):

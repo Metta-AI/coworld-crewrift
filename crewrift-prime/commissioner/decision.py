@@ -34,7 +34,7 @@ def _f(name: str, default: float) -> float:
 #
 # VOTING is a PARTICIPATION / CAPABILITY ASSURANCE (redesigned 2026-06-24), NOT a
 # correctness check. It answers "if the game reaches a meeting, does this policy
-# take part — does it actually VOTE/skip (and, when measurable, TALK)?".
+# take part — does it actually VOTE/skip, and (the LLM-enabled gate) TALK?".
 #
 # Honest meeting-aware gate (2026-06-24): a drill episode only offers a vote if a
 # MEETING actually occurs (a player reports a body or presses the emergency
@@ -45,22 +45,37 @@ def _f(name: str, default: float) -> float:
 # voted/talked. With CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN > 0 the bar tightens
 # to "participate in >= that fraction of the meetings"; default 0.0 = "any vote
 # passes" (the user's intent: pass if the game players vote).
+#
+# HARD TALK GATE (2026-06-26): the in-replay chat metric (``chat_messages``)
+# replaces the old out-of-band LLM interviewer as the "is this policy LLM-enabled
+# / can it talk?" check. When a meeting occurred AND the chat signal is available
+# AND the policy's talk count is 0, the voting verdict FAILS regardless of voting
+# — a meeting happened and the policy said nothing, so it is not LLM-enabled.
+#
+# CONTENT-GRADED TALK (2026-06-26): the presence count above is the cheap first
+# check; it is defeated by a policy that emits a canned non-LLM string (it
+# "talked" so it passes). On top of presence the commissioner LLM-GRADES the
+# candidate's ACTUAL meeting speech (the chat TEXT from the replay) via the I/O
+# module ``chat_grader``, and feeds the boolean ``chat_content_passed`` into the
+# pure voting verdict: a meeting with chat present but graded not-genuine
+# (gibberish/canned) FAILS too. The grade is RESILIENT — disabled/unavailable/
+# erroring grader -> ``chat_content_passed=None`` -> fall back to the presence
+# check (never a DQ on an LLM hiccup). decision.py does NO LLM I/O.
 VOTE_PARTICIPATION_MIN = _f("CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN", 0.0)
 # Mean kills landed as the forced imposter (hunting drill).
 HUNT_KILLS_MIN = _f("CREWRIFT_PRIME_HUNT_KILLS_MIN", 0.5)
 # Mean tasks completed per seat (task-pressure drill).
 TASK_TASKS_MIN = _f("CREWRIFT_PRIME_TASK_TASKS_MIN", 1.0)
-# Minimum interview score (0..1) the candidate must reach to PASS the LLM
-# interview hard gate. The interview LLM call + grading happen OUTSIDE this pure
-# module (in commissioner/interview.py); decision.py only consumes the numeric
-# score. Env-overridable so the bar can be tuned without a code change.
-INTERVIEW_MIN_SCORE = _f("CREWRIFT_PRIME_INTERVIEW_MIN", 0.5)
 
-# Forward-compat: per-slot "talk" signal. NOT emitted by the crewrift game today
-# (the results_schema has no chat field). When a future game build adds a per-slot
-# integer count under one of these keys, the voting assurance automatically counts
-# speaking as participation — no commissioner change needed. Until then, "talk" is
-# simply absent and participation is judged on vote actions alone (never fabricated).
+# Per-slot "talk" signal — the in-replay "is the policy LLM-enabled / can it
+# talk?" check. The Crewrift ``.bitreplay`` already records meeting chat and the
+# bundled Nim expander emits a per-slot ``chat`` event per message; the replay
+# parser folds those into a ``chat_messages`` per-seat array (see
+# ``replay_parser.game_results_from_events``). The voting/participation verdict
+# reads this count to (a) count speaking as meeting participation and (b) HARD
+# GATE: when a meeting occurred but the policy never talked, qualification FAILS
+# (a non-LLM-enabled policy never speaks). Multiple key names are accepted for
+# forward-compat with other game builds; ``chat_messages`` is what Crewrift emits.
 CHAT_RESULT_KEYS = ("chat_messages", "spoke", "messages_sent")
 
 # Scenario variant ids (must exist in the coworld manifest variants[]).
@@ -68,9 +83,6 @@ VOTE_VARIANT = "scn_vote_basic"
 HUNT_VARIANT = "scn_hunt_isolated"
 TASK_VARIANT = "scn_task_pressure"
 SKILL_VARIANTS = (VOTE_VARIANT, HUNT_VARIANT, TASK_VARIANT)
-# The interview is not a game variant — it is an out-of-band LLM Q&A. This id is
-# only a stable label for the interview verdict's ``variant_id`` field.
-INTERVIEW_VARIANT = "interview_llm"
 
 EPISODES_PER_DRILL = int(os.getenv("CREWRIFT_PRIME_EPISODES_PER_DRILL", "4"))
 FORCED_IMPOSTER_SEAT = 0
@@ -104,8 +116,8 @@ SKILL_GATE_EVIDENCE_TYPE = "skill_gate"
 SKILL_PRESENTATION: dict[str, dict[str, str]] = {
     "voting": {
         "label": "Voting",
-        "blurb": "Vote when a meeting happens (no penalty if none occurs).",
-        "threshold_label": "pass if it votes",
+        "blurb": "Take part when a meeting happens — vote and talk genuine conversation (no penalty if no meeting occurs).",
+        "threshold_label": "pass if it votes and talks genuinely",
     },
     "hunting": {
         "label": "Hunting",
@@ -114,11 +126,6 @@ SKILL_PRESENTATION: dict[str, dict[str, str]] = {
     "tasks": {
         "label": "Tasks",
         "blurb": "Complete tasks while seated on the crew.",
-    },
-    "interview": {
-        "label": "Interview",
-        "blurb": "Answer the commissioner's Crewrift voting-strategy question.",
-        "threshold_label": "pass the LLM interview",
     },
 }
 
@@ -133,11 +140,14 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
     "summary": (
         "Every new submission is evaluated on its own, the moment it is submitted "
         "— there is no Qualifiers pool to wait in. The commissioner runs one "
-        "self-play qualifier game for the policy via an experience request, reads "
-        "the resulting replay, AND interviews the policy with an LLM about Crewrift "
-        "voting strategy. A policy that clears all three skills AND passes the "
-        "interview is promoted straight into the Competition pool. A policy that "
-        "does not clear the gate is re-evaluated on its next submission."
+        "self-play qualifier game for the policy via an experience request and "
+        "reads the resulting replay. The qualifier forces a meeting, and the "
+        "replay's chat is the LLM-enabled check: the policy must talk when the "
+        "meeting happens, AND an LLM grades that meeting speech as genuine "
+        "Crewrift conversation (not gibberish or a canned string). A policy that "
+        "clears all three skills — including talking genuinely — is promoted "
+        "straight into the Competition pool. A policy that does not clear the gate "
+        "is re-evaluated on its next submission."
     ),
     "flow_steps": [
         {"title": "Submit", "body": "A new policy version is submitted to the league."},
@@ -145,37 +155,42 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
             "title": "Qualifier game",
             "body": (
                 "The commissioner runs ONE 8-seat self-play game for the policy via an "
-                "experience request and parses its replay. Strict AND: every skill must "
-                "pass (a policy whose game never completes is disqualified)."
+                "experience request and parses its replay. The qualifier forces a meeting "
+                "so the policy always gets a chance to vote and talk. Strict AND: every "
+                "skill must pass (a policy whose game never completes is disqualified)."
             ),
         },
         {
-            "title": "Interview",
+            "title": "Talk check (in-replay, content-graded)",
             "body": (
-                "The commissioner launches the policy's container in interview mode, asks "
-                "it an LLM-generated Crewrift voting-strategy question over a websocket, and "
-                "scores the answer with an LLM. The policy must score at or above the "
-                "interview threshold. The interviewer LLM is resilient: if riddle generation "
-                "fails the commissioner falls back to a built-in question pool, and if the "
-                "scorer LLM fails after an answer was received the interview auto-passes. Only "
-                "a player/transport failure (unreachable interview server, timeout, no answer) "
-                "holds for retry — never a DQ."
+                "The replay records the meeting chat. The commissioner first checks the "
+                "policy talked at all (presence) — no separate interview container. It then "
+                "asks an LLM to grade the policy's actual meeting speech: genuine, relevant "
+                "Crewrift conversation passes; gibberish, empty, or a canned non-LLM string "
+                "fails. A meeting with no chat, or chat the LLM judges not-genuine, fails the "
+                "voting check (not LLM-enabled); talking genuinely also counts as participation. "
+                "If the grader is unavailable or errors, the check resiliently falls back to "
+                "presence-only (it never blocks qualification on an LLM hiccup)."
             ),
         },
         {
             "title": "Competition",
             "body": (
-                "Pass every skill AND the interview and the policy is promoted directly to "
-                "the Competition pool."
+                "Pass every skill (including talking genuinely in the forced meeting) and the "
+                "policy is promoted directly to the Competition pool."
             ),
         },
     ],
-    "gate_rule": "AND \u2014 every skill and the interview must pass",
+    "gate_rule": "AND \u2014 every skill must pass (voting requires talking genuinely when a meeting happens)",
     "skills_note": (
-        "The voting/hunting/tasks skills are read from the single qualifier game's parsed "
-        "replay; the interview is a separate out-of-band LLM Q&A. All gate on the live "
-        "thresholds shown above. Each submission's per-skill result, interview score, and "
-        "overall verdict appear in the Qualifier Skill Gate panel."
+        "The voting/hunting/tasks skills are all read from the single qualifier game's "
+        "parsed replay. Voting is meeting-aware participation AND the talk gate: it passes "
+        "when the policy votes/skips and talks genuine conversation in the forced meeting, "
+        "and fails if a meeting occurred but the policy never talked OR its speech was graded "
+        "not-genuine (canned/gibberish). The content grade is resilient — if the grader LLM is "
+        "unavailable it degrades to the presence check, never blocking on an LLM hiccup. All "
+        "gate on the live thresholds shown above. Each submission's per-skill result and overall "
+        "verdict appear in the Qualifier Skill Gate panel."
     ),
     "scoring_blurb": (
         "Once promoted, the Competition leaderboard ranks policies by an OpenSkill "
@@ -330,7 +345,12 @@ def _episode_had_meeting(gr: dict[str, Any]) -> bool:
     ) > 0
 
 
-def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
+def _voting_verdict(
+    episodes: list[dict[str, Any]],
+    *,
+    chat_content_passed: bool | None = None,
+    chat_content_detail: str | None = None,
+) -> SkillVerdict:
     """Meeting-aware participation assurance: does the policy vote when a meeting happens?
 
     Self-play, so all seats are the entrant. Per episode the entrant
@@ -339,12 +359,29 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
     emits a chat signal, spoke (``chat_messages``/``spoke``). A meeting "occurred"
     iff there was any vote-phase activity (votes/skips/timeouts) on any seat.
 
-    Pass rule (honest about opportunity):
-      - No meeting occurred in the whole drill  -> PASS (no vote opportunity;
-        the drill never reached a meeting, so we don't penalize the policy).
-      - Meetings occurred                       -> PASS if the entrant participated
-        in >= max(1, ceil(MIN * meetings)) of them (default MIN=0.0 => any one
-        vote passes); FAIL only if it had meetings but never voted/talked.
+    ``chat_content_passed`` is the LLM CONTENT grade of the candidate's meeting
+    speech, computed OUTSIDE this pure module (the commissioner calls
+    ``chat_grader`` and passes the boolean here):
+      - ``None``  -> content grading was disabled / unavailable / errored. The talk
+        gate falls back to the cheap PRESENCE check (current behavior): a meeting
+        with chat present passes, a meeting with no chat fails.
+      - ``True``  -> the LLM judged the speech genuine Crewrift conversation; the
+        talk portion passes (so does presence).
+      - ``False`` -> a meeting occurred, chat WAS present, but the LLM judged it
+        not-genuine (gibberish/canned/non-LLM) -> the talk gate FAILS even though
+        the policy "talked". This closes the canned-string loophole that defeats a
+        count-only gate.
+
+    Pass rule (honest about opportunity, plus the LLM-enabled talk gate):
+      - No meeting occurred in the whole drill  -> PASS (no vote opportunity).
+      - Meetings occurred + talk signal present + the policy NEVER talked
+        -> FAIL ("meeting occurred but policy never talked — not LLM-enabled").
+      - Meetings occurred + chat present + ``chat_content_passed is False``
+        -> FAIL ("policy talked but its speech was not genuine conversation").
+      - Meetings occurred (and the policy talked genuinely / presence-only when the
+        content grade is None) -> PASS if the entrant participated in
+        >= max(1, ceil(MIN * meetings)) of them (default MIN=0.0 => any one
+        vote/talk passes); FAIL only if it had meetings but never voted/talked.
     """
     from math import ceil
 
@@ -355,12 +392,14 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
     participated_episodes = 0
     meetings = 0
     talk_signal_available = False
+    total_talk = 0.0
 
     for gr in episodes:
         vote_actions = _array_sum(gr.get("vote_players")) + _array_sum(gr.get("vote_skip"))
         chat = _chat_sum(gr)
         if chat is not None:
             talk_signal_available = True
+            total_talk += chat
         votes_per_episode.append(_array_sum(gr.get("vote_players")))
         skips_per_episode.append(_array_sum(gr.get("vote_skip")))
         timeouts_per_episode.append(_array_sum(gr.get("vote_timeout")))
@@ -374,6 +413,7 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
 
     total = len(episodes)
     capability = "vote or talk" if talk_signal_available else "vote"
+    content_graded = talk_signal_available and total_talk > 0 and chat_content_passed is not None
 
     if total == 0:
         passed = False
@@ -385,13 +425,42 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
         passed = True
         rate = 1.0
         detail = f"no meeting occurred in the {total} drill episodes (no vote opportunity)"
+    elif talk_signal_available and total_talk <= 0:
+        # HARD TALK GATE (presence): a meeting happened, the replay carries the chat
+        # signal, and the policy never spoke -> not LLM-enabled -> fail.
+        passed = False
+        rate = participated_episodes / meetings
+        detail = (
+            f"meeting occurred but policy never talked across {meetings} meeting(s) "
+            "— not LLM-enabled"
+        )
+    elif content_graded and chat_content_passed is False:
+        # CONTENT GATE: a meeting happened and the policy DID talk, but the LLM
+        # judged the speech not genuine (gibberish/canned/non-LLM). Fail even
+        # though it "talked" — this closes the canned-string loophole.
+        passed = False
+        rate = participated_episodes / meetings
+        detail = chat_content_detail or (
+            "policy talked but its meeting speech was not genuine Crewrift "
+            "conversation (content-graded not-LLM)"
+        )
     else:
         rate = participated_episodes / meetings
         required = max(1, ceil(VOTE_PARTICIPATION_MIN * meetings)) if VOTE_PARTICIPATION_MIN > 0 else 1
         passed = participated_episodes >= required
         if passed:
-            spoke = " and spoke" if talk_signal_available else ""
-            detail = f"cast votes{spoke} in {participated_episodes}/{meetings} meetings"
+            if content_graded and chat_content_passed:
+                spoke = " and spoke genuine conversation"
+            elif talk_signal_available:
+                spoke = " and spoke"
+            else:
+                spoke = ""
+            base = f"cast votes{spoke} in {participated_episodes}/{meetings} meetings"
+            detail = (
+                f"{base} ({chat_content_detail})"
+                if content_graded and chat_content_passed and chat_content_detail
+                else base
+            )
         else:
             detail = f"did not {capability} in any of the {meetings} meetings reached"
 
@@ -412,6 +481,9 @@ def _voting_verdict(episodes: list[dict[str, Any]]) -> SkillVerdict:
             "vote_timeouts_per_episode": timeouts_per_episode,
             "chat_messages_per_episode": chat_per_episode,
             "talk_signal_available": talk_signal_available,
+            "total_talk": total_talk,
+            "chat_content_graded": content_graded,
+            "chat_content_passed": chat_content_passed,
         },
         detail=detail,
     )
@@ -565,13 +637,24 @@ def _task_combined_verdict(game_results: dict[str, Any]) -> SkillVerdict:
     )
 
 
-def evaluate_combined_game(game_results: dict[str, Any] | None) -> DecisionRecord:
+def evaluate_combined_game(
+    game_results: dict[str, Any] | None,
+    *,
+    chat_content_passed: bool | None = None,
+    chat_content_detail: str | None = None,
+) -> DecisionRecord:
     """Strict-AND three-skill decision computed from ONE self-play game.
 
     ``game_results`` is the per-slot results_schema of the single qualifier game
     (or None when the game produced no results — every skill then fails and the
     caller decides crash-DQ vs infra-hold). Voting reuses the meeting-aware rule
     over the single game; hunting/tasks read the imposter/crew seats of that game.
+
+    ``chat_content_passed`` is the LLM CONTENT grade of the candidate's meeting
+    speech (computed by the commissioner via ``chat_grader`` — this module stays
+    pure and does NO LLM I/O). ``None`` = grader disabled/unavailable/errored ->
+    the talk gate falls back to the presence check; ``True``/``False`` add the
+    content check on top of presence (see ``_voting_verdict``).
     """
     if game_results is None:
         no_data = lambda skill, metric, variant: SkillVerdict(  # noqa: E731
@@ -595,80 +678,14 @@ def evaluate_combined_game(game_results: dict[str, Any] | None) -> DecisionRecor
             ],
         )
     verdicts = [
-        _voting_verdict([game_results]),
+        _voting_verdict(
+            [game_results],
+            chat_content_passed=chat_content_passed,
+            chat_content_detail=chat_content_detail,
+        ),
         _hunting_combined_verdict(game_results),
         _task_combined_verdict(game_results),
     ]
-    return DecisionRecord(passed=all(v.passed for v in verdicts), verdicts=verdicts)
-
-
-# ============================================================================
-# LLM interview hard gate (2026-06-25): a fourth required, threshold-gated skill
-# added ALONGSIDE voting/hunting/tasks. The interview LLM call + grading happen
-# OUTSIDE this pure module (commissioner/interview.py); decision.py only consumes
-# the numeric score (0..1) and an optional degraded flag, and combines it with
-# the skill gate by a strict AND.
-# ============================================================================
-
-
-def interview_verdict(
-    score: float | None,
-    *,
-    degraded: bool = False,
-    detail: str | None = None,
-) -> SkillVerdict:
-    """Pure verdict for the interview: pass iff ``score >= INTERVIEW_MIN_SCORE``.
-
-    ``score`` is the 0..1 grade the commissioner's interview scorer produced
-    (None when the interview was not run — that fails). ``degraded`` flags an
-    answer the player could not actually reason about (LLM unavailable on the
-    player side); it never passes regardless of score. ``detail`` overrides the
-    human phrasing (e.g. the grader's one-line reason).
-    """
-    value = float(score) if isinstance(score, (int, float)) else 0.0
-    passed = (score is not None) and (not degraded) and value >= INTERVIEW_MIN_SCORE
-    if detail is None:
-        if score is None:
-            detail = "interview was not completed"
-        elif degraded:
-            detail = f"player could not answer (degraded); scored {value:.2f}"
-        elif passed:
-            detail = f"answered the voting-strategy question (scored {value:.2f})"
-        else:
-            detail = f"weak voting-strategy answer (scored {value:.2f} < {INTERVIEW_MIN_SCORE:g})"
-    return SkillVerdict(
-        skill="interview",
-        variant_id=INTERVIEW_VARIANT,
-        metric_name="interview_score",
-        metric_value=value,
-        threshold=INTERVIEW_MIN_SCORE,
-        comparator=">=",
-        episodes_counted=0 if score is None else 1,
-        passed=passed,
-        raw_inputs={"degraded": degraded},
-        detail=detail,
-    )
-
-
-def evaluate_combined_game_with_interview(
-    game_results: dict[str, Any] | None,
-    interview_score: float | None,
-    *,
-    interview_degraded: bool = False,
-    interview_detail: str | None = None,
-) -> DecisionRecord:
-    """Strict-AND gate over the three skills PLUS the LLM interview.
-
-    A policy passes only if it clears the skill gate (voting/hunting/tasks from
-    the parsed replay) AND passes the interview (score >= INTERVIEW_MIN_SCORE).
-    The interview is appended as a fourth verdict so the Observatory renders it
-    uniformly. The interview's I/O is done by the caller; this stays pure.
-    """
-    skill_record = evaluate_combined_game(game_results)
-    verdict = interview_verdict(
-        interview_score, degraded=interview_degraded, detail=interview_detail
-    )
-    verdicts = [*skill_record.verdicts, verdict]
     return DecisionRecord(passed=all(v.passed for v in verdicts), verdicts=verdicts)
 
 
@@ -782,16 +799,36 @@ import json  # noqa: E402
 _REPORT_CSS = """
 :root{color-scheme:light}
 *{box-sizing:border-box}
-body{margin:0;padding:14px 16px;background:#f7f4ee;color:#1f1b16;
-  font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-h1{margin:0 0 2px;font-size:14px;letter-spacing:.02em;font-weight:600}
-.rule{color:#6b6258;font-size:11.5px;margin:0 0 12px;max-width:70ch}
-table{width:100%;border-collapse:collapse;font-size:12px}
-thead th{text-align:left;font-weight:600;color:#8a7f72;font-size:10px;
-  letter-spacing:.06em;text-transform:uppercase;padding:0 8px 6px;border-bottom:1px solid #e3ddd2}
+body{margin:0;padding:16px 18px;background:#f7f4ee;color:#1f1b16;
+  font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+.eyebrow{margin:0 0 3px;font-size:10px;font-weight:700;letter-spacing:.13em;
+  text-transform:uppercase;color:#9a8f80}
+h1{margin:0;font:600 18px/1.2 Georgia,"Times New Roman",ui-serif,serif;
+  letter-spacing:.005em;color:#1f1b16}
+/* The scoring model — a labeled definition + how standings rank. A quiet
+   left rule groups it as one unit (typography/whitespace carry hierarchy; no
+   decorative box). */
+.model{margin:11px 0 0;padding:1px 0 1px 11px;border-left:2px solid #e0d6c4;
+  max-width:78ch}
+.model .line{margin:0;font-size:12px;line-height:1.5;color:#4a443c}
+.model .line + .line{margin-top:4px}
+.model .term{font-weight:700;color:#1f1b16}
+.model .ranks-note{color:#6b6258}
+.model b{font-weight:700;color:#1f1b16}
+/* Round-total ledger: small caps facts with tabular figures, separated by
+   thin rules — context for every number, never a bare metric tile. */
+.ledger{display:flex;flex-wrap:wrap;gap:0 18px;margin:12px 0 0;padding:8px 0 0;
+  border-top:1px solid #e3ddd2;list-style:none}
+.ledger li{font-size:11px;color:#8a7f72;letter-spacing:.02em}
+.ledger b{display:block;font-size:16px;font-weight:600;color:#1f1b16;
+  font-variant-numeric:tabular-nums;letter-spacing:0;line-height:1.15}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:14px}
+thead th{text-align:left;font-weight:700;color:#8a7f72;font-size:9.5px;
+  letter-spacing:.08em;text-transform:uppercase;padding:0 8px 6px;border-bottom:1px solid #d8cfc0}
 thead th.num,tbody td.num{text-align:right;font-variant-numeric:tabular-nums}
-tbody td{padding:7px 8px;border-bottom:1px solid #efe9dd;vertical-align:top}
+tbody td{padding:8px;border-bottom:1px solid #efe9dd;vertical-align:middle}
 tbody tr:last-child td{border-bottom:0}
+.rank{color:#a89e90;font-variant-numeric:tabular-nums;font-weight:600;width:1.4em}
 .who{font-weight:600}
 .id{display:block;font:10px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace;color:#a89e90;margin-top:1px}
 .tag{display:inline-block;font-size:10.5px;font-weight:600;padding:1px 8px;border-radius:999px;white-space:nowrap}
@@ -801,9 +838,24 @@ tbody tr:last-child td{border-bottom:0}
 .metrics .ok{color:#3c6b2f;font-weight:600}
 .metrics .no{color:#9a3b2f;font-weight:600}
 .metrics b{color:#1f1b16;font-weight:600}
-.big{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.big{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .sub{color:#8a7f72;font-size:10.5px}
-.notes{margin:12px 0 0;padding:0;list-style:none;font-size:11px;color:#8a7f72}
+/* Role split: imposter vs crew as distinct, scannable counts rather than a
+   "·"-joined string. A muted count reads as "none this round". */
+.roles{display:flex;flex-wrap:wrap;gap:6px}
+.role{display:inline-flex;align-items:baseline;gap:5px;font-size:11px;
+  padding:1px 8px 2px;border-radius:999px;background:#efe9dd;color:#6b6258;white-space:nowrap}
+.role .rn{font-weight:700;font-variant-numeric:tabular-nums;color:#1f1b16}
+.role.imp{background:#f3e6d8;color:#8a5b2a}
+.role.imp .rn{color:#8a5b2a}
+.role.crew{background:#e7f0e4;color:#3c6b2f}
+.role.crew .rn{color:#3c6b2f}
+.role.zero{background:#f1ece2;color:#a89e90}
+.role.zero .rn{color:#a89e90}
+.games{font-size:10.5px;color:#a89e90;margin-top:3px}
+.empty{padding:14px 8px;color:#8a7f72;font-style:italic;text-align:center}
+.notes{margin:14px 0 0;padding:9px 0 0;border-top:1px solid #efe9dd;
+  list-style:none;font-size:11px;color:#8a7f72}
 .notes li{padding:1px 0}
 """
 
@@ -847,44 +899,121 @@ def _metrics_inline(steps: list[dict[str, Any]]) -> str:
     return " · ".join(parts)
 
 
-def _render_html(title: str, rule: str, entrants: list[dict[str, Any]], notes: list[str], *, mode: str) -> str:
-    """Compact scoreboard HTML. ``mode`` is 'gate' (pass/fail skills) or 'wins'."""
+def _role_pill(label: str, count: int, kind: str) -> str:
+    """One role count as a distinct, scannable pill (muted when zero)."""
+    cls = kind if count else "zero"
+    return f'<span class="role {cls}"><span class="rn">{count}</span> {_html.escape(label)}</span>'
+
+
+def _wins_breakdown_cell(e: dict[str, Any]) -> str:
+    """Imposter/crew wins as distinct pills + a quiet games line.
+
+    Falls back to the flat ``summary`` string only when the structured role
+    counts aren't supplied (keeps older callers working).
+    """
+    imp = e.get("imposter_wins")
+    crew = e.get("crew_wins")
+    if imp is None and crew is None:
+        return _html.escape(str(e.get("summary") or ""))
+    imp = int(imp or 0)
+    crew = int(crew or 0)
+    eps = int(e.get("episodes_counted") or 0)
+    pills = _role_pill("as imposter", imp, "imp") + _role_pill("as crew", crew, "crew")
+    games = f'<div class="games">across {eps} game{"" if eps == 1 else "s"} this round</div>'
+    return f'<div class="roles">{pills}</div>{games}'
+
+
+def _ledger_html(stats: list[dict[str, str]] | None) -> str:
+    """Round-total facts as a small caps ledger: each number gets a label."""
+    if not stats:
+        return ""
+    items = "".join(
+        f'<li><b>{_html.escape(str(s.get("value", "")))}</b>{_html.escape(str(s.get("label", "")))}</li>'
+        for s in stats
+    )
+    return f'<ul class="ledger">{items}</ul>'
+
+
+def _model_html(scoring: dict[str, str] | None, rule: str) -> str:
+    """The scoring model: a defined term + how the standings rank.
+
+    ``scoring`` carries {term, definition, ranks?}; absent that, the plain
+    ``rule`` sentence is shown so the frame is never empty of explanation.
+    """
+    if not scoring:
+        return f'<div class="model"><p class="line">{_html.escape(rule)}</p></div>'
+    term = _html.escape(str(scoring.get("term", "")))
+    definition = _html.escape(str(scoring.get("definition", "")))
+    lines = f'<p class="line"><span class="term">{term}</span> {definition}</p>'
+    ranks = scoring.get("ranks")
+    if ranks:
+        lines += f'<p class="line ranks-note">{_html.escape(str(ranks))}</p>'
+    return f'<div class="model">{lines}</div>'
+
+
+def _render_html(
+    title: str,
+    rule: str,
+    entrants: list[dict[str, Any]],
+    notes: list[str],
+    *,
+    mode: str,
+    eyebrow: str = "",
+    scoring: dict[str, str] | None = None,
+    summary_stats: list[dict[str, str]] | None = None,
+) -> str:
+    """Scoreboard HTML. ``mode`` is 'gate' (pass/fail skills) or 'wins'.
+
+    ``eyebrow`` is the small uppercase kicker above the serif title; ``scoring``
+    structures the "how it's scored" model (term/definition/ranks); and
+    ``summary_stats`` is the round-total ledger (each {value,label}).
+    """
+    colspan = 3
     rows = []
     for i, e in enumerate(entrants):
         who, sid = _entrant_label(e, i)
         who_cell = f'<span class="who">{who}</span><span class="id">{_html.escape(sid)}</span>'
+        rank_cell = f'<td class="rank">{i + 1}</td>'
         if mode == "wins":
             wins = e.get("score")
             wins_txt = _fmt(wins) if wins is not None else "0"
             rows.append(
-                f"<tr><td>{who_cell}</td>"
+                f"<tr>{rank_cell}<td>{who_cell}</td>"
                 f'<td class="num"><span class="big">{wins_txt}</span></td>'
-                f'<td class="metrics">{_html.escape(str(e.get("summary") or ""))}</td></tr>'
+                f'<td class="metrics">{_wins_breakdown_cell(e)}</td></tr>'
             )
         else:
             passed = e.get("passed")
             tag = f'<span class="tag {"pass" if passed else "hold"}">{_html.escape(str(e.get("outcome", "")))}</span>'
             rows.append(
-                f"<tr><td>{who_cell}</td>"
+                f"<tr>{rank_cell}<td>{who_cell}</td>"
                 f"<td>{tag}</td>"
                 f'<td class="metrics">{_metrics_inline(e.get("steps", []))}</td></tr>'
             )
     head = (
-        "<th>Player</th><th class=num>Wins</th><th>Result</th>"
+        '<th class="rank">#</th><th>Player</th><th class="num">Win points</th><th>This round\u2019s wins</th>'
         if mode == "wins"
-        else "<th>Player</th><th>Verdict</th><th>Skills</th>"
+        else '<th class="rank">#</th><th>Player</th><th>Verdict</th><th>Skill gate</th>'
+    )
+    body = (
+        "".join(rows)
+        if rows
+        else f'<tr><td class="empty" colspan="{colspan + 1}">No entries scored yet.</td></tr>'
     )
     notes_html = (
         '<ul class="notes">' + "".join(f"<li>\u00b7 {_html.escape(n)}</li>" for n in notes) + "</ul>"
         if notes
         else ""
     )
+    eyebrow_html = f'<p class="eyebrow">{_html.escape(eyebrow)}</p>' if eyebrow else ""
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
         f"<style>{_REPORT_CSS}</style></head><body>"
+        f"{eyebrow_html}"
         f"<h1>{_html.escape(title)}</h1>"
-        f'<p class="rule">{_html.escape(rule)}</p>'
-        f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        f"{_model_html(scoring, rule)}"
+        f"{_ledger_html(summary_stats)}"
+        f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
         f"{notes_html}</body></html>"
     )
 
@@ -958,14 +1087,39 @@ def build_qualifier_report(
         )
         for entrant, record in decisions_by_entrant.items()
     ]
+    promoted = sum(1 for e in entrants if e.get("passed"))
+    held = len(entrants) - promoted
     rule_description = (
         "Each new submission plays one 8-seat self-play qualifier game (run via an "
-        "experience request, evaluated from its parsed replay) AND is interviewed by the "
-        "commissioner's LLM about Crewrift voting strategy. A strict AND gate over the "
-        "skills below — including the interview — decides promotion: pass every skill and "
-        "the interview to advance to Competition, otherwise the submission does not qualify "
-        "and is re-evaluated on its next submission."
+        "experience request, evaluated from its parsed replay). The qualifier forces a "
+        "meeting so the policy always gets a chance to vote and talk; the replay's chat "
+        "is the LLM-enabled check — the policy must talk AND an LLM must grade that meeting "
+        "speech as genuine Crewrift conversation (not gibberish/canned). A strict AND gate "
+        "over the skills below decides promotion: pass every skill (including talking "
+        "genuinely in the forced meeting) to advance to Competition, otherwise the submission "
+        "does not qualify and is re-evaluated on its next submission."
     )
+    scoring = {
+        "term": "Promotion gate",
+        "definition": (
+            "a strict AND over three checks read from one self-play qualifier game — voting, "
+            "hunting, tasks. Voting is meeting participation AND the in-replay talk gate: when "
+            "the qualifier's forced meeting happens, the policy must vote/skip and talk speech "
+            "an LLM grades as genuine Crewrift conversation (a canned/gibberish string fails). "
+            "The content grade is resilient — if the grader LLM is unavailable it degrades to a "
+            "presence check, never blocking. Every check must pass."
+        ),
+        "ranks": (
+            "Clear all three and the policy is promoted straight to Competition; miss any one "
+            "and it is held, then re-evaluated on its next submission. No pass/fail counts "
+            "are tallied — qualification is the only verdict."
+        ),
+    }
+    summary_stats = [
+        {"value": str(len(entrants)), "label": "submissions evaluated"},
+        {"value": str(promoted), "label": "promoted to Competition"},
+        {"value": str(held), "label": "held for retry"},
+    ]
     return {
         "rule_id": "skill_gate",
         "rule_description": rule_description,
@@ -975,7 +1129,14 @@ def build_qualifier_report(
         # evidence (skill_gate), which the Observatory renders separately. The
         # entrants list is used solely to build the HTML below.
         "render_html": _render_html(
-            "Qualifier skill gate", rule_description, entrants, notes, mode="gate"
+            "Qualifier skill gate",
+            rule_description,
+            entrants,
+            notes,
+            mode="gate",
+            eyebrow="How the commissioner decides",
+            scoring=scoring,
+            summary_stats=summary_stats,
         ),
     }
 
@@ -983,20 +1144,31 @@ def build_qualifier_report(
 def build_competition_report(
     win_breakdown: list[dict[str, Any]],
     *,
+    games_scored: int | None = None,
     notes: list[str] | None = None,
 ) -> dict[str, Any]:
     """Structured + HTML observability report for a Competition (win-count) round.
 
     ``win_breakdown`` items: {policy_version_id, player_id?, wins, imposter_wins,
-    crew_wins, episodes_counted}.
+    crew_wins, episodes_counted}. ``games_scored`` is the round's count of
+    completed games (display only — used for the round-total ledger; when omitted
+    it falls back to the max per-entrant game count seen).
     """
     notes = notes or []
     entrants = []
+    total_points = 0
+    total_imposter = 0
+    total_crew = 0
+    max_eps = 0
     for row in win_breakdown:
         wins = int(row.get("wins", 0))
         imp = int(row.get("imposter_wins", 0))
         crew = int(row.get("crew_wins", 0))
         eps = int(row.get("episodes_counted", 0))
+        total_points += wins
+        total_imposter += imp
+        total_crew += crew
+        max_eps = max(max_eps, eps)
         entrants.append(
             {
                 "policy_version_id": row.get("policy_version_id"),
@@ -1005,18 +1177,54 @@ def build_competition_report(
                 "policy_label": row.get("policy_label"),
                 "outcome": f"{wins} win{'s' if wins != 1 else ''}",
                 "score": float(wins),
+                "imposter_wins": imp,
+                "crew_wins": crew,
+                "episodes_counted": eps,
+                # Retained for any consumer reading the structured entrant list.
                 "summary": f"{imp} as imposter · {crew} as crew · {eps} game{'s' if eps != 1 else ''}",
             }
         )
     entrants.sort(key=lambda e: -float(e.get("score") or 0))
+    games = games_scored if games_scored is not None else max_eps
+    # Honest scoring model. A "win point" is one winning seat, role-agnostic;
+    # the standings are ranked by OpenSkill MMR (NOT a raw all-time win sum), so
+    # we say so rather than implying the leaderboard is a cumulative win tally.
     rule_description = (
-        "Competition scores by WINS: one point per winning seat the entrant occupied this round, "
-        "role-agnostic. The leaderboard accumulates these per-round win totals all-time."
+        "Win points = one point for every seat this entrant occupied that won its game, "
+        "whether it won as the imposter or as crew. Standings are ranked by an OpenSkill "
+        "skill rating built from these per-round finishes — not a raw all-time win total — "
+        "so beating stronger fields counts for more."
     )
+    scoring = {
+        "term": "Win point",
+        "definition": (
+            "one point per winning seat the entrant held this round, role-agnostic — "
+            "imposter wins and crew wins both count."
+        ),
+        "ranks": (
+            "These per-round finishes feed each policy's OpenSkill rating (mu − 3σ); "
+            "the all-time leaderboard ranks by that rating, not by a raw win sum."
+        ),
+    }
+    summary_stats = [
+        {"value": str(games), "label": "games scored"},
+        {"value": str(total_points), "label": "win points awarded"},
+        {"value": f"{total_imposter} / {total_crew}", "label": "imposter / crew wins"},
+        {"value": str(len(entrants)), "label": "entrants ranked"},
+    ]
     return {
         "rule_id": "competition_wins",
         "rule_description": rule_description,
         "notes": notes,
         # HTML view only; per-entrant detail stays in result_metadata / events.
-        "render_html": _render_html("Competition \u2014 wins", rule_description, entrants, notes, mode="wins"),
+        "render_html": _render_html(
+            "Competition \u2014 winning players",
+            rule_description,
+            entrants,
+            notes,
+            mode="wins",
+            eyebrow="How the commissioner scored this round",
+            scoring=scoring,
+            summary_stats=summary_stats,
+        ),
     }

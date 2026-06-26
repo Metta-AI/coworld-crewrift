@@ -5,10 +5,16 @@
 The Crewrift Prime commissioner was reworked from a "Qualifiers staging division"
 model into an **event-driven qualification flow**. On a new submission the
 commissioner now: (1) runs a self-play *experience-request* game for the policy,
-(2) re-simulates the resulting `.bitreplay` into skill metrics, (3) runs a strict
-three-skill gate plus an optional out-of-band **LLM interview** hard gate, and
+(2) re-simulates the resulting `.bitreplay` into skill metrics (including a
+per-slot **chat-message count** read straight from the replay), (3) runs a strict
+three-skill gate whose voting check includes a **hard in-replay talk gate** ("a
+meeting occurred but the policy never talked → not LLM-enabled → fail") **plus an
+LLM content grade** of the meeting speech ("the policy talked, but an LLM judges
+the speech gibberish/canned → fail"), and
 (4) promotes a passing policy directly into the **Competition** division. There is
-no longer a Qualifiers staging division.
+no longer a Qualifiers staging division, and **no out-of-band LLM interviewer** —
+the "can it talk genuinely?" check is computed offline from the replay the
+commissioner already parses (presence count + an LLM grade of the chat text).
 
 The commissioner code is **complete and tested** (see
 `crewrift-prime/commissioner/`). This document covers the **platform-side**
@@ -22,8 +28,10 @@ changes still required — all in the sibling repo `../metta`, under
 
 ## Hard blockers
 
-These three items block qualification from working at all (blocker 3 only blocks
-the optional LLM interview gate, not base qualification).
+Blockers 1 and 2 are resolved; the former blocker 3 (LLM-enabled / "can it talk?"
+verification) is now handled **in-replay** by the commissioner — no platform launch
+seam is required. This section is kept as the record of what blocked qualification
+and how each was cleared.
 
 ### 1. Submission seam — `migrate_league` is one-shot and never re-fires per submission
 
@@ -79,25 +87,47 @@ This matches the platform contract:
 
 **No platform change needed.**
 
-### 3. Interview-mode container launch + address — blocks only the LLM interview gate
+### 3. "Is the policy LLM-enabled / can it talk?" — RESOLVED in-replay (no platform launch)
 
-**Problem.** There is **no platform capability** to launch a candidate player
-container in *interview mode*, nor to surface that container's address back to the
-commissioner. The commissioner reaches the player's interview websocket server
-(`coworld.interview.v1`, port **8770**) through an injectable transport provider
-that defaults to the env var `CREWRIFT_PRIME_INTERVIEW_ADDR`.
+**Status: handled entirely by the commissioner (2026-06-26).** Previously this was a
+hard blocker that proposed an out-of-band interview container (a separate websocket
+server per candidate); that whole stack has been **deleted** in both repos and replaced
+with a lightweight in-replay signal.
 
-**Fix (follow-up).** Build a **player-interview-mode launcher** analogous to
-`CommissionerContainer` (`src/metta/app_backend/.../container_lifecycle.py`
-~162–218): a k8s `Job` + `Service` running the **player** image with its command
-overridden to the manifest's `interview_run` (from
-`players/crewbot3000/coplayer_manifest.json`), exposing port **8770**. Then surface
-the in-cluster `Service` DNS to the commissioner. Recommended: a new per-candidate
-endpoint that returns the address. Alternatives: a static env var, or extend the
-xp-request response to carry it.
+The Crewrift `.bitreplay` already records meeting chat, and the bundled Nim expander
+(`tools/expand_replay.nim`) already emits a per-slot `chat` event per message. The
+commissioner now folds those into a per-slot `chat_messages` COUNT plus a per-slot
+`chat_texts` TEXT array (`crewrift-prime/commissioner/replay_parser.py`). The voting
+verdict (`decision.py`'s `_voting_verdict`) applies a **two-layer talk gate**:
 
-**Until then:** ship with `CREWRIFT_PRIME_INTERVIEW_ENABLED=0`, which skips the
-interview gate (neutral pass). Base qualification (skill gate) is unaffected.
+1. **Presence (cheap):** when a meeting occurred AND the chat signal is available AND
+   the policy's talk count is 0, voting FAILS ("meeting occurred but policy never
+   talked — not LLM-enabled").
+2. **Content (LLM-graded):** the commissioner's I/O layer (`qualify_submission`)
+   concatenates the candidate's meeting speech from `chat_texts` (self-play → all
+   seats) and asks an LLM (`crewrift-prime/commissioner/chat_grader.py`, a stdlib
+   `urllib` Anthropic client recovered from the deleted interviewer — NO websocket /
+   riddle / container) whether it is genuine Crewrift conversation. A meeting with
+   chat present but graded not-genuine (gibberish/canned) FAILS too. This closes the
+   loophole where a policy emits a canned `print("gg")` and passes a count-only gate.
+   `decision.py` stays PURE — the commissioner computes the boolean and feeds it in.
+
+The grade is **resilient**: disabled (`CREWRIFT_PRIME_GRADE_CHAT_CONTENT=0`), no API
+key, or an LLM error → the commissioner passes `None` and the gate degrades to the
+presence check (talked → pass) — a grader hiccup NEVER blocks qualification. Talking
+genuinely also counts as meeting participation.
+
+The `scn_qualifier` variant is tuned (config-only) to make a meeting near-certain
+(`killCooldownTicks: 1`, `buttonCalls: 8`, `buttonResetsKillCooldowns: true`, long
+`maxTicks`). Crewrift has **no config knob that deterministically forces a meeting**
+(see `GameConfig` in `src/crewrift/sim.nim`), so a fully-guaranteed meeting would need
+an engine/harness change (a forced emergency on a tick) — intentionally not done.
+
+**No platform support required**, **no game re-cert** (the chat is already in the
+replay and already emitted by the expander; only the commissioner parser/decision
+changed). All `COWORLD_INTERVIEW_*` platform settings, the `interview_container.py`
+launcher, the generic interviewer image/service, and the per-candidate interview
+isolation in the qualify pass have been **removed**.
 
 ---
 
@@ -122,8 +152,8 @@ game repo's `tools/expand_replay.nim`, copy it into the image, and set
 Commissioner containers currently get a sanitized, plaintext-only env: 
 `_validated_public_env` (`container_lifecycle.py` ~392–400) strips private keys,
 and commissioners run with `automount_service_account_token=False`. There is no
-safe way to pass secrets — `SOFTMAX_API_TOKEN`, `ANTHROPIC_API_KEY`,
-`CREWRIFT_PRIME_INTERVIEW_API_KEY` — through the plaintext manifest env.
+safe way to pass secrets — `SOFTMAX_API_TOKEN`, `ANTHROPIC_API_KEY` — through the
+plaintext manifest env.
 
 **Fix.** Add a **k8s-Secret injection mechanism** for commissioner containers
 (mount/`envFrom` a Secret) so these can be supplied without landing in the
@@ -172,18 +202,28 @@ These go on `crewrift-prime/coworld_manifest.crewrift_prime.json` →
 | `CREWRIFT_PRIME_EXPAND_REPLAY_CMD` | Command to expand a `.bitreplay` (Nim expander) | requires bundled binary (dep A) |
 | `CREWRIFT_PRIME_GAME_DIR` | Working dir the expander runs in | |
 | `SOFTMAX_API_TOKEN` | Platform API auth | **secret** (needs dep B) |
-| `ANTHROPIC_API_KEY` | LLM scorer auth | **secret** (needs dep B) |
-| `CREWRIFT_PRIME_INTERVIEW_API_KEY` | Interview LLM/scorer auth | **secret** (needs dep B) |
-| `CREWRIFT_PRIME_INTERVIEW_MODEL` | LLM model for interview scoring | |
-| `CREWRIFT_PRIME_INTERVIEW_ENABLED` | Master switch for interview gate | **`0` for first light** |
-| `CREWRIFT_PRIME_INTERVIEW_MIN` | Interview pass threshold | |
-| `CREWRIFT_PRIME_INTERVIEW_ADDR` | Default interview websocket address | until launcher exists (blocker 3) |
 | `CREWRIFT_PRIME_QUALIFIER_EPISODES` | Episodes per qualifier xp-request | |
-| `CREWRIFT_PRIME_INTERVIEW_FALLBACK` | Use fallback question pool on LLM failure | default **on** |
-| `CREWRIFT_PRIME_INTERVIEW_AUTOPASS_ON_LLM_FAIL` | Auto-pass a received answer when scorer LLM fails | default **on** |
 | `CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN` | (optional) voting skill threshold | |
 | `CREWRIFT_PRIME_HUNT_KILLS_MIN` | (optional) hunting skill threshold | |
 | `CREWRIFT_PRIME_TASK_TASKS_MIN` | (optional) tasks skill threshold | |
+| `CREWRIFT_PRIME_GRADE_CHAT_CONTENT` | Enable the LLM **content** grade of meeting speech (default ON; `0` = presence-only) | non-secret; set in manifest |
+| `CREWRIFT_PRIME_INTERVIEW_MODEL` | Anthropic model for the chat content grader | non-secret; set in manifest |
+| `CREWRIFT_PRIME_INTERVIEW_API_KEY` / `ANTHROPIC_API_KEY` | Chat-grader LLM key | **secret** — injected via the k8s `crewrift-prime-commissioner-secrets` (dep B); NEVER in the manifest |
+| `CREWRIFT_PRIME_GRADE_CHAT_AUTOPASS_ON_LLM_FAIL` | (optional) on LLM error, degrade to presence-only quietly (default ON) | non-secret |
+
+> **Resiliency:** content grading NEVER disqualifies on an LLM problem. With
+> `CREWRIFT_PRIME_GRADE_CHAT_CONTENT=1` (default) the commissioner LLM-grades the
+> candidate's meeting speech; if the key is absent, the grader errors, or grading
+> is disabled, the talk gate **degrades to the presence check** (talked → pass).
+> Only a meeting with NO chat, or chat the LLM affirmatively judges not-genuine
+> (gibberish/canned), fails the voting check.
+
+> **Removed:** the out-of-band interviewer transport (`CREWRIFT_PRIME_INTERVIEW_ADDR`,
+> the websocket riddle Q&A) and the platform's `COWORLD_INTERVIEW_*` settings — the
+> "can it talk?" check is the in-replay talk gate (presence + LLM content grade)
+> inside the voting skill. The grader REUSES the secret env names
+> `CREWRIFT_PRIME_INTERVIEW_API_KEY` / `ANTHROPIC_API_KEY` / `CREWRIFT_PRIME_INTERVIEW_MODEL`
+> for the offline replay-speech grade — no live player connection.
 
 ---
 
@@ -192,10 +232,14 @@ These go on `crewrift-prime/coworld_manifest.crewrift_prime.json` →
 1. **Crewrift Prime seed config without `qualifiers_division_name`** (new
    `social_deduction` template branch); drain any existing Qualifiers memberships
    so the migration can archive the old division.
-2. **Commissioner env + Nim expander + secret injection**, interview gate **OFF**
-   (`CREWRIFT_PRIME_INTERVIEW_ENABLED=0`): bundle the `crewrift-expand-replay`
-   binary (dep A), resolve k8s-Secret injection (dep B), set the env table above.
+2. **Commissioner env + Nim expander + secret injection:** bundle the
+   `crewrift-expand-replay` binary (dep A), resolve k8s-Secret injection (dep B),
+   set the env table above.
 3. **Add the per-submission migrate trigger** (blocker 1) so submissions actually
    get evaluated.
-4. **Follow-up:** build the interview-mode launcher + address surface (blocker 3),
-   then flip `CREWRIFT_PRIME_INTERVIEW_ENABLED=1`.
+4. **Talk gate (in-replay, landed):** no platform work — the voting skill already
+   fails a policy that never talks in the qualifier's forced meeting. The
+   `scn_qualifier` variant is tuned to make a meeting near-certain; a
+   fully-guaranteed meeting would need an engine/harness change (a forced emergency
+   on a tick), which is intentionally not done. No interviewer image, container, or
+   `COWORLD_INTERVIEW_*` / `CREWRIFT_PRIME_INTERVIEW_*` config is needed.

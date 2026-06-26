@@ -99,6 +99,7 @@ from commissioners.common.utils import (
 )
 
 from game_results_loader import coerce_results_schema
+from chat_grader import concat_candidate_chat, content_grading_enabled, grade_chat_content
 from mmr import MMR_PLACEMENT_MIN_GAMES, RatedRoundResult, rank_by_mmr
 from decision import (
     DECISION_LOG_TAG,
@@ -106,14 +107,7 @@ from decision import (
     SKILL_GATE_STAGE_ID,
     build_competition_report,
     count_competition_wins,
-    evaluate_combined_game_with_interview,
-)
-from interview import (
-    InterviewInfraError,
-    InterviewResult,
-    InterviewTransport,
-    run_interview,
-    transport_from_address,
+    evaluate_combined_game,
 )
 from replay_parser import ReplayParseError, parse_replay_metrics
 from xp_request_client import XpRequestClient, XpRequestError, XpRequestInfraError, XpRequestRun
@@ -226,33 +220,6 @@ _INFRA_REASON = (
     "expansion failed — infrastructure, not a policy crash) — holding for retry."
 )
 
-# Interview hard gate (2026-06-25): in addition to the three skills, every
-# candidate must PASS an out-of-band LLM interview about Crewrift voting strategy
-# (see commissioner/interview.py + the player's coworld/interview_server.py). An
-# interview INFRA failure (no interviewer LLM key, the player interview server
-# unreachable, a timeout) HOLDS for retry, exactly like an xp-request infra
-# failure — it never DQs.
-#
-# PLATFORM SUPPORT REQUIRED (the launch seam): to interview a candidate the
-# commissioner must launch (or ask the platform to launch) the candidate's
-# container in INTERVIEW MODE (its alternate entrypoint runs the websocket
-# SERVER) and obtain its reachable address. The investigation found NO existing
-# way for the commissioner to get a container address from the xp-request/k8s
-# dispatch machinery. So this is wired behind an injectable provider
-# (``_interview_transport_provider``): the DEFAULT reads the address from an env
-# var the platform is expected to populate (``CREWRIFT_PRIME_INTERVIEW_ADDR``),
-# and tests inject a mock. Until the platform implements the launch+address
-# wiring, set ``CREWRIFT_PRIME_INTERVIEW_ADDR`` (e.g. ``host:8770``) to point at a
-# running interview-mode container, or disable the gate with
-# ``CREWRIFT_PRIME_INTERVIEW_ENABLED=0`` while the platform support lands.
-_INTERVIEW_ENABLED = os.getenv("CREWRIFT_PRIME_INTERVIEW_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
-_INTERVIEW_ADDR_ENV = "CREWRIFT_PRIME_INTERVIEW_ADDR"
-_INTERVIEW_REASON = (
-    "Interview could not be conducted (no interviewer LLM key, the candidate's "
-    "interview server was unreachable, or it timed out — infrastructure, not a "
-    "policy failure) — holding for retry."
-)
-
 
 def _emit_decision_log(payload: dict) -> None:
     """Write one greppable COMMISSIONER_DECISION line to stdout (hosted log tab)."""
@@ -317,38 +284,10 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     # Lazily-created xp-request client (network I/O). Injectable for tests.
     _xp_client: XpRequestClient | None = None
 
-    # Injectable interview-transport provider: given a membership, launch/locate
-    # the candidate's interview-mode container and return a connected
-    # InterviewTransport (or raise InterviewInfraError -> hold). Tests inject a
-    # mock; the default uses the platform-populated address env var.
-    _interview_transport_provider: Any = None
-    # Injectable interviewer LLM (AnthropicRestClient-like). Tests inject a fake
-    # so no Anthropic call happens; default builds one from the environment.
-    _interview_llm: Any = None
-
     def _xp_request_client(self) -> XpRequestClient:
         if self._xp_client is None:
             self._xp_client = XpRequestClient()
         return self._xp_client
-
-    def _interview_transport(self, membership: MembershipSnapshot) -> InterviewTransport:
-        """Build/locate the interview transport for a candidate (the launch seam).
-
-        Default behavior (no provider injected): read the candidate's interview
-        server address from ``CREWRIFT_PRIME_INTERVIEW_ADDR`` (the platform must
-        launch the container in interview mode and populate this). Raises
-        :class:`InterviewInfraError` when no address is available so the entrant
-        HOLDS for retry rather than being disqualified.
-        """
-        if self._interview_transport_provider is not None:
-            return self._interview_transport_provider(membership)
-        address = os.getenv(_INTERVIEW_ADDR_ENV, "").strip()
-        if not address:
-            raise InterviewInfraError(
-                f"no interview server address ({_INTERVIEW_ADDR_ENV} unset): the platform "
-                "must launch the candidate container in interview mode and provide its address"
-            )
-        return transport_from_address(address)
 
     def _filler_policy_version_ids(self, league_id: Any) -> list[UUID]:
         """Resolve the filler policy_version_id set for a round (env > API > empty).
@@ -589,47 +528,36 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             # episode -> genuine non-completion (crash DQ).
             return self._crash_dq_event(membership, run)
 
-        # Interview hard gate: run the out-of-band LLM interview. An interview
-        # INFRA failure holds for retry (never DQ), exactly like an xp-request
-        # infra failure. When the gate is disabled (platform launch not yet
-        # wired) the interview is skipped and treated as a pass.
-        interview: InterviewResult | None = None
-        if _INTERVIEW_ENABLED:
-            try:
-                interview = self._run_interview(membership)
-            except InterviewInfraError as exc:
-                return self._infra_hold_event(membership, f"interview failed: {exc}", interview=True)
-
-        if interview is None:
-            # Gate disabled -> a neutral pass so qualification still works while
-            # the platform launch wiring lands (documented in the README).
-            record = evaluate_combined_game_with_interview(
-                game_results, 1.0, interview_detail="interview gate disabled (skipped)"
-            )
-            interview_meta: dict[str, Any] = {"interview_enabled": False}
-        else:
-            record = evaluate_combined_game_with_interview(
-                game_results,
-                interview.score,
-                interview_degraded=interview.degraded,
-                interview_detail=(interview.grader_reason if interview.auto_passed else None),
-            )
-            interview_meta = {"interview_enabled": True, "interview": interview.to_dict()}
+        # The skill gate includes the in-replay talk check. The voting verdict
+        # FAILS when the qualifier's forced meeting occurred but the policy never
+        # talked (the cheap PRESENCE gate). On top of that, when content grading
+        # is enabled and an LLM key is available, we LLM-GRADE the candidate's
+        # actual meeting speech: a policy that "talked" only canned/gibberish text
+        # fails the content check too. The LLM call lives in chat_grader (I/O);
+        # decision.py stays pure and only consumes the boolean. Resilient: a
+        # disabled/absent/erroring grader returns None and we fall back to the
+        # presence gate (talked -> pass) — a grader hiccup NEVER blocks a candidate.
+        chat_content_passed, chat_content_detail = self._grade_chat_content(game_results)
+        record = evaluate_combined_game(
+            game_results,
+            chat_content_passed=chat_content_passed,
+            chat_content_detail=chat_content_detail,
+        )
 
         _emit_decision_log(
             {
                 "policy_version_id": policy_version_id,
                 "xreq_id": run.xreq_id,
                 "single_game": True,
-                **interview_meta,
+                "chat_content_passed": chat_content_passed,
                 **record.to_dict(),
             }
         )
         evidence = ModelsPolicyMembershipEventEvidence(
             type=SKILL_GATE_EVIDENCE_TYPE,
-            title="Qualifier skill gate (xp-request replay + LLM interview)",
+            title="Qualifier skill gate (xp-request replay)",
             summary=record.reason,
-            metadata={"xreq_id": run.xreq_id, **interview_meta, **record.to_dict()},
+            metadata={"xreq_id": run.xreq_id, **record.to_dict()},
         )
         if record.passed and target_division_id is not None:
             return ModelsPolicyMembershipEventChange(
@@ -653,6 +581,39 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             notes=record.reason,
             evidence=[evidence],
         )
+
+    def _grade_chat_content(
+        self, game_results: dict | None
+    ) -> tuple[bool | None, str | None]:
+        """LLM-grade the candidate's meeting speech (I/O). Resilient: None degrades.
+
+        In 8-seat SELF-PLAY the candidate occupies EVERY seat, so we concatenate
+        all seats' ``chat_texts`` utterances and ask the grader whether that speech
+        is genuine Crewrift conversation (real LLM reasoning) vs canned/gibberish.
+
+        Returns ``(chat_content_passed, detail)``:
+          - ``(None, None)`` when content grading is disabled, no chat text exists,
+            the grader LLM is unavailable (no key), or the LLM errored — the caller
+            then falls back to the cheap presence gate (never a DQ).
+          - ``(True/False, reason)`` when the LLM graded the speech.
+        """
+        if game_results is None or not content_grading_enabled():
+            return None, None
+        chat_text = concat_candidate_chat(game_results)  # self-play -> all seats
+        if not chat_text:
+            return None, None
+        try:
+            result = grade_chat_content(chat_text)
+        except Exception as exc:  # noqa: BLE001  (grader must never crash the gate)
+            print(
+                f"WARNING: crewrift-prime chat content grade raised ({exc}); "
+                "falling back to presence gate (no DQ).",
+                flush=True,
+            )
+            return None, None
+        if result is None:
+            return None, None
+        return result.passed, result.reason or None
 
     def _game_results_from_run(
         self, run: XpRequestRun
@@ -681,32 +642,13 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             return coerce_results_schema(game_results), None
         return None, last_error or "no parseable completed episode replay"
 
-    def _run_interview(self, membership: MembershipSnapshot) -> InterviewResult:
-        """Conduct the out-of-band LLM interview for a candidate (I/O lives here).
-
-        Locates/launches the candidate's interview server (the launch seam),
-        generates a riddle, asks the player, and scores the answer. Resilient to
-        interviewer-LLM failures (see :func:`interview.run_interview`): a
-        riddle-generation LLM failure falls back to a built-in question pool, and
-        a scorer-LLM failure AFTER an answer was received auto-passes (both ON by
-        default). Only a TRANSPORT/player failure (unreachable server, timeout, no
-        answer) raises :class:`InterviewInfraError` so the caller holds-for-retry.
-        The pure verdict combination happens in decision.py.
-        """
-        transport = self._interview_transport(membership)
-        return run_interview(
-            transport,
-            llm=self._interview_llm,
-            seed=str(membership.policy_version_id),
-        )
-
     def _infra_hold_event(
-        self, membership: MembershipSnapshot, detail: str, *, interview: bool = False
+        self, membership: MembershipSnapshot, detail: str
     ) -> ModelsPolicyMembershipEventChange:
         """An xp-request/replay infra failure -> HOLD qualifying (never DQ)."""
-        reason_text = _INTERVIEW_REASON if interview else _INFRA_REASON
-        evidence_type = "crewrift_prime_interview_failure" if interview else "crewrift_prime_dispatch_failure"
-        evidence_title = "Interview infrastructure failure" if interview else "Qualifier infrastructure failure"
+        reason_text = _INFRA_REASON
+        evidence_type = "crewrift_prime_dispatch_failure"
+        evidence_title = "Qualifier infrastructure failure"
         _emit_decision_log(
             {
                 "policy_version_id": str(membership.policy_version_id),
@@ -874,6 +816,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             observability=CommissionerRoundReport.model_validate(
                 build_competition_report(
                     breakdown,
+                    games_scored=len(games),
                     notes=[f"Scored {len(games)} completed game(s) this round."],
                 )
             ),
