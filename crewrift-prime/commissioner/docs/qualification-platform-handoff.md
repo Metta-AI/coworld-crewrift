@@ -22,8 +22,9 @@ changes still required — all in the sibling repo `../metta`, under
 
 ## Hard blockers
 
-These three items block qualification from working at all (blocker 3 only blocks
-the optional LLM interview gate, not base qualification).
+Blockers 1 and 2 are resolved; blocker 3 (the optional LLM interview gate) is now
+implemented on the platform side (Gap 3 — see below). This section is kept as the record
+of what blocked qualification and how each was cleared.
 
 ### 1. Submission seam — `migrate_league` is one-shot and never re-fires per submission
 
@@ -79,25 +80,53 @@ This matches the platform contract:
 
 **No platform change needed.**
 
-### 3. Interview-mode container launch + address — blocks only the LLM interview gate
+### 3. Interview-mode container launch + address — RESOLVED (platform side, Gap 3)
 
-**Problem.** There is **no platform capability** to launch a candidate player
-container in *interview mode*, nor to surface that container's address back to the
-commissioner. The commissioner reaches the player's interview websocket server
-(`coworld.interview.v1`, port **8770**) through an injectable transport provider
-that defaults to the env var `CREWRIFT_PRIME_INTERVIEW_ADDR`.
+**Status: implemented in `../metta` (2026-06-25).** Documented here as the now-cleared
+final blocker.
 
-**Fix (follow-up).** Build a **player-interview-mode launcher** analogous to
-`CommissionerContainer` (`src/metta/app_backend/.../container_lifecycle.py`
-~162–218): a k8s `Job` + `Service` running the **player** image with its command
-overridden to the manifest's `interview_run` (from
-`players/crewbot3000/coplayer_manifest.json`), exposing port **8770**. Then surface
-the in-cluster `Service` DNS to the commissioner. Recommended: a new per-candidate
-endpoint that returns the address. Alternatives: a static env var, or extend the
-xp-request response to carry it.
+The platform now launches a candidate player container in *interview mode* and surfaces
+its address to the commissioner:
 
-**Until then:** ship with `CREWRIFT_PRIME_INTERVIEW_ENABLED=0`, which skips the
-interview gate (neutral pass). Base qualification (skill gate) is unaffected.
+- **Launcher.** `InterviewContainer`
+  (`src/metta/app_backend/v2/container_commissioner/interview_container.py`) mirrors
+  `CommissionerContainer`: it creates a k8s `Job` + ClusterIP `Service` running the
+  **candidate's** image (resolved from its `PolicyVersion.container_image_id`) with the
+  command overridden to the interview entrypoint and the interview port (default **8770**)
+  exposed. It waits for the Service to have a ready endpoint, exposes the in-cluster DNS
+  address (`<svc>.<namespace>.svc.cluster.local:8770`), and tears the Job (+owned Service)
+  down afterward.
+- **Run command / port** are NOT carried in any platform-stored manifest (a player's
+  `coplayer_manifest.json` is documentary and ignored by the backend), so they come from
+  `JobDispatchConfig` (`COWORLD_INTERVIEW_RUN` / `COWORLD_INTERVIEW_PORT` /
+  `COWORLD_INTERVIEW_PORT_ENV`), defaulting to the crewbot3000 contract
+  (`python -m players.crewrift.crewbot3000.coworld.interview_server`, port 8770,
+  `CREWRIFT_INTERVIEW_PORT`).
+- **Secret.** The interview LLM key (`ANTHROPIC_API_KEY` /
+  `CREWRIFT_PRIME_INTERVIEW_API_KEY`) is injected into the player interview container via
+  the same secretKeyRef mechanism (dep B), allowlisted by
+  `COWORLD_INTERVIEW_SECRET_ENV_KEYS` against the shared
+  `COWORLD_COMMISSIONER_SECRET_NAME` Secret.
+- **Address surfacing.** The per-submission qualify trigger
+  (`_run_container_commissioner_qualification` → `_qualify_league_with_optional_interview`,
+  `src/metta/app_backend/v2/pipeline.py`) processes **one candidate per commissioner boot**
+  when the platform gate `COWORLD_INTERVIEW_ENABLED=1`: for each eligible membership it
+  launches that candidate's interview container and injects its address as
+  `CREWRIFT_PRIME_INTERVIEW_ADDR` on the commissioner container, then runs the ungated
+  migrate body and tears both down.
+
+**Multi-candidate note / limitation.** The commissioner consumes a *single*
+`CREWRIFT_PRIME_INTERVIEW_ADDR` and interviews every pending membership in one
+`migrate_league` pass. To keep that single address correct, the platform qualifies one
+candidate per commissioner boot (the address always points at the candidate being
+qualified). If a league has multiple pending candidates, they are processed across
+separate boots in the same tick. A future optimization could mux multiple interview
+servers behind one address or extend the protocol to carry per-candidate addresses.
+
+**To turn it on:** set the platform `COWORLD_INTERVIEW_ENABLED=1`, add
+`COWORLD_INTERVIEW_SECRET_ENV_KEYS` (e.g. `ANTHROPIC_API_KEY` or
+`CREWRIFT_PRIME_INTERVIEW_API_KEY`), ensure the shared Secret carries that key, and keep
+the commissioner manifest `CREWRIFT_PRIME_INTERVIEW_ENABLED=1` (already flipped).
 
 ---
 
@@ -175,9 +204,9 @@ These go on `crewrift-prime/coworld_manifest.crewrift_prime.json` →
 | `ANTHROPIC_API_KEY` | LLM scorer auth | **secret** (needs dep B) |
 | `CREWRIFT_PRIME_INTERVIEW_API_KEY` | Interview LLM/scorer auth | **secret** (needs dep B) |
 | `CREWRIFT_PRIME_INTERVIEW_MODEL` | LLM model for interview scoring | |
-| `CREWRIFT_PRIME_INTERVIEW_ENABLED` | Master switch for interview gate | **`0` for first light** |
+| `CREWRIFT_PRIME_INTERVIEW_ENABLED` | Master switch for interview gate (commissioner side) | **`1`** (Gap 3 landed) |
 | `CREWRIFT_PRIME_INTERVIEW_MIN` | Interview pass threshold | |
-| `CREWRIFT_PRIME_INTERVIEW_ADDR` | Default interview websocket address | until launcher exists (blocker 3) |
+| `CREWRIFT_PRIME_INTERVIEW_ADDR` | Interview websocket address | **set by the platform per-candidate** (Gap 3); leave unset in the manifest |
 | `CREWRIFT_PRIME_QUALIFIER_EPISODES` | Episodes per qualifier xp-request | |
 | `CREWRIFT_PRIME_INTERVIEW_FALLBACK` | Use fallback question pool on LLM failure | default **on** |
 | `CREWRIFT_PRIME_INTERVIEW_AUTOPASS_ON_LLM_FAIL` | Auto-pass a received answer when scorer LLM fails | default **on** |
@@ -197,5 +226,12 @@ These go on `crewrift-prime/coworld_manifest.crewrift_prime.json` →
    binary (dep A), resolve k8s-Secret injection (dep B), set the env table above.
 3. **Add the per-submission migrate trigger** (blocker 1) so submissions actually
    get evaluated.
-4. **Follow-up:** build the interview-mode launcher + address surface (blocker 3),
-   then flip `CREWRIFT_PRIME_INTERVIEW_ENABLED=1`.
+4. **Interview gate (Gap 3, landed):** the platform launcher + per-candidate address
+   surface are implemented and the commissioner manifest is flipped to
+   `CREWRIFT_PRIME_INTERVIEW_ENABLED=1`. To activate end-to-end, also set the platform
+   `COWORLD_INTERVIEW_ENABLED=1`, add `COWORLD_INTERVIEW_SECRET_ENV_KEYS` (the interview
+   LLM key, e.g. `ANTHROPIC_API_KEY` or `CREWRIFT_PRIME_INTERVIEW_API_KEY`) and ensure the
+   shared `COWORLD_COMMISSIONER_SECRET_NAME` Secret carries that key. With
+   `COWORLD_INTERVIEW_ENABLED=0` (default) the commissioner sees no address and
+   infra-holds each candidate for retry — base qualification is unaffected because the
+   interview only HOLDS (never DQs) on a missing address.

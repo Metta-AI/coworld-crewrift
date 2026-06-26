@@ -789,7 +789,9 @@
         "CREWRIFT_PRIME_EXPAND_REPLAY_CMD": "/usr/local/bin/crewrift-expand-replay --format jsonl",
         "CREWRIFT_PRIME_GAME_DIR": "/opt/crewrift-game",
         "CREWRIFT_PRIME_QUALIFIER_EPISODES": "1",
-        "CREWRIFT_PRIME_INTERVIEW_ENABLED": "0"
+        "CREWRIFT_PRIME_INTERVIEW_ENABLED": "1",
+        "CREWRIFT_PRIME_INTERVIEW_MODEL": "claude-haiku-4-5-20251001",
+        "CREWRIFT_PRIME_INTERVIEW_MIN": "0.5"
       },
       "run": [],
       "name": "Crewrift Social Deduction Commissioner",
