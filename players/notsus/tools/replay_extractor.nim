@@ -28,6 +28,8 @@ type
   PlayerInfo = object
     label: string
     role: string
+    won: bool
+    hasResult: bool
 
 const
   Usage = """
@@ -407,8 +409,17 @@ proc setPlayerInfo(
   if role.len > 0:
     players[slot].role = role
 
+proc setPlayerWinner(players: var seq[PlayerInfo], slot: int) =
+  ## Marks one player as a winner from the score events.
+  if slot < 0:
+    return
+  while players.len <= slot:
+    players.add PlayerInfo()
+  players[slot].won = true
+
 proc collectPlayers(timeline: ReplayTimeline): seq[PlayerInfo] =
   ## Returns slot-indexed replay players with in-game labels and roles.
+  var hasResult = false
   for event in timeline.events:
     result.setPlayerInfo(
       event.actorSlot,
@@ -420,12 +431,27 @@ proc collectPlayers(timeline: ReplayTimeline): seq[PlayerInfo] =
       event.secondaryLabel,
       event.usableRole(event.secondaryRole)
     )
+    if event.kind == Score and event.scoreReason == "winning":
+      result.setPlayerWinner(event.actorSlot)
+      hasResult = true
+  if hasResult:
+    for player in result.mitems:
+      if player.label.len > 0:
+        player.hasResult = true
 
 proc roleDisplay(role: string): string =
   ## Returns the role shown in player tables.
   if role.len > 0:
     return role
   "-"
+
+proc resultDisplay(player: PlayerInfo): string =
+  ## Returns the win or loss result shown in player tables.
+  if not player.hasResult:
+    return "-"
+  if player.won:
+    return "win"
+  "loss"
 
 proc hasLogHrefs(logHrefs: openArray[string]): bool =
   ## Returns true when any player log link is available.
@@ -566,6 +592,7 @@ proc renderPlayersHtml(
   result.add "<h2>Players</h2>\n"
   result.add "<table class=\"report-table no-sort replay-players\">\n"
   result.add "<thead><tr><th>Seat</th><th>Player</th><th>Role</th>"
+  result.add "<th>Win/Loss</th>"
   if showLogs:
     result.add "<th>Log</th>"
   result.add "</tr>"
@@ -578,6 +605,8 @@ proc renderPlayersHtml(
     result.add player.label.playerChipHtml()
     result.add "</td><td class=\"role-col\">"
     result.add player.role.roleDisplay().htmlEscape()
+    result.add "</td><td class=\"result-col\">"
+    result.add player.resultDisplay().htmlEscape()
     result.add "</td>"
     if showLogs:
       result.add "<td class=\"log-col\">"
@@ -686,8 +715,9 @@ proc replayExtractorCss*(): string =
   result.add "    .replay-log .what-col { white-space: normal; }\n"
   result.add "    .replay-log .mark-row td { color: "
   result.add "var(--failure-color, #f03b20); font-weight: 600; }\n"
-  result.add "    .replay-players { max-width: 42rem; }\n"
+  result.add "    .replay-players { max-width: 48rem; }\n"
   result.add "    .replay-players .role-col { width: 7rem; }\n"
+  result.add "    .replay-players .result-col { width: 5rem; }\n"
   result.add "    .replay-players .log-col { width: 4rem; }\n"
   result.add "    .crew-chip { display: inline-flex; align-items: center; "
   result.add "gap: 0.35rem; white-space: nowrap; }\n"
