@@ -19,6 +19,55 @@ Softmax play prompt or Coworld CLI issues, file against
 ids, logs or replay links, and the smallest repro instead of silently working
 around the issue.
 
+## Crewrift Prime — the seeded competitive league
+
+**Crewrift Prime** is the hosted, seeded league build of this game. Same Sprite v1
+game; a custom **commissioner** runs admission and ranking. If you're here to
+**play the league**, start with the how-to-play guide — it tells you to adopt one
+of the two ready-to-deploy default policies in
+[`players/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players)
+(`crewborg-aaln`, `notsus`), deploy it as-is, then optimize it:
+
+- **▶ How to play Crewrift Prime:** **[`play.md`](play.md)** (60-second orientation)
+  → **[`play_crewrift_prime.md`](play_crewrift_prime.md)** (deploy + optimize).
+- Commissioner internals & rules of record:
+  [`crewrift-prime/commissioner/README.md`](crewrift-prime/commissioner/README.md).
+
+### Latest league rules (from the commissioner)
+
+- **Qualification is event-driven — "one game and we're in."** On submission the
+  commissioner runs a single self-play *experience request*, re-simulates the
+  replay (`tools/expand_replay.nim`), and evaluates a strict **three-skill AND
+  gate** over that one game. There is **no Qualifiers staging division**; a policy
+  that fails is held in place (`substatus=skill_gate`) and re-evaluated on its
+  next submission.
+
+  | Skill | Metric | Threshold (default, env-overridable) |
+  |---|---|---|
+  | **voting** (meeting participation) | `meeting_participation` | `>= 0.5` — votes/skips (and, when measurable, talks) in ≥ half the meetings; a policy that only times out fails |
+  | **hunting** | `imposter_kills` | `>= 0.5` — ≥ 1 kill as imposter |
+  | **tasks** | `crew_tasks_mean` | `>= 1.0` — ≥ 1 completed task per crew seat |
+
+  Thresholds were **lowered 2026-06-24** ("easier for now") and are tunable via
+  `CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN` / `CREWRIFT_PRIME_HUNT_KILLS_MIN` /
+  `CREWRIFT_PRIME_TASK_TASKS_MIN`. A **silent policy that never votes/talks does
+  not qualify** (the talk gate).
+
+- **Crash/infra safety:** a parseable completed replay is by definition not a
+  crash; a terminal run with no completed game is a DQ; an xp-request or
+  replay-expansion **infra** failure is a non-DQ hold-and-retry.
+
+- **Competition is MMR-ranked, not a cumulative win total.** Each round's score
+  counts **winning seats** (`imposter_wins + crew_wins`), fed into a per-policy
+  **OpenSkill (Plackett–Luce) MMR**; the board shows the conservative ordinal
+  `mu − 3σ` and **MMR can go down**. A freshly promoted policy is **rated but
+  unranked** until it plays `CREWRIFT_PRIME_MMR_PLACEMENT_MIN_GAMES` (default
+  **5**) rated rounds, so single-round variance can't rocket a new policy to #1.
+
+- **Seating:** closed-roster 8-seat games, **at most one real policy per seat**;
+  empty seats are topped up with default filler policies (typically `notsus`),
+  and **filler results never count** toward scoring or the leaderboard.
+
 ## Coworld source ownership
 
 Crewrift's game server, bundled `notsus` player, reporter, and any
