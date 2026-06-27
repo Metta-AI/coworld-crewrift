@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Path-prediction replay</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b22;--line:#283040;--fg:#e6edf3;--mut:#8b96a5;--accent:#58a6ff;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;}
+  header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  h1{font-size:14px;margin:0;font-weight:600;}
+  select,button{background:#0b0f14;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:4px 8px;font:inherit;}
+  button{cursor:pointer;} button:hover{border-color:var(--accent);}
+  .mut{color:var(--mut);}
+  #wrap{display:flex;gap:14px;padding:14px 16px;align-items:flex-start;}
+  #canvas{background:#0b0f14;border:1px solid var(--line);border-radius:6px;}
+  #side{width:300px;}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;margin-bottom:12px;}
+  .panel h2{font-size:11px;margin:0 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;}
+  table{width:100%;border-collapse:collapse;font-size:12px;}
+  td{padding:2px 4px;} td.p{text-align:right;color:var(--accent);font-weight:600;}
+  .bar{height:6px;background:#0b0f14;border-radius:3px;overflow:hidden;}
+  .bar>i{display:block;height:100%;background:var(--accent);}
+  #timeline{width:100%;}
+  .tag{font-size:11px;padding:1px 6px;border-radius:9px;}
+  .vis{background:#1d3a23;color:#3fb950;} .occ{background:#3a2f1d;color:#d29922;}
+</style>
+</head>
+<body>
+<header>
+  <h1>Path prediction</h1>
+  <span class="mut" id="epinfo">loading…</span>
+  <label>agent <select id="agent"></select></label>
+  <button id="play">▶ play</button>
+  <span class="mut">tick <b id="tick">—</b></span>
+  <span class="tag" id="visflag">—</span>
+</header>
+<div id="wrap">
+  <canvas id="canvas" width="900" height="480"></canvas>
+  <div id="side">
+    <div class="panel">
+      <h2>Predicted destinations (selected agent)</h2>
+      <table id="preds"><tbody></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Legend</h2>
+      <div class="mut">white ring = selected agent (true pos)<br>
+        filled dots = other players (red=imposter)<br>
+        blue lines = candidate routes, opacity ∝ probability<br>
+        ◇ = predicted position on the top route</div>
+    </div>
+  </div>
+</div>
+<input type="range" id="timeline" min="0" max="0" value="0" style="margin:0 16px;width:calc(100% - 32px);">
+<script>
+let META=null, FR=null, IDX=0, PLAYING=false, MAP=null, SCALE=1, OX=0, OY=0;
+const ROLECOLOR={imposter:"#f85149", crew:"#9aa7b4"};
+
+async function init(){
+  META = await (await fetch("/meta")).json();
+  MAP = META.map;
+  document.getElementById("epinfo").textContent =
+    `${MAP.map_name} · ${META.episode_id.slice(0,18)}… · ticks ${META.tick_min}–${META.tick_max}`;
+  const sel=document.getElementById("agent");
+  Object.entries(META.players).sort((a,b)=>a[0]-b[0]).forEach(([slot,p])=>{
+    if(p.role==='imposter' && slot==='0') return; // selecting our own agent is uninteresting
+    const o=document.createElement("option");
+    o.value=slot; o.textContent=`slot ${slot} · ${p.policy} [${p.role}]`;
+    sel.appendChild(o);
+  });
+  fitMap();
+  sel.onchange=loadAgent;
+  document.getElementById("timeline").oninput=e=>{IDX=+e.target.value; draw();};
+  document.getElementById("play").onclick=togglePlay;
+  await loadAgent();
+}
+
+function fitMap(){
+  const c=document.getElementById("canvas");
+  SCALE=Math.min(c.width/MAP.width, c.height/MAP.height);
+  OX=(c.width-MAP.width*SCALE)/2; OY=(c.height-MAP.height*SCALE)/2;
+}
+const sx=x=>OX+x*SCALE, sy=y=>OY+y*SCALE;
+
+async function loadAgent(){
+  const slot=document.getElementById("agent").value;
+  const d=await (await fetch("/predict?slot="+slot)).json();
+  FR=d.frames;
+  const tl=document.getElementById("timeline");
+  tl.max=FR.length-1; if(IDX>=FR.length) IDX=0; tl.value=IDX;
+  draw();
+}
+
+function drawMap(ctx){
+  ctx.clearRect(0,0,900,480);
+  ctx.lineWidth=1;
+  (MAP.rooms||[]).forEach(r=>{
+    ctx.strokeStyle="#283040"; ctx.fillStyle="#11161d";
+    ctx.fillRect(sx(r.x),sy(r.y),r.w*SCALE,r.h*SCALE);
+    ctx.strokeRect(sx(r.x),sy(r.y),r.w*SCALE,r.h*SCALE);
+    ctx.fillStyle="#3a444f"; ctx.font="9px monospace";
+    ctx.fillText(r.name, sx(r.x)+3, sy(r.y)+10);
+  });
+  ctx.fillStyle="#2b3a2b";
+  (MAP.tasks||[]).forEach(t=>ctx.fillRect(sx(t.x)-1,sy(t.y)-1,3,3));
+}
+
+function draw(){
+  if(!FR) return;
+  const f=FR[IDX], ctx=document.getElementById("canvas").getContext("2d");
+  drawMap(ctx);
+  const selSlot=document.getElementById("agent").value;
+
+  // candidate routes weighted by probability
+  (f.candidates||[]).forEach(c=>{
+    if(c.path.length<2) {
+      // single-waypoint straight shot: draw from predicted pos to dest
+    }
+    ctx.strokeStyle=`rgba(88,166,255,${Math.max(0.06,c.prob).toFixed(3)})`;
+    ctx.lineWidth=1+3*c.prob;
+    ctx.beginPath();
+    const pts=c.path;
+    ctx.moveTo(sx(pts[0][0]),sy(pts[0][1]));
+    for(let i=1;i<pts.length;i++) ctx.lineTo(sx(pts[i][0]),sy(pts[i][1]));
+    ctx.stroke();
+  });
+  // predicted position marker on the top route
+  if(f.candidates&&f.candidates[0]){
+    const pp=f.candidates[0].pred;
+    ctx.strokeStyle="#58a6ff"; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(sx(pp[0]),sy(pp[1])-5); ctx.lineTo(sx(pp[0])+5,sy(pp[1]));
+    ctx.lineTo(sx(pp[0]),sy(pp[1])+5); ctx.lineTo(sx(pp[0])-5,sy(pp[1])); ctx.closePath(); ctx.stroke();
+  }
+
+  // players
+  Object.entries(f.players).forEach(([slot,p])=>{
+    if(!p.alive) return;
+    const role=META.players[slot].role;
+    ctx.fillStyle=ROLECOLOR[role]||"#9aa7b4";
+    ctx.beginPath(); ctx.arc(sx(p.x),sy(p.y),4,0,7); ctx.fill();
+    if(slot===selSlot){ ctx.strokeStyle="#fff"; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(sx(p.x),sy(p.y),7,0,7); ctx.stroke(); }
+    if(slot==='0'){ ctx.strokeStyle="#f0c000"; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(sx(p.x),sy(p.y),6,0,7); ctx.stroke(); }
+  });
+
+  // sidebar
+  document.getElementById("tick").textContent=f.tick;
+  const vf=document.getElementById("visflag");
+  vf.textContent=f.visible?"VISIBLE":"occluded"; vf.className="tag "+(f.visible?"vis":"occ");
+  document.getElementById("preds").querySelector("tbody").innerHTML=
+    (f.candidates||[]).map(c=>`<tr><td>${c.label}</td><td style="width:70px"><div class="bar"><i style="width:${(c.prob*100).toFixed(0)}%"></i></div></td><td class="p">${(c.prob*100).toFixed(0)}</td></tr>`).join("");
+  document.getElementById("timeline").value=IDX;
+}
+
+function togglePlay(){
+  PLAYING=!PLAYING;
+  document.getElementById("play").textContent=PLAYING?"⏸ pause":"▶ play";
+  if(PLAYING) step();
+}
+function step(){
+  if(!PLAYING) return;
+  IDX=(IDX+2)%FR.length; draw();
+  setTimeout(step, 40);
+}
+init();
+</script>
+</body>
+</html>

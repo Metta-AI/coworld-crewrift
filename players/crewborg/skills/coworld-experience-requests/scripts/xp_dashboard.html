@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>XP-request dashboard</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#283040; --fg:#e6edf3; --mut:#8b96a5;
+          --good:#3fb950; --bad:#f85149; --warm:#d29922; --accent:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:18px; flex-wrap:wrap; position:sticky; top:0;
+           background:var(--bg); z-index:5; }
+  h1 { font-size:16px; margin:0; font-weight:600; }
+  .live { font-size:12px; padding:2px 8px; border-radius:10px; }
+  .live.ok { background:#1d3a23; color:var(--good); } .live.stale{ background:#3a1d1d; color:var(--bad);}
+  .mut { color:var(--mut); } .big{font-size:20px;font-weight:600;}
+  main { padding:18px 20px; display:flex; flex-direction:column; gap:22px; max-width:1200px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .panel h2 { font-size:13px; margin:0 0 12px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em;}
+  .bar { height:10px; background:#0b0f14; border-radius:5px; overflow:hidden; margin-top:6px;}
+  .bar > i { display:block; height:100%; background:var(--accent); }
+  .reqgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
+  .reqcard { border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { padding:5px 9px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child,td:first-child { text-align:left; }
+  th { color:var(--mut); font-weight:500; }
+  tr.me td { background:#15243a; }
+  .wr { font-weight:600; }
+  /* score strips */
+  .strip { display:grid; grid-template-columns:230px 1fr; align-items:center; gap:10px; margin:3px 0; }
+  .strip .name { font-size:12px; overflow:hidden; text-overflow:ellipsis; }
+  .track { position:relative; height:22px; background:#0b0f14; border-radius:4px; }
+  .dot { position:absolute; top:50%; width:7px; height:7px; border-radius:50%;
+         transform:translate(-50%,-50%); background:var(--accent); opacity:.55; }
+  .dot.win { background:var(--good); } .dot.loss{ background:var(--bad); }
+  .axis { display:grid; grid-template-columns:230px 1fr; gap:10px; color:var(--mut); font-size:11px; margin-top:6px;}
+  .axis .ticks{ display:flex; justify-content:space-between;}
+  /* heatmap */
+  .hm { overflow-x:auto; }
+  .cell { display:inline-block; min-width:62px; text-align:center; padding:6px 4px; border-radius:4px; font-size:12px;}
+  .empty { color:#39424f; }
+</style>
+</head>
+<body>
+<header>
+  <h1>XP-request dashboard</h1>
+  <span id="live" class="live stale">connecting…</span>
+  <span class="mut">done <b id="done" class="fg">0</b>/<b id="total">0</b>
+        (<b id="pct">0</b>%) · <b id="rate">0</b>/min · ETA <b id="eta">—</b></span>
+  <span class="mut">scored <b id="scored">0</b> · ops-filtered <b id="ops">0</b></span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Completion progress</h2>
+    <div class="bar"><i id="prog" style="width:0%"></i></div>
+    <div class="reqgrid" id="reqs" style="margin-top:12px"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Leaderboard — win-rate by player/policy (× role)</h2>
+    <table id="lb"><thead><tr>
+      <th>player (policy:v)</th><th>games</th><th>win%</th>
+      <th>crew win% (n)</th><th>imp win% (n)</th><th>score μ</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>Win-rate heatmap — overall · crew · imposter</h2>
+    <div class="hm" id="heat"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Score distribution — one strip per player (green=win, red=loss)</h2>
+    <div id="strips"></div>
+    <div class="axis"><div></div><div class="ticks" id="axis"></div></div>
+  </section>
+</main>
+
+<script>
+const POLL_MS = 5000;
+let SROW = {min:0,max:1};
+
+function fmtETA(s){ if(s==null) return "—"; if(s<60) return s+"s";
+  const m=Math.floor(s/60), ss=s%60; if(m<60) return m+"m"+(ss?ss+"s":"");
+  const h=Math.floor(m/60); return h+"h"+(m%60)+"m"; }
+function colorFor(p){ // p in 0..100 -> red..yellow..green
+  if(p==null) return "#1c2230";
+  const t=p/100, r=Math.round(248*(1-t)+63*t), g=Math.round(81*(1-t)+185*t), b=Math.round(73*(1-t)+80*t);
+  return `rgba(${r},${g},${b},.85)`; }
+function setLive(ok,txt){ const e=document.getElementById("live");
+  e.className="live "+(ok?"ok":"stale"); e.textContent=txt; }
+
+async function poll(){
+  try{
+    const r=await fetch("/status",{cache:"no-store"}); const d=await r.json();
+    render(d); setLive(true, "live · poll "+d.poll_count);
+  }catch(e){ setLive(false,"disconnected"); }
+}
+
+function render(d){
+  document.getElementById("done").textContent=d.done;
+  document.getElementById("total").textContent=d.total;
+  document.getElementById("pct").textContent=d.pct;
+  document.getElementById("rate").textContent=d.rate_per_min;
+  document.getElementById("eta").textContent=fmtETA(d.eta_seconds);
+  document.getElementById("scored").textContent=d.scored_episodes;
+  document.getElementById("ops").textContent=d.ops_filtered;
+  document.getElementById("prog").style.width=d.pct+"%";
+
+  // per-request cards
+  document.getElementById("reqs").innerHTML = d.requests.map(q=>{
+    const pct=q.total? Math.round(100*q.completed/q.total):0;
+    return `<div class="reqcard"><div class="name">${q.xreq.slice(0,18)}…
+      <span class="mut">${q.status}</span></div>
+      <div>${q.completed}/${q.total} <span class="mut">(${pct}%)</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join("");
+
+  const lb=d.leaderboard;
+  // leaderboard table
+  document.getElementById("lb").querySelector("tbody").innerHTML = lb.map(p=>{
+    const me = /crewborg:/.test(p.label) ? "me" : "";
+    const w = p.win==null?"—":p.win;
+    return `<tr class="${me}"><td>${esc(p.label)}</td><td>${p.n}</td>
+      <td class="wr" style="color:${colorFor(p.win)}">${w}</td>
+      <td>${p.crew_win==null?"—":p.crew_win} <span class="mut">(${p.crew_n})</span></td>
+      <td>${p.imp_win==null?"—":p.imp_win} <span class="mut">(${p.imp_n})</span></td>
+      <td>${p.score_mean==null?"—":p.score_mean}</td></tr>`;
+  }).join("");
+
+  // heatmap: rows=players, cols=[overall,crew,imp]
+  const cols=[["overall","win"],["crew","crew_win"],["imp","imp_win"]];
+  let h = `<div><span class="cell"></span>`+cols.map(c=>`<span class="cell mut">${c[0]}</span>`).join("")+`</div>`;
+  h += lb.map(p=>{
+    const cells=cols.map(c=>{
+      const v=p[c[1]];
+      return `<span class="cell" style="background:${colorFor(v)}">${v==null?'<span class="empty">·</span>':v}</span>`;
+    }).join("");
+    return `<div><span class="cell" style="text-align:left;min-width:230px">${esc(short(p.label))}</span>${cells}</div>`;
+  }).join("");
+  document.getElementById("heat").innerHTML=h;
+
+  // score strips — shared x-axis across all players.
+  // Each sample is [score, win]; color by the authoritative win flag (a win is the
+  // +100 objective bonus, NOT score>0 — a crewmate can score 8 from tasks and lose).
+  let mn=Infinity,mx=-Infinity;
+  lb.forEach(p=>p.scores.forEach(([s,_])=>{ if(s<mn)mn=s; if(s>mx)mx=s; }));
+  if(!isFinite(mn)){mn=0;mx=1;}
+  if(mn===mx){mx=mn+1;}
+  const span=mx-mn;
+  document.getElementById("strips").innerHTML = lb.map(p=>{
+    const dots=p.scores.map(([s,w])=>{
+      const x=100*(s-mn)/span;
+      const cls = w?"win":"loss";
+      return `<span class="dot ${cls}" style="left:${x}%" title="${s}${w?' WIN':''}"></span>`;
+    }).join("");
+    return `<div class="strip"><span class="name">${esc(short(p.label))}</span>
+      <div class="track">${dots}</div></div>`;
+  }).join("");
+  const ticks=[mn, mn+span*0.25, mn+span*0.5, mn+span*0.75, mx].map(v=>`<span>${Math.round(v)}</span>`).join("");
+  document.getElementById("axis").innerHTML=ticks;
+}
+function short(s){ return s.length>34? s.slice(0,33)+"…": s; }
+function esc(s){ return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+poll(); setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

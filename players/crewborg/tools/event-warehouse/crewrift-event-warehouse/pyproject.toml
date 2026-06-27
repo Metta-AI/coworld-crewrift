@@ -1,0 +1,37 @@
+[project]
+name = "crewrift-event-warehouse"
+version = "0.1.0"
+description = "Offline batch warehouse that collates Crewrift episode events into a policy-indexed Parquet dataset."
+requires-python = ">=3.11"
+dependencies = [
+  "crewrift-event-reporter",
+  "pyarrow>=16",
+  "pydantic>=2.8",
+  "duckdb>=1.0",
+  "boto3>=1.34",  # the `suss` subcommand: Bedrock Haiku chat classification
+]
+
+[project.scripts]
+crewrift-event-warehouse = "crewrift_event_warehouse.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.2",
+]
+
+[tool.uv.sources]
+crewrift-event-reporter = { path = "../crewrift-event-reporter", editable = true }
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["crewrift_event_warehouse*"]
+
+[tool.setuptools.package-data]
+crewrift_event_warehouse = ["assets/*.html"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

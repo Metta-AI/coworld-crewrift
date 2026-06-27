@@ -1,0 +1,4 @@
+# Built expand_replay binaries (rebuild with build_expand_replay.sh; version-specific, large).
+bin/
+__pycache__/
+*.pyc

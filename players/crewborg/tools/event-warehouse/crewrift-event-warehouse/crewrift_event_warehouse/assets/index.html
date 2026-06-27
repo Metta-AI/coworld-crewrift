@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crewrift Event Warehouse</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #d6dae3; --muted: #8a93a6; --accent: #5b9bff; --accent2: #2d6cdf;
+    --ok: #4cc38a; --err: #ff6b6b; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --panel2: #eef1f5; --border: #d8dde5;
+      --text: #1b1f27; --muted: #5b6472; --accent: #2d6cdf; --accent2: #1b4fae;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 12px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 14px; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .meta { font-size: 12px; color: var(--muted); }
+  .layout { display: grid; grid-template-columns: 240px 1fr; height: calc(100vh - 49px); }
+  aside { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; padding: 12px; }
+  aside h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 16px 0 6px; }
+  aside h2:first-child { margin-top: 0; }
+  .preset { display: block; width: 100%; text-align: left; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; margin-bottom: 6px; font-size: 12.5px; cursor: pointer; }
+  .preset:hover { border-color: var(--accent); }
+  .table-name { font-family: var(--mono); font-size: 12px; color: var(--accent); margin-top: 8px; }
+  .col { font-family: var(--mono); font-size: 11.5px; color: var(--muted); padding-left: 10px; }
+  main { display: flex; flex-direction: column; overflow: hidden; }
+  .editor { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  textarea { width: 100%; height: 130px; resize: vertical; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 13px; line-height: 1.5; }
+  .bar { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  button.run { background: var(--accent2); color: #fff; border: 0; border-radius: 7px; padding: 8px 18px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  button.run:hover { background: var(--accent); }
+  .hint { font-size: 12px; color: var(--muted); }
+  .status { font-size: 12px; margin-left: auto; }
+  .status.ok { color: var(--ok); } .status.err { color: var(--err); }
+  .results { flex: 1; overflow: auto; padding: 0 14px 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600;
+    text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+  td { font-family: var(--mono); }
+  tr:hover td { background: var(--panel2); }
+  .err-box { color: var(--err); font-family: var(--mono); font-size: 12.5px; padding: 14px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crewrift Event Warehouse</h1>
+  <span class="meta" id="meta">loading…</span>
+</header>
+<div class="layout">
+  <aside>
+    <h2>Preset Queries</h2>
+    <div id="presets"></div>
+    <h2>Tables</h2>
+    <div id="schema"></div>
+    <p class="hint" style="margin-top:14px">Use <code>{events}</code> and
+      <code>{players}</code> in your SQL — they expand to the dataset.</p>
+  </aside>
+  <main>
+    <div class="editor">
+      <textarea id="sql" spellcheck="false">SELECT key, count(*) AS n FROM {events} GROUP BY key ORDER BY n DESC</textarea>
+      <div class="bar">
+        <button class="run" id="run">Run ▸</button>
+        <span class="hint">⌘/Ctrl + Enter</span>
+        <span class="status" id="status"></span>
+      </div>
+    </div>
+    <div class="results" id="results"></div>
+  </main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function loadMeta() {
+  const schema = await (await fetch('/api/schema')).json();
+  const m = schema.manifest || {};
+  $('meta').textContent =
+    `${m.episodes_ok ?? '?'} episodes · ${m.events_written?.toLocaleString() ?? '?'} events · ${m.distinct_policies ?? '?'} policies`;
+  const box = $('schema');
+  for (const [table, cols] of [['events', schema.events], ['episode_players', schema.episode_players]]) {
+    const t = document.createElement('div'); t.className = 'table-name'; t.textContent = table; box.appendChild(t);
+    for (const c of cols) { const d = document.createElement('div'); d.className = 'col'; d.textContent = c; box.appendChild(d); }
+  }
+}
+
+async function loadPresets() {
+  const presets = await (await fetch('/api/presets')).json();
+  const box = $('presets');
+  for (const p of presets) {
+    const b = document.createElement('button'); b.className = 'preset'; b.textContent = p.title;
+    b.onclick = () => { $('sql').value = p.sql; runQuery(); };
+    box.appendChild(b);
+  }
+}
+
+function renderTable(result) {
+  const box = $('results');
+  if (result.error) { box.innerHTML = ''; const e = document.createElement('div'); e.className = 'err-box'; e.textContent = result.error; box.appendChild(e); return; }
+  const table = document.createElement('table');
+  const thead = document.createElement('thead'); const htr = document.createElement('tr');
+  for (const c of result.columns) { const th = document.createElement('th'); th.textContent = c; htr.appendChild(th); }
+  thead.appendChild(htr); table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const row of result.rows) {
+    const tr = document.createElement('tr');
+    for (const v of row) { const td = document.createElement('td'); td.textContent = v === null ? '∅' : v; tr.appendChild(td); }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  box.innerHTML = ''; box.appendChild(table);
+}
+
+async function runQuery() {
+  const sql = $('sql').value;
+  const status = $('status'); status.className = 'status'; status.textContent = 'running…';
+  const t0 = performance.now();
+  try {
+    const res = await fetch('/api/query', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sql }) });
+    const result = await res.json();
+    renderTable(result);
+    const ms = Math.round(performance.now() - t0);
+    if (result.error) { status.className = 'status err'; status.textContent = 'error'; }
+    else { status.className = 'status ok'; status.textContent = `${result.rows.length} rows${result.truncated ? ' (capped)' : ''} · ${ms} ms`; }
+  } catch (err) {
+    status.className = 'status err'; status.textContent = String(err);
+  }
+}
+
+$('run').onclick = runQuery;
+$('sql').addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); runQuery(); } });
+loadMeta(); loadPresets(); runQuery();
+</script>
+</body>
+</html>

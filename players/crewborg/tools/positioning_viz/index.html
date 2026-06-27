@@ -1,0 +1,241 @@
+<!doctype html>
+<!--
+  Kill-ready positioning viewer — the browser front end (drawing layer).
+
+  WHAT THIS IS
+    The canvas + UI for server.py. It fetches the replay list from /api/replays and
+    one episode's positioning payload from /api/replay/<id> (both produced by
+    extract_positions.py), then draws, per imposter kill-ready event: the focal
+    imposter's path P ticks back -> ready -> forward to its next kill (or F ticks),
+    everyone else's recent path, dots at the ready moment, and the kill marker.
+
+  HOW TO USE
+    Served by server.py at http://localhost:<port>. Replay dropdown -> event
+    scroll-list (colour-coded by hunt speed, star = us) -> Past/Future sliders ->
+    "future = until next kill" -> top stat strip. Arrow keys step events.
+
+  HOW TO EDIT (this is the drawing layer — change WHAT IS DRAWN here)
+    - render() is the whole draw. Map background, then for each ready event: footprint,
+      rooms/tasks/vents/button, past/future tracks (meeting ticks broken out via the
+      `playing` flag = track sample[4]), ready-moment dots, kill marker, stat strip.
+    - "us" highlighting (green + star) is data-driven: DATA.us_policy comes from the
+      server (--us-policy). Don't hardcode a policy name here.
+    - The data shape (tracks = [tick,x,y,alive,playing], ready_events, kills, map) is
+      owned by extract_positions.py — read its docstring before adding a field.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Kill-ready positioning viewer</title>
+<style>
+  body { margin:0; font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif; color:#1c2330; background:#f4f6fa; }
+  #app { display:flex; height:100vh; }
+  #side { width:300px; padding:12px 14px; box-sizing:border-box; background:#fff; border-right:1px solid #dde2ea; overflow:auto; }
+  #main { flex:1; display:flex; flex-direction:column; min-height:0; }
+  canvas { background:#0f1420; flex:1; min-height:0; }
+  h1 { font-size:15px; margin:0 0 10px; }
+  label { display:block; margin:10px 0 3px; font-weight:600; color:#3a4253; }
+  select, input[type=range] { width:100%; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row button { flex:1; padding:6px; cursor:pointer; }
+  .val { font-weight:700; color:#1456c4; }
+  .legend span { display:inline-block; margin-right:10px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:3px; }
+  #info { flex:none; padding:9px 16px; background:#11161f; color:#e8eef8; border-bottom:1px solid #2a3340; }
+  #info table { border-collapse:collapse; }
+  #info td { padding:2px 22px 2px 0; vertical-align:top; white-space:nowrap; }
+  #info .k { color:#7e8ca6; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  #info .v { font-weight:700; font-size:15px; line-height:1.25; }
+  #info .v.warn { color:#ff8a6a; }
+  .muted { color:#7a8499; }
+  #evlist { width:100%; height:200px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <h1>Kill-ready positioning</h1>
+    <label>Replay</label>
+    <select id="replay"></select>
+    <label>Kill-ready events <span class="muted" id="evcount"></span></label>
+    <select id="evlist" size="10"></select>
+    <div class="row" style="margin-top:6px">
+      <button id="prev">&larr; prev</button><button id="next">next &rarr;</button>
+    </div>
+    <label>Past window: <span class="val" id="pval">150</span> ticks</label>
+    <input type="range" id="past" min="0" max="500" step="10" value="150">
+    <label>Future window: <span class="val" id="fval">50</span> ticks</label>
+    <input type="range" id="future" min="0" max="300" step="10" value="50">
+    <label><input type="checkbox" id="untilkill" checked> future = until next kill (capped at window)</label>
+    <label><input type="checkbox" id="othersfuture"> also show others' future paths</label>
+    <div class="legend" style="margin-top:12px">
+      <div style="font-weight:600;margin-bottom:3px">Players</div>
+      <span><i class="dot" style="background:crimson"></i>focal imposter (ready)</span>
+      <span><i class="dot" style="background:darkorange"></i>other imposter</span>
+      <span><i class="dot" style="background:#4ea3ff"></i>crewmate</span>
+      <span><i class="dot" style="background:#39d98a"></i>us (any role) ★</span>
+      <span><i class="dot" style="background:#666"></i>dead</span>
+      <span>✕ = kill location</span>
+      <div style="font-weight:600;margin:7px 0 3px">Map</div>
+      <span><i class="dot" style="background:rgba(150,175,210,0.5);border-radius:1px"></i>where players walked (rooms+halls)</span>
+      <span><i class="dot" style="background:#46d278;border-radius:1px"></i>task station (crew)</span>
+      <span><i class="dot" style="background:#ff963c;border-radius:0;transform:rotate(45deg)"></i>vent (imposter route)</span>
+      <span><i class="dot" style="background:none;border:2px solid #ffd24a"></i>emergency button</span>
+    </div>
+  </div>
+  <div id="main">
+    <div id="info"></div>
+    <canvas id="cv"></canvas>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+let DATA=null, EVENTS=[], curEv=0;
+const isUs = p => p && DATA && p.policy === DATA.us_policy;   // data-driven highlight (server --us-policy)
+
+async function loadReplays(){
+  const reps = await (await fetch('/api/replays')).json();
+  const sel = $('#replay'); sel.innerHTML='';
+  reps.forEach(r=>{
+    const o=document.createElement('option'); o.value=r.episode_id;
+    o.textContent = r.episode_id.slice(0,18)+'…  ['+ (r.imposters||[]).join(', ') +']';
+    sel.appendChild(o);
+  });
+  if(reps.length) loadReplay(reps[0].episode_id);
+}
+async function loadReplay(eid){
+  DATA = await (await fetch('/api/replay/'+eid)).json();
+  EVENTS = DATA.ready_events||[];
+  const el=$('#evlist'); el.innerHTML='';
+  EVENTS.forEach((e,i)=>{
+    const idle=e.idle_ready_ticks, star=e.policy===DATA.us_policy?' ★':'';
+    const tail = e.converted ? ('kill +'+idle+'t') : (e.ended_by==='meeting'?'→ meeting':'→ game-end');
+    const o=document.createElement('option'); o.value=i;
+    o.textContent = `#${i+1}  ${e.label}${star}  ready ${e.tick}  ${tail}`;
+    o.style.color = !e.converted?'#9aa3b2': idle<=100?'#1a8f4a': idle>240?'#c0392b':'#1c2330';  // green=fast kill, red=slow
+    el.appendChild(o);
+  });
+  $('#evcount').textContent = `(${EVENTS.length})`;
+  curEv=0; el.value=0; render();
+}
+function curEvent(){ return EVENTS[curEv]; }
+
+function render(){
+  if(!DATA) return;
+  const ev=curEvent(); if(!ev){ return; }
+  const P=+$('#past').value, F=+$('#future').value;
+  const cv=$('#cv'), ctx=cv.getContext('2d');
+  cv.width=cv.clientWidth; cv.height=cv.clientHeight;
+  const m=DATA.map, pad=20;
+  const sc=Math.min((cv.width-2*pad)/m.width, (cv.height-2*pad)/m.height);
+  const ox=(cv.width-m.width*sc)/2, oy=(cv.height-m.height*sc)/2;
+  const X=x=>ox+x*sc, Y=y=>oy+y*sc;
+  ctx.clearRect(0,0,cv.width,cv.height);
+
+  // navigable footprint: every spot any player occupied this game (rooms AND hallways)
+  ctx.fillStyle='rgba(150,175,210,0.20)';
+  for(const slot in DATA.tracks){ for(const p of DATA.tracks[slot]){ ctx.fillRect(X(p[1])-0.7,Y(p[2])-0.7,1.8,1.8); } }
+  // rooms
+  ctx.lineWidth=1; ctx.font='11px sans-serif';
+  for(const r of (m.rooms||[])){
+    ctx.strokeStyle='rgba(150,170,200,0.4)'; ctx.strokeRect(X(r.x),Y(r.y),r.w*sc,r.h*sc);
+    ctx.fillStyle='rgba(170,190,220,0.5)'; ctx.fillText(r.name||'', X(r.x)+4, Y(r.y)+13);
+  }
+  // tasks = green crew stations; vents = orange imposter routes; button = yellow
+  ctx.fillStyle='rgba(70,210,120,0.5)';
+  for(const t of (m.tasks||[])){ ctx.fillRect(X(t.x)-2,Y(t.y)-2,4,4); }
+  ctx.fillStyle='rgba(255,150,60,0.85)'; ctx.strokeStyle='rgba(255,150,60,0.85)'; ctx.lineWidth=1.4;
+  for(const v of (m.vents||[])){ const cx=X(v.x),cy=Y(v.y); ctx.beginPath();
+    ctx.moveTo(cx,cy-5);ctx.lineTo(cx+5,cy);ctx.lineTo(cx,cy+5);ctx.lineTo(cx-5,cy);ctx.closePath();ctx.fill(); }
+  if(m.button){ ctx.strokeStyle='#ffd24a'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(X(m.button.x),Y(m.button.y),6,0,7); ctx.stroke(); }
+
+  const T=ev.tick, focal=ev.slot;
+  // "until next kill" draws forward to the meeting-aware window end (the kill, or the meeting
+  // that interrupted the hunt). Otherwise use the future slider.
+  const futEnd = ($('#untilkill').checked && ev.window_end) ? ev.window_end : T+F;
+
+  const players = {}; DATA.players.forEach(p=>players[p.slot]=p);
+  function colorFor(slot, role){
+    if(slot===focal) return 'crimson';
+    if(isUs(players[slot])) return '#39d98a';
+    if(role==='imposter') return 'darkorange';
+    return '#4ea3ff';
+  }
+  function at(slot,t){ const tr=DATA.tracks[slot]||[]; let best=null,bd=1e9; for(const p of tr){const d=Math.abs(p[0]-t); if(d<bd){bd=d;best=p;}} return best; }
+  // draw a track over [a,b] using ONLY Playing ticks (p[4]); break the line at meeting gaps so
+  // the path never draws the teleport-to-Bridge jump during a meeting.
+  function drawTrack(slot,a,b,col,lw,alpha,dash){
+    const tr=DATA.tracks[slot]||[]; ctx.strokeStyle=col; ctx.globalAlpha=alpha; ctx.lineWidth=lw;
+    if(dash) ctx.setLineDash(dash); ctx.beginPath(); let pen=false;
+    for(const p of tr){ if(p[0]<a||p[0]>b) continue;
+      if(!p[4]){ pen=false; continue; }                       // meeting tick -> break the line
+      if(!pen){ ctx.moveTo(X(p[1]),Y(p[2])); pen=true; } else ctx.lineTo(X(p[1]),Y(p[2])); }
+    ctx.stroke(); if(dash) ctx.setLineDash([]);
+  }
+
+  // past paths for everyone (meeting ticks dropped)
+  for(const p of DATA.players){
+    drawTrack(p.slot, T-P, T, colorFor(p.slot,p.role), p.slot===focal?2.5:1.3, p.slot===focal?0.9:0.5);
+    if($('#othersfuture').checked && p.slot!==focal)
+      drawTrack(p.slot, T, futEnd, colorFor(p.slot,p.role), 0.8, 0.25, [4,4]);
+  }
+  // focal future path (bold dashed, meeting ticks dropped)
+  drawTrack(focal, T, futEnd, '#ff5a5a', 3, 1, [6,4]);
+
+  // positions AT the ready moment T
+  ctx.globalAlpha=1;
+  for(const p of DATA.players){
+    const pt=at(p.slot,T); if(!pt) continue; const alive=pt[3];
+    const col= alive? colorFor(p.slot,p.role) : '#666';
+    ctx.fillStyle=col; ctx.beginPath();
+    const r=p.slot===focal?7:5; ctx.arc(X(pt[1]),Y(pt[2]),r,0,7); ctx.fill();
+    ctx.fillStyle='#dfe6f2'; ctx.font=(p.slot===focal?'bold ':'')+'11px sans-serif';
+    ctx.fillText((isUs(p)?'★':'')+p.label, X(pt[1])+8, Y(pt[2])+3);
+  }
+  // kill marker by focal within the window (location = killer's spot at the kill tick)
+  for(const k of DATA.kills){
+    if(k.killer===focal && k.tick>=T && k.tick<=futEnd && k.x!=null){
+      const cx=X(k.x),cy=Y(k.y),s=11;
+      ctx.fillStyle='rgba(255,40,40,0.35)'; ctx.beginPath(); ctx.arc(cx,cy,s+5,0,7); ctx.fill();   // halo
+      ctx.lineCap='round';
+      ctx.strokeStyle='#000'; ctx.lineWidth=6;   // dark outline so the ✕ reads on any colour
+      ctx.beginPath(); ctx.moveTo(cx-s,cy-s); ctx.lineTo(cx+s,cy+s); ctx.moveTo(cx+s,cy-s); ctx.lineTo(cx-s,cy+s); ctx.stroke();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.moveTo(cx-s,cy-s); ctx.lineTo(cx+s,cy+s); ctx.moveTo(cx+s,cy-s); ctx.lineTo(cx-s,cy+s); ctx.stroke();
+      ctx.fillStyle='#ff8a8a'; ctx.font='bold 11px sans-serif'; ctx.fillText('KILL t='+k.tick, cx+s+4, cy-s);
+    }
+  }
+  // info stat-strip — hunting ticks (meeting-excluded) + outcome
+  const idle = ev.idle_ready_ticks;
+  const outcome = ev.converted ? `✕ kill @ ${ev.kill_tick}`
+                : (ev.ended_by==='meeting' ? 'meeting interrupted (no kill)' : 'game ended (no kill)');
+  // distance from the focal to its nearest LIVING crewmate at the ready moment (the lever)
+  const fpos = at(focal, T);
+  let nd=null, ndLabel='';
+  if(fpos){ for(const p of DATA.players){ if(p.slot===focal||p.role==='imposter') continue;
+    const q=at(p.slot,T); if(!q||!q[3]) continue; const d=Math.hypot(q[1]-fpos[1],q[2]-fpos[2]);
+    if(nd===null||d<nd){ nd=d; ndLabel=p.label; } } }
+  const cell=(k,v,warn)=>`<td><div class="k">${k}</div><div class="v${warn?' warn':''}">${v}</div></td>`;
+  $('#info').innerHTML = `<table><tr>`
+    + cell('Imposter', (isUs(ev)?'★ ':'')+ev.label)
+    + cell('Event', `#${curEv+1} / ${EVENTS.length}`)
+    + cell('Ready tick', T)
+    + cell('Hunting ticks (ready→kill, no meetings)', `${idle} <span class="muted">~${(idle/24).toFixed(1)}s</span>`, idle>240)
+    + cell('Outcome', outcome, !ev.converted)
+    + cell('Nearest crew @ready', nd!=null? `${Math.round(nd)}px <span class="muted">${ndLabel}</span>` : '—', nd!=null && nd>120)
+    + cell('Windows', `past ${P} · future ${$('#untilkill').checked&&ev.window_end?'→end':F}`)
+    + `</tr></table>`;
+}
+
+$('#replay').onchange=e=>loadReplay(e.target.value);
+$('#evlist').onchange=e=>{curEv=+e.target.value; render();};
+$('#prev').onclick=()=>{curEv=Math.max(0,curEv-1); $('#evlist').value=curEv; render();};
+$('#next').onclick=()=>{curEv=Math.min(EVENTS.length-1,curEv+1); $('#evlist').value=curEv; render();};
+for(const id of ['past','future']) $('#'+id).oninput=e=>{$('#'+(id[0])+'val').textContent=e.target.value; render();};
+for(const id of ['untilkill','othersfuture']) $('#'+id).onchange=render;
+window.onresize=render;
+document.onkeydown=e=>{ if(e.key==='ArrowLeft')$('#prev').click(); if(e.key==='ArrowRight')$('#next').click(); };
+loadReplays();
+</script>
+</body>
+</html>

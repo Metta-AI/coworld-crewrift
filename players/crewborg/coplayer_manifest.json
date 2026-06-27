@@ -1,0 +1,6 @@
+{
+  "author": "jmsboggs@gmail.com",
+  "name": "crewborg",
+  "run": ["python", "-m", "crewborg.coworld.policy_player"],
+  "games": ["crewrift"]
+}
