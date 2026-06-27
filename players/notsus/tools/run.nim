@@ -1836,13 +1836,14 @@ proc pageStart(title, cssHref: string): string =
   result.add "    .result-win { color: #b00000; font-weight: 700; }\n"
   result.add "    .games-table { table-layout: fixed; width: 100%; }\n"
   result.add "    .games-table .game-col { width: 9rem; }\n"
-  result.add "    .games-table .seat-col { width: 4.8rem; }\n"
+  result.add "    .games-table .seat-name-col { width: 2.2rem; }\n"
+  result.add "    .games-table .seat-score-col { width: 3rem; }\n"
   result.add "    .games-table .result-col { width: 4rem; }\n"
   result.add "    .games-table th, .games-table td { "
   result.add "padding-right: 0.45rem; white-space: nowrap; }\n"
-  result.add "    .games-table .seat-cell { font-variant-numeric: "
+  result.add "    .games-table .seat-score-cell { font-variant-numeric: "
   result.add "tabular-nums; text-align: right; }\n"
-  result.add "    .games-table .abbr { font-weight: 700; }\n"
+  result.add "    .games-table .seat-name-cell { text-align: left; }\n"
   result.add "    .games-table .clip-cell { overflow: hidden; "
   result.add "text-overflow: ellipsis; }\n"
   result.add "    .games-table .clip-cell a { display: block; "
@@ -2895,23 +2896,26 @@ proc seatsText(slots: openArray[int]): string =
     inc i
   parts.join(", ")
 
-proc seatScoreHtml(
+proc seatScoreCellsHtml(
   episode: Episode,
   groups: openArray[BotGroup],
   slot: int,
   winners: openArray[int]
 ): string =
-  ## Renders one compact seat score cell.
+  ## Renders compact seat name and score cells.
   let groupIndex = groups.groupForSlot(slot)
   if groupIndex < 0:
-    return "-"
+    return "-".tableHtmlClass("seat-name-cell") &
+      "-".tableHtmlClass("seat-score-cell")
   let score = episode.scoreForGroup(groups, groupIndex)
-  var html = "<span class=\"abbr\">" &
-    groups[groupIndex].abbr.htmlEscape() & "</span> " &
-    score.scoreText().htmlEscape()
+  var
+    nameHtml = groups[groupIndex].abbr.htmlEscape()
+    scoreHtml = score.scoreText().htmlEscape()
   if groupIndex in winners:
-    html = "<mark>" & html & "</mark>"
-  html
+    nameHtml = "<mark>" & nameHtml & "</mark>"
+    scoreHtml = "<mark>" & scoreHtml & "</mark>"
+  nameHtml.tableHtmlClass("seat-name-cell") &
+    scoreHtml.tableHtmlClass("seat-score-cell")
 
 proc renderRunIndex(
   config: ToolConfig,
@@ -2992,11 +2996,13 @@ proc renderRunIndex(
   html.add "<table class=\"wide games-table\">\n"
   html.add "<colgroup><col class=\"game-col\">"
   for i in 0 ..< config.bots.len:
-    html.add "<col class=\"seat-col\">"
+    html.add "<col class=\"seat-name-col\">"
+    html.add "<col class=\"seat-score-col\">"
   html.add "</colgroup>\n"
   html.add "<thead><tr><th>Game</th>"
   for i in 0 ..< config.bots.len:
     html.add "<th>" & i.playerLetter().htmlEscape() & "</th>"
+    html.add "<th></th>"
   html.add "</tr></thead>\n<tbody>\n"
   for episode in episodes:
     let gameLabel =
@@ -3012,8 +3018,7 @@ proc renderRunIndex(
     )
     let winners = episode.winnerGroups(groups)
     for i in 0 ..< config.bots.len:
-      html.add episode.seatScoreHtml(groups, i, winners).
-        tableHtmlClass("seat-cell")
+      html.add episode.seatScoreCellsHtml(groups, i, winners)
     html.add "</tr>\n"
   html.add "</tbody></table>\n"
   html.add "</section>\n"
