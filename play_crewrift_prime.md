@@ -1,178 +1,247 @@
-# Play Crewrift Prime — pick a default policy, deploy it, then optimize
+# Play Crewrift Prime fast path
 
-**You are the coding agent.** Your job: win the **Crewrift Prime** league for
-your human by **adopting one of the two default policies** shipped in
-[`players/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players),
-**deploying it immediately**, and then improving it with the repo's tools.
+**You are the coding agent.** Your job is to get your human a real Crewrift
+Prime policy quickly, then improve it with evidence. Do **not** create a new bot
+from scratch unless the human explicitly asks for that.
 
-- Game repo: <https://github.com/Metta-AI/coworld-crewrift>
-- Players: <https://github.com/Metta-AI/coworld-crewrift/tree/master/players>
-- League: **Crewrift Prime** — `league_a12f5172-0907-4d04-8bcb-ca02f5360e3a`
-- Coworld: `crewrift_prime:0.1.0` — `cow_fa681858-ae83-4f08-83cd-56fc4ec9d164`
-- New here? Read [`play.md`](./play.md) and the
-  [game rules](https://github.com/Metta-AI/coworld-crewrift#crewrift-rules) first.
+The fast path is:
 
-This episode is built so you **never start from a blank file**. Both default
-policies already connect, perceive the game, act every tick, cast legal votes,
-and exit cleanly on game over — i.e. each one is a **complete, submittable
-policy today**. You **choose one**, deploy it, and iterate.
-
----
-
-## The two default policies — which one to use
-
-### 1. `crewborg-aaln` — strongest scripted baseline + a full optimizer (default pick)
-
-[`players/crewborg-aaln/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players/crewborg-aaln) · Python · no LLM
-
-A pure-Python policy on the **Cyborg cognitive stack**
-(`perceive → update_belief (+ event log + suspicion + agent tracking) →
-strategy.decide → mode.decide → resolve_action`). It is the tuned league
-baseline: convict-capable vote policy, emergency-button use, fast task routing,
-imposter anti-camping. Crucially, it ships its **own optimizer workspace** at
-[`players/crewborg-aaln/optimizer/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players/crewborg-aaln/optimizer)
-— `AGENTS.md` (the loop), `guide/SKILL.md` (architecture + the exact files to
-edit), `CREWBORG_INSIGHTS.md` (hard-won tournament knowledge), `playbooks/`, and
-Crewrift game skills (`games/crewrift/skills/crewrift-optimization`,
-`crewrift-eval-design`).
-
-- **Use it when:** you want the most competitive starting policy and a turnkey,
-  evidence-first improvement loop. This is the **default choice for most agents.**
-- **Edit behavior in:** `cognition`/`strategy` (decisions, voting),
-  `suspicion` (Bayesian P(imposter)), `action`/`nav` (momentum + A\*). The
-  optimizer's `guide/SKILL.md` has the precise "where to edit" map.
-
-### 2. `notsus` — Nim reference bot
-
-[`players/notsus/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players/notsus) · Nim · no LLM
-
-The reference baseline the engine ships, in a single `notsus.nim`. It parses the
-Sprite protocol, handles every screen (join/role/play/vote/result), does tasks,
-plays imposter, and navigates with A\* + a momentum controller. The README is
-candid that it is intentionally "very stupid" — watch its replays, see the dumb
-things it does, and improve from there. It has a visual debugger
-(`nim r -d:notsusGui ...`).
-
-- **Use it when:** you want to work **in Nim**, close to the engine; or you want
-  the canonical weak opponent / "compare against this" image in your evals.
-- **Edit behavior in:** `players/notsus/notsus.nim` (one file).
-
-### Quick chooser
-- Most competitive + a built-in optimizer loop → **`crewborg-aaln`** (default).
-- Want Nim / engine-level work or a weak reference opponent → **`notsus`**.
-
----
-
-## Deploy your chosen policy right now
-
-Each policy is a self-contained Docker build context with a `coplayer_manifest.json`
-(`name`, `run`, `games`). Set `POLICY` to your pick and ship it.
-
-**1. Build the image** (build context is the policy dir):
-
-```sh
-# crewborg-aaln (Python):
-docker build -t crewborg-aaln:dev players/crewborg-aaln
-# notsus uses the public image public.ecr.aws/s3j4p9s7/treeform/players/notsus:latest
+```
+use players/crewborg-aaln -> build -> upload with explicit run argv -> submit
+    -> confirm qualification -> run small hosted evals -> make one scoped change
+    -> verify over enough completed games -> submit the winner
 ```
 
-**2. Authenticate the CLI** and pick the human's player:
+Commands below use `coworld` on PATH. If your environment normally runs the CLI
+as `uv run coworld`, use that prefix. Do not move into an older `coworld-player`
+checkout or rebuild a stale venv just to understand this game.
+
+- Game repo: <https://github.com/Metta-AI/coworld-crewrift>
+- League: **Crewrift Prime** - `league_a12f5172-0907-4d04-8bcb-ca02f5360e3a`
+- Current Prime package observed 2026-06-26: `crewrift_prime:0.4.9` -
+  `cow_5e21fb01-1fdf-4441-9acc-2e0cd66832ed`
+- Older docs may mention `crewrift_prime:0.1.0` /
+  `cow_fa681858-ae83-4f08-83cd-56fc4ec9d164`; treat those as stale for Prime.
+
+## What not to spend time on
+
+The slow onboarding path took about an hour because the agent:
+
+- read broad remote docs twice before acting;
+- switched to an older `coworld-player` checkout and repaired its venv;
+- adapted an old policy instead of using this repo's shipped policies;
+- reverse-engineered Sprite-v1, coordinate frames, and local episode schemas;
+- ran full 10,000-tick local games under Docker emulation and wrote a custom
+  mixed-roster harness before submitting anything;
+- debugged CLI/server upload drift as if it might be policy behavior.
+
+Avoid that path. This file contains enough game context to start. Use deeper
+docs only when this file names them.
+
+## Minimum game facts
+
+Crewrift is an Among-Us-style, 8-seat, hidden-role game:
+
+- **Crewmates** do tasks, report bodies, talk/vote in meetings, and win by
+  finishing tasks or ejecting all imposters.
+- **Imposters** kill on cooldown, blend in, may use vents, and win by killing
+  enough crew.
+- Scoring: `+100` win, `+1` completed task, `+10` imposter kill, `-10` missed
+  vote/skip, `-1` per stuck-idle interval while tasks remain.
+- Prime qualification is event-driven after submission. The commissioner runs a
+  self-play XP check and expects meeting participation, at least some imposter
+  hunting, and task completion. A policy that never votes/talks does not qualify.
+
+You do not need to reread the full rules before adopting the default policy.
+Read [`README.md`](./README.md#crewrift-rules) only when changing game strategy.
+
+## Default policy decision
+
+Use **`players/crewborg-aaln/`** unless you have a specific reason not to.
+
+It is the strongest shipped scripted baseline and already handles the hard parts
+that cost agents time: Sprite-v1 parsing, world-coordinate localization,
+walkability/pathing, role detection, legal actions every tick, meeting/vote
+fallbacks, task routing, imposter behavior, artifact logging, Docker packaging,
+and a policy-specific optimizer workspace.
+
+Use **`players/notsus/`** only if you intentionally want the Nim reference bot or
+a weak baseline to compare against. Do not port old code from another checkout
+while `crewborg-aaln` exists.
+
+## First submission, copy-paste path
+
+Run from the repo root.
 
 ```sh
-coworld status                       # verify SOFTMAX_USER_API_TOKEN + active player
+export LEAGUE_ID=league_a12f5172-0907-4d04-8bcb-ca02f5360e3a
+export POLICY=crewborg-aaln
+```
+
+Check auth and the active player before mutating anything:
+
+```sh
+coworld status
+coworld player list --json
+coworld leagues "$LEAGUE_ID" --json
+```
+
+If the active player is not your human's player, select it:
+
+```sh
 coworld player use <player_id>
 ```
 
-**3. Upload and submit to Crewrift Prime.** The `run` argv comes from the
-policy's `coplayer_manifest.json` (one `--run` flag per token); a missing/wrong
-`run` attribute is the #1 silent `−100` failure, so verify it after upload.
+Build the default policy:
 
 ```sh
-# crewborg-aaln run argv:
-coworld upload-policy $POLICY:dev --name $POLICY \
-  --run python -m players.crewrift.crewborg.coworld.policy_player
+docker build --platform=linux/amd64 -t "$POLICY:prime" "players/$POLICY"
+```
 
-coworld submit $POLICY:v1 --league league_a12f5172-0907-4d04-8bcb-ca02f5360e3a \
+Upload it with the exact run argv from
+[`players/crewborg-aaln/coplayer_manifest.json`](./players/crewborg-aaln/coplayer_manifest.json).
+Each argv token gets its own `--run` flag; this prevents the common silent
+hosted `-100` start failure.
+
+```sh
+coworld upload-policy "$POLICY:prime" --name "$POLICY" \
+  --run python \
+  --run -m \
+  --run players.crewrift.crewborg.coworld.policy_player
+```
+
+The upload output will give a new version such as `crewborg-aaln:v7`. Submit
+that exact version:
+
+```sh
+coworld submit "$POLICY:vN" --league "$LEAGUE_ID" \
   --auto-champion always --no-open-browser
 ```
 
-**4. (Optional) Smoke it locally first** against the game server before
-uploading — see
-[`README.md` → Run the game locally](https://github.com/Metta-AI/coworld-crewrift#run-the-game-locally),
-then run your policy on a slot with `COWORLD_PLAYER_WS_URL=ws://127.0.0.1:2000/player?slot=0&token=0xBADA55_0`.
+Then confirm the submission and qualification state:
 
----
-
-## Optimize it — the loop and the tools
-
-The improvement loop is **evidence-first** and identical for both policies:
-
-```
-setup → understand the policy → run hosted XP evals → mine replays/artifacts
-      → form ONE falsifiable hypothesis → make ONE scoped edit → re-eval
-      → promotion gate → submit → record → repeat
+```sh
+coworld submissions --league "$LEAGUE_ID" --policy "$POLICY:vN" --json
+coworld memberships --league "$LEAGUE_ID" --policy "$POLICY:vN" --json
 ```
 
-The canonical write-up is
-[`players/crewborg-aaln/optimizer/playbooks/optimize-policy.md`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players/crewborg-aaln/optimizer/playbooks/optimize-policy.md)
-(+ `AGENTS.md`). Re-point its IDs at **Crewrift Prime** and at your chosen
-`players/$POLICY/` tree.
+If `upload-policy` fails before pushing with an ECR/pydantic
+`authorization_token` or registry-shape error, treat it as Coworld CLI/server
+drift, not a policy problem. First try a newer `coworld` CLI if available. If the
+current CLI is still broken, follow
+[`players/crewborg-aaln/optimizer/skills/coworld-operations/SKILL.md`](./players/crewborg-aaln/optimizer/skills/coworld-operations/SKILL.md)
+for the policy-version upload contract and record the workaround; do not rewrite
+the player.
 
-**Two Crewrift non-negotiables** (this game will fool you otherwise):
-- **High variance, role-asymmetric, 8 seats.** Never promote/reject on <~40
-  completed games; always disaggregate by **role** (imposter vs crew) and seat.
-- **The `−100` lobby taint.** A disconnect/no-show scores the whole lobby `−100`
-  (usually infra). Exclude tainted episodes, report the rate, keep XP batches
-  small and sequential.
+### If you chose `notsus`
 
-### The repo's optimization tooling
+Use this only for the Nim/reference path:
 
-- **Replay expander — `tools/expand_replay.nim`** (the fastest "why did it play
-  badly" tool). Prints a tick-by-tick timeline (phases, movement, tasks, kills,
-  bodies, reports, votes, chat, score) — or JSONL rows `{ts, player, key, value}`:
+```sh
+docker build --platform=linux/amd64 -f players/notsus/Dockerfile -t notsus:prime .
+coworld upload-policy notsus:prime --name notsus --run /bin/notsus
+coworld submit notsus:vN --league "$LEAGUE_ID" \
+  --auto-champion always --no-open-browser
+```
 
+## Optional smoke before submitting
+
+Skip long local A/B harnesses during onboarding. If you need a smoke check,
+prefer one of these:
+
+- Build-only check: `docker build --platform=linux/amd64 -t crewborg-aaln:prime players/crewborg-aaln`
+- Unit tests after edits:
+  `cd players/crewborg-aaln && python -m pytest players/crewrift/crewborg/tests/`
+- Hosted 1-3 episode XP smoke after upload if you are unsure it starts. Use it
+  only to detect crashes, `-100`, missing `run`, or qualification-gate failures.
+
+Do not promote or reject a strategy from a 1-3 episode smoke. Crewrift variance
+is too high.
+
+## Start optimizing without rediscovery
+
+For `crewborg-aaln`, read exactly these first:
+
+1. [`players/crewborg-aaln/optimizer/guide/SKILL.md`](./players/crewborg-aaln/optimizer/guide/SKILL.md)
+   - policy architecture, build/test/upload commands, runtime flags, and the
+   file-to-edit map.
+2. [`players/crewborg-aaln/optimizer/CREWBORG_INSIGHTS.md`](./players/crewborg-aaln/optimizer/CREWBORG_INSIGHTS.md)
+   - known tournament lessons and eval traps.
+3. [`players/crewborg-aaln/optimizer/playbooks/optimize-policy.md`](./players/crewborg-aaln/optimizer/playbooks/optimize-policy.md)
+   - the one-loop optimization procedure.
+
+Then run this loop:
+
+```
+read live standings/submissions -> inspect recent evals/replays/artifacts
+  -> write one falsifiable hypothesis -> make one small edit or flag flip
+  -> build/upload candidate -> evaluate in small hosted batches
+  -> aggregate by role/seat and penalties -> submit only if it clears the gate
+```
+
+## Where to make the first changes
+
+Map the hypothesis to the smallest surface:
+
+| Goal | Start here |
+|---|---|
+| Flip a known behavior variant | `players/crewborg-aaln/Dockerfile` `ENV` flags (`BE_DUMB`, `CREWBORG_LLM_MEETINGS`, `CREWBORG_DICK_MODE`) |
+| Improve meeting votes | `players/crewborg-aaln/players/crewrift/crewborg/strategy/meeting/vote_policy.py` |
+| Improve suspicion/flee/report choices | `players/crewborg-aaln/players/crewrift/crewborg/strategy/suspicion.py` and `strategy/rule_based.py` |
+| Change role/phase mode selection | `players/crewborg-aaln/players/crewrift/crewborg/strategy/rule_based.py` |
+| Change a stance directly | `players/crewborg-aaln/players/crewrift/crewborg/modes/` |
+| Improve pathing, stuck recovery, task arrival | `players/crewborg-aaln/players/crewrift/crewborg/nav.py` and `action.py` |
+| Improve imposter hunting | `strategy/opportunity.py`, `strategy/trajectory.py`, `modes/hunt.py`, `modes/search.py` |
+| Add evidence before deciding | `events.py`, `trace.py`, `artifact.py` |
+
+Keep one hypothesis per candidate. Broad rewrites make the eval uninterpretable.
+
+## Eval rules that prevent wasted time
+
+- Crewrift is high-variance, 8-seat, and role-asymmetric. A real candidate or
+  guardrail verdict needs **40-80 completed games**, not one lucky lobby.
+- Run XP requests in small sequential batches, especially for LLM policies.
+  Whole-lobby `-100` sweeps are usually infrastructure contention; retry them
+  and report the taint rate.
+- Always break results down by role, seat, win rate, vote-timeout penalties,
+  stuck-idle penalties, and `-100` failures. A flat mean hides the bug.
+- Inspect hosted stdout/stderr before strategy analysis. Tracebacks, malformed
+  actions, provider timeouts, and missing `run` are runtime bugs.
+- Do not count a policy as worse because the whole episode was tainted. Do count
+  only-our-slot `-100` as our policy/upload/runtime failure until logs prove
+  otherwise.
+
+The concrete XP request shapes and artifact commands live in
+[`players/crewborg-aaln/optimizer/skills/coworld-operations/SKILL.md`](./players/crewborg-aaln/optimizer/skills/coworld-operations/SKILL.md)
+and the Crewrift sample-size rules live in
+[`players/crewborg-aaln/optimizer/games/crewrift/skills/crewrift-eval-design/SKILL.md`](./players/crewborg-aaln/optimizer/games/crewrift/skills/crewrift-eval-design/SKILL.md).
+
+## Replay and artifact tools
+
+Use these only after you have a specific failure to inspect:
+
+- `tools/expand_replay.nim` - turns a replay into tick/event rows.
   ```sh
   nim r tools/expand_replay.nim <replay.bitreplay>
   nim r tools/expand_replay.nim --format jsonl --snapshot-every 1 <replay.bitreplay>
   ```
+- `reporters/eventlog/` - hosted reporter stream with events such as
+  `player_joined`, `kill`, `body`, `vote_cast`, `chat`, and `score`.
+- `grader/graders/crewrift/` - ranks episodes worth opening by score, task,
+  kill, and vote signals.
+- `crewborg-aaln` artifacts - `trace.db` + `summary.json`, joined to replay
+  events by server tick. Start from the optimizer guide before querying these.
 
-  Start with replays where your bot scored low, died early, stood still, missed a
-  body, failed to vote, or killed in front of witnesses; name the failed
-  capability, then edit the function that controls it.
+## Done for onboarding
 
-- **Event-log reporter — `reporters/eventlog/`.** A Coworld reporter that expands
-  a completed episode replay into structured categorical events (`player_joined`,
-  `kill`, `body`, `vote_cast`, `chat`, `score`, …) over the reporter WebSocket
-  contract. It's wired into `coworld_manifest.json`, so hosted episodes get this
-  structured event stream automatically — use it as your machine-readable
-  behavior signal when mining a batch.
-  [`reporters/eventlog/README.md`](https://github.com/Metta-AI/coworld-crewrift/tree/master/reporters/eventlog)
+Onboarding is complete when:
 
-- **Grader — `grader/graders/crewrift/`.** Scores social-deduction episodes from
-  `results.json` on broad signals (decisive wins, score spread, task progress,
-  kills, vote activity; vote-timeouts are dampened). Use it to rank which
-  episodes are worth opening.
-  [`grader/graders/crewrift/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/grader/graders/crewrift)
+1. a shipped policy is uploaded with a non-null `run` attribute;
+2. the exact uploaded version is submitted to Crewrift Prime for the correct
+   player;
+3. the submission/qualification state is confirmed;
+4. the next optimization step is recorded as one falsifiable hypothesis or one
+   named eval to run.
 
-- **Per-policy diagnosis tools.** `crewborg-aaln`'s optimizer ships the full
-  skill library (`hosted-xp-evals`, `replay-artifact-analysis`,
-  `opponent-strategy-mining`, `promotion-gate`, `eval-aggregation`, …) under
-  [`optimizer/skills/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players/crewborg-aaln/optimizer/skills),
-  plus `crewborg-optimization/crewborg-suspicion-tuning` for fitting the
-  suspicion model from replays.
-
-### Pull tournament replays to mine
-
-```sh
-coworld results league_a12f5172-0907-4d04-8bcb-ca02f5360e3a --json
-coworld rounds   --division div_... --status completed --json
-coworld episodes --round round_... --mine --with-replay --json
-coworld replays  --round round_... --mine --download-dir replays/
-nim r tools/expand_replay.nim replays/<downloaded-replay>
-```
-
-That's the whole job: **adopt one of the two default policies, deploy it to
-Crewrift Prime immediately, then run the optimizer loop with these tools** —
-observe, evaluate, hypothesize, make one scoped edit, verify against the
-champion at the ~40-game floor, promote what wins — until it climbs the
-leaderboard.
+Do not spend the first hour re-learning the game engine. Submit the working
+baseline, then optimize from evidence.
