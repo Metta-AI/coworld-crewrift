@@ -1,7 +1,8 @@
 import
-  std/[algorithm, httpclient, json, os, osproc, sets, streams, strutils,
+  std/[algorithm, json, os, osproc, sets, streams, strutils,
     tables, times],
-  common
+  common,
+  replay_extractor
 
 const
   SoftmaxObservatoryUrl = "https://softmax.com/observatory/v2"
@@ -595,14 +596,12 @@ proc ensureUserToken(config: ToolConfig) =
   ).output
   let subjectType = status.statusValue("subject_type")
   if subjectType == "user":
-    let subjectId = status.statusValue("subject_id")
-    echo "Using Softmax user token ", subjectId, "."
+    echo "Using Softmax user token."
     return
   if subjectType != "player":
-    fail("Could not determine Softmax auth subject_type:\n" & status)
+    fail("Could not determine Softmax auth subject_type.")
 
-  let playerId = status.statusValue("subject_id")
-  echo "Softmax is using player token ", playerId,
+  echo "Softmax is using a player token",
     "; switching to the main user token."
   discard runCommand(
     softmaxCommand(config, ["player", "unset"]),
@@ -614,9 +613,8 @@ proc ensureUserToken(config: ToolConfig) =
   ).output
   let updatedType = updated.statusValue("subject_type")
   if updatedType != "user":
-    fail("Expected Softmax user token after player unset:\n" & updated)
-  let userId = updated.statusValue("subject_id")
-  echo "Using Softmax user token ", userId, "."
+    fail("Expected Softmax user token after player unset.")
+  echo "Using Softmax user token."
 
 proc coworldJson(config: ToolConfig, args: openArray[string]): JsonNode =
   ## Runs coworld and parses its JSON output.
@@ -1624,6 +1622,7 @@ proc pageStart(title, cssHref: string): string =
   result.add "    .auto-refresh.is-on { opacity: 1; }\n"
   result.add "    .auto-refresh input { margin: 0; }\n"
   result.add "    .small { font-size: 0.85rem; }\n"
+  result.add replayExtractorCss()
   result.add "  </style>\n"
   result.add "</head>\n<body>\n<main>\n"
 
@@ -2166,9 +2165,18 @@ proc roundShortLabels(
 
 proc renderReplayHtml(
   game: Game,
+  replayPath,
   replayHref: string
 ): string =
-  ## Renders replay metadata without decoding the game artifact.
+  ## Renders replay metadata and the extracted game event log.
+  var labels: seq[string]
+  for participant in game.participants:
+    let slot = participant.position
+    if slot < 0:
+      continue
+    while labels.len <= slot:
+      labels.add ""
+    labels[slot] = participant.displayLabel()
   result.add "<section>\n"
   result.add "<h1>Crewrift Prime Game</h1>\n"
   result.add "<ul>\n"
@@ -2186,22 +2194,36 @@ proc renderReplayHtml(
   result.add "</section>\n"
   result.add "<section>\n"
   result.add "<h2>Replay artifact</h2>\n"
-  result.add "<p>Replay decoding is disabled for this Crewrift Prime port.</p>\n"
   result.add "<p><a href=\"" & replayHref.htmlEscape()
   result.add "\">Downloaded replay</a></p>\n"
   result.add "</section>\n"
+  result.add renderReplayHtmlForPath(replayPath, replayHref, labels)
 
 proc downloadReplay(game: Game, path: string): string =
   ## Downloads one replay artifact and returns an error summary on failure.
   if game.replayUrl.len == 0 or fileExists(path):
     return
-  let client = newHttpClient()
+  let tmpPath = path & ".download"
+  if fileExists(tmpPath):
+    removeFile(tmpPath)
   try:
-    writeFileRetry(path, client.getContent(game.replayUrl))
+    discard runCommand(
+      [
+        "curl",
+        "--fail",
+        "--location",
+        "--silent",
+        "--show-error",
+        "--output",
+        tmpPath,
+        game.replayUrl
+      ]
+    )
+    moveFile(tmpPath, path)
   except CatchableError as e:
     result = e.msg.shortCommandError()
-  finally:
-    client.close()
+    if fileExists(tmpPath):
+      removeFile(tmpPath)
 
 proc renderPendingGame(game: Game): string =
   ## Renders one game page when no replay is available.
@@ -2261,7 +2283,7 @@ proc renderGamePage(
   var html = pageStart("Tournament game " & game.id.shortId(), "../tufte.css")
   html.add "<p><a href=\"../index.html\">tournament index</a></p>\n"
   if fileExists(replayFile):
-    html.add renderReplayHtml(game, game.localReplayHref())
+    html.add renderReplayHtml(game, replayFile, game.localReplayHref())
     inc stats.replayPages
   else:
     inc stats.pendingPages

@@ -37,8 +37,10 @@ type
     kind*: ReplayEventKind
     actorSlot*: int
     actorLabel*: string
+    actorRole*: string
     secondarySlot*: int
     secondaryLabel*: string
+    secondaryRole*: string
     room*: string
     task*: int
     whileDead*: bool
@@ -219,6 +221,12 @@ proc roleText(role: PlayerRole): string =
     "crew"
   of Imposter:
     "imposter"
+
+proc playerRoleText(sim: SimServer, playerIndex: int): string =
+  ## Returns the event-schema role name for one player index.
+  if playerIndex >= 0 and playerIndex < sim.players.len:
+    return roleText(sim.players[playerIndex].role)
+  ""
 
 proc traceValue(source: string, confidence = 1.0): JsonNode =
   ## Returns common fields for one standard event-schema value object.
@@ -428,6 +436,7 @@ proc addPlayerEvent(
     kind: kind,
     actorSlot: sim.playerSlot(playerIndex),
     actorLabel: sim.player(playerIndex),
+    actorRole: sim.playerRoleText(playerIndex),
     secondarySlot: -1,
     task: -1,
     phase: sim.phase
@@ -447,6 +456,7 @@ proc addRoomEvent(
     kind: kind,
     actorSlot: sim.playerSlot(playerIndex),
     actorLabel: sim.player(playerIndex),
+    actorRole: sim.playerRoleText(playerIndex),
     secondarySlot: -1,
     room: sim.roomName(roomIndex),
     task: -1,
@@ -641,8 +651,10 @@ proc printNewBodies(
           kind: Kill,
           actorSlot: body.killerSlot,
           actorLabel: sim.player(killer),
+          actorRole: sim.playerRoleText(killer),
           secondarySlot: body.slotId,
           secondaryLabel: sim.player(victim),
+          secondaryRole: sim.playerRoleText(victim),
           task: -1,
           phase: sim.phase
         )
@@ -651,6 +663,7 @@ proc printNewBodies(
       kind: BodyFound,
       actorSlot: if victim >= 0: sim.playerSlot(victim) else: -1,
       actorLabel: sim.bodyPlayer(body),
+      actorRole: if victim >= 0: sim.playerRoleText(victim) else: "",
       secondarySlot: -1,
       room: sim.roomNameAt(body.x, body.y),
       task: -1,
@@ -667,6 +680,7 @@ proc reportedBodyEvent(sim: SimServer, tick: int): ReplayEvent =
     kind: VoteCalledBody,
     actorSlot: sim.playerSlot(sim.voteState.callerIndex),
     actorLabel: sim.voteCallerText(),
+    actorRole: sim.playerRoleText(sim.voteState.callerIndex),
     secondarySlot: -1,
     secondaryLabel: "unknown",
     task: -1,
@@ -677,6 +691,7 @@ proc reportedBodyEvent(sim: SimServer, tick: int): ReplayEvent =
       let victim = sim.playerForSlot(body.slotId)
       result.secondarySlot = if victim >= 0: sim.playerSlot(victim) else: -1
       result.secondaryLabel = sim.bodyPlayer(body)
+      result.secondaryRole = if victim >= 0: sim.playerRoleText(victim) else: ""
       result.room = sim.roomNameAt(body.x, body.y)
       return
   for body in sim.bodies:
@@ -684,6 +699,7 @@ proc reportedBodyEvent(sim: SimServer, tick: int): ReplayEvent =
       let victim = sim.playerForSlot(body.slotId)
       result.secondarySlot = if victim >= 0: sim.playerSlot(victim) else: -1
       result.secondaryLabel = sim.bodyPlayer(body)
+      result.secondaryRole = if victim >= 0: sim.playerRoleText(victim) else: ""
       result.room = sim.roomNameAt(body.x, body.y)
       return
   if sim.voteState.bodyColor != 255'u8:
@@ -708,6 +724,7 @@ proc addVoteCall(sim: SimServer, tick: int, events: var seq[ReplayEvent]) =
       kind: VoteCalledButton,
       actorSlot: sim.playerSlot(sim.voteState.callerIndex),
       actorLabel: sim.voteCallerText(),
+      actorRole: sim.playerRoleText(sim.voteState.callerIndex),
       secondarySlot: -1,
       task: -1,
       phase: sim.phase
@@ -739,6 +756,7 @@ proc printPlayerChanges(
           kind: StartedTask,
           actorSlot: sim.playerSlot(i),
           actorLabel: sim.player(i),
+          actorRole: sim.playerRoleText(i),
           secondarySlot: -1,
           task: p.activeTask,
           phase: sim.phase
@@ -770,7 +788,9 @@ proc printTaskCompletions(
           kind: CompletedTask,
           actorSlot: sim.playerSlot(playerIndex),
           actorLabel: sim.player(playerIndex),
+          actorRole: sim.playerRoleText(playerIndex),
           secondarySlot: -1,
+          room: sim.roomNameAt(task.x + task.w div 2, task.y + task.h div 2),
           task: taskIndex,
           whileDead: not sim.players[playerIndex].alive,
           phase: sim.phase
@@ -794,12 +814,17 @@ proc printVotes(
           kind: VoteCast,
           actorSlot: sim.playerSlot(i),
           actorLabel: sim.player(i),
+          actorRole: sim.playerRoleText(i),
           secondarySlot: if v >= 0 and v < sim.players.len:
             sim.playerSlot(v)
           else:
             -1,
           secondaryLabel: if v >= 0 and v < sim.players.len:
             sim.player(v)
+          else:
+            "",
+          secondaryRole: if v >= 0 and v < sim.players.len:
+            sim.playerRoleText(v)
           else:
             "",
           voteSkip: v == -2 or v == sim.players.len,
@@ -826,6 +851,7 @@ proc printChats(
           kind: Chat,
           actorSlot: p.joinOrder,
           actorLabel: sim.player(playerIndex),
+          actorRole: sim.playerRoleText(playerIndex),
           secondarySlot: -1,
           chatText: chat.text,
           task: -1,
@@ -854,6 +880,7 @@ proc printScoreLine(
     kind: Score,
     actorSlot: sim.playerSlot(playerIndex),
     actorLabel: sim.player(playerIndex),
+    actorRole: sim.playerRoleText(playerIndex),
     secondarySlot: -1,
     task: -1,
     phase: sim.phase,
@@ -1041,6 +1068,10 @@ proc jsonRow*(event: ReplayEvent): JsonNode =
   of Score:
     value["amount"] = %event.scoreAmount
     value["reason"] = %event.scoreReason
+  if event.actorRole.len > 0:
+    value["actor_role"] = %event.actorRole
+  if event.secondaryRole.len > 0:
+    value["secondary_role"] = %event.secondaryRole
 
   result = newJObject()
   result["ts"] = %event.tick

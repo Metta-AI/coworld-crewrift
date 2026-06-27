@@ -1,7 +1,8 @@
 import
-  std/[algorithm, httpclient, json, monotimes, os, osproc, streams,
+  std/[algorithm, json, monotimes, os, osproc, streams,
     strutils, times],
-  common
+  common,
+  replay_extractor
 
 const
   SoftmaxObservatoryUrl = "https://softmax.com/observatory/v2"
@@ -177,10 +178,32 @@ type
     ties: int
     losses: int
 
+  BotGroup = object
+    key: string
+    label: string
+    title: string
+    abbr: string
+    slots: seq[int]
+    policyIds: seq[string]
+
   RunScoreGroup = object
     label: string
     version: int
     points: seq[ScoreChartPoint]
+
+  RunFocus = object
+    found: bool
+    groupIndex: int
+    label: string
+    abbr: string
+    opponentLabel: string
+    scored: int
+    wins: int
+    losses: int
+    ties: int
+    avg: float
+    opponentAvg: float
+    avgMargin: float
 
   VersionAverage = object
     version: int
@@ -490,6 +513,168 @@ proc playerLetter(index: int): string =
   if index >= 0 and index < PlayerLetters.len:
     return PlayerLetters[index]
   $(index + 1)
+
+proc titleWords(text: string): string =
+  ## Returns a simple title-cased label.
+  var words: seq[string]
+  for word in text.splitWhitespace():
+    if word.len == 0:
+      continue
+    var clean = word.toLowerAscii()
+    clean[0] = clean[0].toUpperAscii()
+    words.add clean
+  words.join(" ")
+
+proc displayBotName(bot: BotRef): string =
+  ## Returns a compact family label for one bot.
+  let clean = botTitle(bot).readableBotLabel().stripVersionToken()
+  if clean.normalizeBot() == "notsus":
+    return "Not Sus"
+  clean.titleWords()
+
+proc addPolicyId(group: var BotGroup, value: string) =
+  ## Adds one non-empty policy identifier to a group.
+  if value.len == 0:
+    return
+  for existing in group.policyIds:
+    if existing == value:
+      return
+  group.policyIds.add value
+
+proc botGroupIndex(groups: openArray[BotGroup], key: string): int =
+  ## Returns the index of one bot group or -1 when absent.
+  for i, group in groups:
+    if group.key == key:
+      return i
+  -1
+
+proc botGroups(bots: openArray[BotRef]): seq[BotGroup] =
+  ## Returns unique bot groups in roster order.
+  for i, bot in bots:
+    var key = bot.key
+    if key.len == 0:
+      key = normalizeBot(botTitle(bot))
+    var index = result.botGroupIndex(key)
+    if index < 0:
+      result.add BotGroup(
+        key: key,
+        label: bot.displayBotName(),
+        title: botTitle(bot),
+        slots: @[i]
+      )
+      index = result.len - 1
+    else:
+      result[index].slots.add i
+    result[index].addPolicyId(bot.policyId)
+    result[index].addPolicyId(bot.input)
+    result[index].addPolicyId(bot.label)
+
+proc abbrSeed(label: string): string =
+  ## Returns the preferred one to three character abbreviation seed.
+  if label.normalizeBot() == "notsus":
+    return "N"
+  var words: seq[string]
+  for word in label.splitWhitespace():
+    if word.len > 0:
+      words.add word
+  if words.len >= 2:
+    for i in 0 ..< min(2, words.len):
+      result.add words[i][0].toUpperAscii()
+  elif words.len == 1:
+    result.add words[0][0].toUpperAscii()
+  if result.len == 0:
+    result = "B"
+
+proc compactLetters(label: string, limit: int): string =
+  ## Returns up to limit alphanumeric label characters.
+  for ch in label.toUpperAscii():
+    if ch in {'A' .. 'Z', '0' .. '9'}:
+      result.add ch
+      if result.len >= limit:
+        return
+
+proc assignAbbreviations(groups: var seq[BotGroup]) =
+  ## Assigns unique compact abbreviations to bot groups.
+  var used: seq[string]
+  for i in 0 ..< groups.len:
+    var abbr = groups[i].label.abbrSeed()
+    if abbr.len > 3:
+      abbr.setLen(3)
+    var unique = true
+    for item in used:
+      if item == abbr:
+        unique = false
+        break
+    if not unique:
+      for width in 2 .. 3:
+        let candidate = groups[i].label.compactLetters(width)
+        if candidate.len == 0:
+          continue
+        unique = true
+        for item in used:
+          if item == candidate:
+            unique = false
+            break
+        if unique:
+          abbr = candidate
+          break
+    if not unique:
+      abbr = i.playerLetter()
+    groups[i].abbr = abbr
+    used.add abbr
+
+proc groupedBots(bots: openArray[BotRef]): seq[BotGroup] =
+  ## Returns unique bot groups with display abbreviations.
+  result = botGroups(bots)
+  result.assignAbbreviations()
+
+proc groupForSlot(groups: openArray[BotGroup], slot: int): int =
+  ## Returns the group index containing one roster slot.
+  for i, group in groups:
+    for groupSlot in group.slots:
+      if groupSlot == slot:
+        return i
+  -1
+
+proc policyMatches(group: BotGroup, policyId: string): bool =
+  ## Returns true when a score policy identifier belongs to a group.
+  if policyId.len == 0:
+    return false
+  for value in group.policyIds:
+    if value == policyId:
+      return true
+  false
+
+proc scoreForGroup(
+  episode: Episode,
+  groups: openArray[BotGroup],
+  groupIndex: int
+): tuple[found: bool, score: float] =
+  ## Finds one score by unique bot group.
+  if groupIndex < 0 or groupIndex >= groups.len:
+    return (false, 0.0)
+  let group = groups[groupIndex]
+  for score in episode.scores:
+    if group.policyMatches(score.policyId):
+      return (true, score.score)
+  if episode.scores.len == groups.len:
+    return (true, episode.scores[groupIndex].score)
+
+  var
+    total = 0.0
+    count = 0
+  for slot in group.slots:
+    if slot >= 0 and slot < episode.seatScores.len:
+      let score = episode.seatScores[slot]
+      if score.found:
+        total += score.score
+        inc count
+    elif episode.scores.len > groups.len and slot < episode.scores.len:
+      total += episode.scores[slot].score
+      inc count
+  if count > 0:
+    return (true, total / count.float)
+  (false, 0.0)
 
 proc rosterTitle(bots: openArray[BotRef]): string =
   ## Returns a display title for a eight-player roster.
@@ -986,14 +1171,12 @@ proc ensureUserToken(config: ToolConfig) =
   ).output
   let subjectType = status.statusValue("subject_type")
   if subjectType == "user":
-    let subjectId = status.statusValue("subject_id")
-    echo "Using Softmax user token ", subjectId, "."
+    echo "Using Softmax user token."
     return
   if subjectType != "player":
-    fail("Could not determine Softmax auth subject_type:\n" & status)
+    fail("Could not determine Softmax auth subject_type.")
 
-  let playerId = status.statusValue("subject_id")
-  echo "Softmax is using player token ", playerId,
+  echo "Softmax is using a player token",
     "; switching to the main user token."
   discard runCommand(
     softmaxCommand(config, ["player", "unset"]),
@@ -1005,9 +1188,8 @@ proc ensureUserToken(config: ToolConfig) =
   ).output
   let updatedType = updated.statusValue("subject_type")
   if updatedType != "user":
-    fail("Expected Softmax user token after player unset:\n" & updated)
-  let userId = updated.statusValue("subject_id")
-  echo "Using Softmax user token ", userId, "."
+    fail("Expected Softmax user token after player unset.")
+  echo "Using Softmax user token."
 
 proc coworldJsonCommand(
   config: ToolConfig,
@@ -1235,11 +1417,14 @@ proc parseScores(row: JsonNode): seq[Score] =
   if scores.kind != JArray:
     return
   for item in scores:
-    if item.kind == JObject:
+    case item.kind
+    of JObject:
       result.add Score(
         policyId: item.strField("policy_version_id"),
         score: item.numberField("score")
       )
+    of JNull:
+      discard
     else:
       result.add Score(score: item.scoreValue())
 
@@ -1353,6 +1538,61 @@ proc playerSummaries(
     if item.scored > 0:
       item.avg = item.total / item.scored.float
 
+proc groupSummaries(
+  episodes: openArray[Episode],
+  groups: openArray[BotGroup]
+): seq[PlayerSummary] =
+  ## Summarizes average score and record for every unique bot group.
+  result = newSeq[PlayerSummary](groups.len)
+  for episode in episodes:
+    var
+      complete = true
+      best = -1.0e300
+      winners: seq[int]
+      scores = newSeq[float](groups.len)
+    for i in 0 ..< groups.len:
+      let score = episode.scoreForGroup(groups, i)
+      if not score.found:
+        complete = false
+        continue
+      scores[i] = score.score
+      if score.score > best + ScoreEpsilon:
+        best = score.score
+        winners = @[i]
+      elif abs(score.score - best) <= ScoreEpsilon:
+        winners.add i
+    if not complete or winners.len == 0:
+      continue
+    for i in 0 ..< groups.len:
+      result[i].total += scores[i]
+      inc result[i].scored
+      if i in winners:
+        if winners.len == 1:
+          inc result[i].wins
+        else:
+          inc result[i].ties
+      else:
+        inc result[i].losses
+  for item in result.mitems:
+    if item.scored > 0:
+      item.avg = item.total / item.scored.float
+
+proc winnerGroups(
+  episode: Episode,
+  groups: openArray[BotGroup]
+): seq[int] =
+  ## Returns every bot group tied for the highest score.
+  var best = -1.0e300
+  for i in 0 ..< groups.len:
+    let score = episode.scoreForGroup(groups, i)
+    if not score.found:
+      return @[]
+    if score.score > best + ScoreEpsilon:
+      best = score.score
+      result = @[i]
+    elif abs(score.score - best) <= ScoreEpsilon:
+      result.add i
+
 proc winnerSlots(episode: Episode, bots: openArray[BotRef]): seq[int] =
   ## Returns every slot tied for the highest score.
   var best = -1.0e300
@@ -1397,7 +1637,8 @@ proc summaryFor(
   episodes: openArray[Episode],
   bots: openArray[BotRef]
 ): Summary =
-  ## Summarizes hosted episode rows from slot zero's perspective.
+  ## Summarizes hosted episode rows from the first bot group's perspective.
+  let groups = groupedBots(bots)
   for episode in episodes:
     case episode.status
     of "completed":
@@ -1409,14 +1650,14 @@ proc summaryFor(
     else:
       inc result.pending
 
-    if bots.len >= 2:
-      let a = episode.scoreForSlot(0)
+    if groups.len >= 2:
+      let a = episode.scoreForGroup(groups, 0)
       if a.found:
         var
           bestOpponent = -1.0e300
           complete = true
-        for i in 1 ..< bots.len:
-          let b = episode.scoreForSlot(i)
+        for i in 1 ..< groups.len:
+          let b = episode.scoreForGroup(groups, i)
           if not b.found:
             complete = false
             break
@@ -1460,6 +1701,11 @@ proc printStatus(detail: JsonNode) =
   ## Prints a compact hosted request status line.
   echo detail.statusText()
 
+proc focusSummaryFor(
+  episodes: openArray[Episode],
+  groups: openArray[BotGroup]
+): RunFocus
+
 proc printTable(episodes: openArray[Episode], bots: openArray[BotRef]) =
   ## Prints the final command-line score table.
   if bots.len == 0:
@@ -1495,13 +1741,27 @@ proc printTable(episodes: openArray[Episode], bots: openArray[BotRef]) =
       " W=" & $player.wins &
       " T=" & $player.ties &
       " L=" & $player.losses
-  echo "slot0 wins=" & $summary.wins &
-    " losses=" & $summary.losses &
-    " ties=" & $summary.ties &
-    " avg=" & numberText(summary.avgA, 2) &
-    " vs best_opponent=" & numberText(summary.avgB, 2) &
-    " avg_margin=" & numberText(summary.avgMargin, 2) &
-    " players=[" & scoreText.join(", ") & "]"
+  let
+    groups = groupedBots(bots)
+    focus = focusSummaryFor(episodes, groups)
+  if focus.scored > 0:
+    echo "focus " & focus.label &
+      " wins=" & $focus.wins &
+      " losses=" & $focus.losses &
+      " ties=" & $focus.ties &
+      " avg=" & numberText(focus.avg, 2) &
+      " vs " & focus.opponentLabel & "=" &
+      numberText(focus.opponentAvg, 2) &
+      " avg_margin=" & numberText(focus.avgMargin, 2) &
+      " players=[" & scoreText.join(", ") & "]"
+  else:
+    echo "slot0 wins=" & $summary.wins &
+      " losses=" & $summary.losses &
+      " ties=" & $summary.ties &
+      " avg=" & numberText(summary.avgA, 2) &
+      " vs best_opponent=" & numberText(summary.avgB, 2) &
+      " avg_margin=" & numberText(summary.avgMargin, 2) &
+      " players=[" & scoreText.join(", ") & "]"
 
 proc copyAssets(outDir, tufteDir: string) =
   ## Copies Tufte CSS and fonts into the static report root.
@@ -1571,11 +1831,13 @@ proc pageStart(title, cssHref: string): string =
   result.add "    .result-win { color: #b00000; font-weight: 700; }\n"
   result.add "    .games-table { table-layout: fixed; width: 100%; }\n"
   result.add "    .games-table .game-col { width: 9rem; }\n"
-  result.add "    .games-table .player-col { width: 32%; }\n"
-  result.add "    .games-table .score-col { width: 5.5rem; }\n"
+  result.add "    .games-table .seat-col { width: 4.8rem; }\n"
   result.add "    .games-table .result-col { width: 4rem; }\n"
   result.add "    .games-table th, .games-table td { "
-  result.add "white-space: nowrap; }\n"
+  result.add "padding-right: 0.45rem; white-space: nowrap; }\n"
+  result.add "    .games-table .seat-cell { font-variant-numeric: "
+  result.add "tabular-nums; text-align: right; }\n"
+  result.add "    .games-table .abbr { font-weight: 700; }\n"
   result.add "    .games-table .clip-cell { overflow: hidden; "
   result.add "text-overflow: ellipsis; }\n"
   result.add "    .games-table .clip-cell a { display: block; "
@@ -1603,6 +1865,7 @@ proc pageStart(title, cssHref: string): string =
   result.add "    .version-chart-dot { fill: #000; stroke: #000; "
   result.add "stroke-width: 1; shape-rendering: auto; }\n"
   result.add scoreChartCss()
+  result.add replayExtractorCss()
   result.add "  </style>\n"
   result.add "</head>\n<body>\n<main>\n"
 
@@ -1722,7 +1985,7 @@ proc tableCell(text: string, numeric = false): string =
   else:
     "<td>" & text.htmlEscape() & "</td>"
 
-proc tableHtmlCell(html: string, numeric = false): string =
+proc tableHtmlCell(html: string, numeric = false): string {.used.} =
   ## Renders one table cell from already-escaped HTML.
   if numeric:
     "<td>" & html & "</td>"
@@ -1763,6 +2026,24 @@ proc metaBotLabel(meta: JsonNode, index: int): string =
     return parts[index]
   "Player " & $(index + 1)
 
+proc metaBotRefs(meta: JsonNode): seq[BotRef] =
+  ## Returns bot references from stored run metadata.
+  let bots = meta.arrayField("bots")
+  for i in 0 ..< bots.len:
+    var bot = BotRef(
+      input: bots[i].strField("input"),
+      key: bots[i].strField("key"),
+      label: bots[i].strField("label"),
+      policyId: bots[i].strField("policy_id")
+    )
+    if bot.input.len == 0:
+      bot.input = bot.label
+    if bot.label.len == 0:
+      bot.label = "Player " & $(i + 1)
+    if bot.key.len == 0:
+      bot.key = normalizeBot(bot.label)
+    result.add bot
+
 proc indexBotHtml(slug, label: string): string =
   ## Renders one ellipsized bot-name link for the run index.
   let
@@ -1794,11 +2075,12 @@ proc episodeScoresJson(
   episode: Episode,
   bots: openArray[BotRef]
 ): JsonNode =
-  ## Converts one episode's slot scores to JSON.
+  ## Converts one episode's bot-group scores to JSON.
   result = newJArray()
   var found = false
-  for i in 0 ..< bots.len:
-    let score = episode.scoreForSlot(i)
+  let groups = groupedBots(bots)
+  for i in 0 ..< groups.len:
+    let score = episode.scoreForGroup(groups, i)
     if score.found:
       result.add %score.score
       found = true
@@ -1934,6 +2216,217 @@ proc notsusVersion(label: string): int =
     return -1
   label.botVersion()
 
+proc focusLabelVersion(label: string): int =
+  ## Returns the version for one focused bot label or key.
+  result = label.notsusVersion()
+  if result > 0:
+    return
+  let
+    clean = label.normalizeBot()
+    prefix = DefaultUploadName.normalizeBot() & "v"
+  if not clean.startsWith(prefix):
+    return -1
+  let version = clean[prefix.len .. ^1]
+  if version.len == 0:
+    return -1
+  try:
+    result = version.parseInt()
+  except ValueError:
+    result = -1
+
+proc matchesFocusBot(label: string): bool =
+  ## Returns true when one label belongs to the optimized bot family.
+  let
+    clean = label.normalizeBot()
+    target = DefaultUploadName.normalizeBot()
+  clean == target or clean.startsWith(target & "v")
+
+proc focusVersion(group: BotGroup): int =
+  ## Returns the best focused-bot version seen in one bot group.
+  result = -1
+  for label in [group.key, group.label, group.title]:
+    result = max(result, label.focusLabelVersion())
+  for label in group.policyIds:
+    result = max(result, label.focusLabelVersion())
+  if result < 0 and (
+      group.key.matchesFocusBot() or group.label.matchesFocusBot() or
+      group.title.matchesFocusBot()):
+    result = 0
+
+proc focusGroupIndex(groups: openArray[BotGroup]): int =
+  ## Returns the optimized bot group index, falling back to roster order.
+  result = -1
+  var bestVersion = -2
+  for i, group in groups:
+    let matches = group.key.matchesFocusBot() or
+      group.label.matchesFocusBot() or group.title.matchesFocusBot()
+    var idMatches = false
+    for label in group.policyIds:
+      if label.matchesFocusBot():
+        idMatches = true
+        break
+    if not matches and not idMatches:
+      continue
+    let version = group.focusVersion()
+    if result < 0 or version > bestVersion:
+      result = i
+      bestVersion = version
+  if result < 0 and groups.len > 0:
+    result = 0
+
+proc focusDisplayLabel(group: BotGroup): string =
+  ## Returns the raw focused-bot label used on top-level reports.
+  if group.title.len > 0:
+    return group.title
+  if group.label.len > 0:
+    return group.label
+  group.key
+
+proc opponentDisplayLabel(
+  groups: openArray[BotGroup],
+  focusIndex: int
+): string =
+  ## Returns the compact opponent label for one focused run.
+  if groups.len == 2:
+    for i, group in groups:
+      if i != focusIndex:
+        return group.focusDisplayLabel()
+  "best opponent"
+
+proc initRunFocus(
+  groups: openArray[BotGroup],
+  focusIndex: int
+): RunFocus =
+  ## Builds one empty focus summary from bot groups.
+  result.groupIndex = focusIndex
+  result.opponentLabel = "best opponent"
+  if focusIndex >= 0 and focusIndex < groups.len:
+    result.found = true
+    result.label = groups[focusIndex].focusDisplayLabel()
+    result.abbr = groups[focusIndex].abbr
+    result.opponentLabel = groups.opponentDisplayLabel(focusIndex)
+  else:
+    result.label = "Player 0"
+    result.abbr = "Player 0"
+
+proc finishRunFocus(
+  focus: var RunFocus,
+  total,
+  opponentTotal: float
+) =
+  ## Finalizes aggregate averages for one focus summary.
+  if focus.scored > 0:
+    focus.avg = total / focus.scored.float
+    focus.opponentAvg = opponentTotal / focus.scored.float
+    focus.avgMargin = focus.avg - focus.opponentAvg
+
+proc focusSummaryFor(
+  episodes: openArray[Episode],
+  groups: openArray[BotGroup]
+): RunFocus =
+  ## Summarizes the optimized bot group from loaded episodes.
+  let focusIndex = groups.focusGroupIndex()
+  result = groups.initRunFocus(focusIndex)
+  if focusIndex < 0 or focusIndex >= groups.len:
+    return
+  var
+    total = 0.0
+    opponentTotal = 0.0
+  for episode in episodes:
+    let focusScore = episode.scoreForGroup(groups, focusIndex)
+    if not focusScore.found:
+      continue
+    var
+      foundOpponent = false
+      bestOpponent = -1.0e300
+    for i in 0 ..< groups.len:
+      if i == focusIndex:
+        continue
+      let score = episode.scoreForGroup(groups, i)
+      if score.found and score.score > bestOpponent:
+        bestOpponent = score.score
+        foundOpponent = true
+    if not foundOpponent:
+      continue
+    total += focusScore.score
+    opponentTotal += bestOpponent
+    inc result.scored
+    if focusScore.score > bestOpponent + ScoreEpsilon:
+      inc result.wins
+    elif bestOpponent > focusScore.score + ScoreEpsilon:
+      inc result.losses
+    else:
+      inc result.ties
+  result.finishRunFocus(total, opponentTotal)
+
+proc hasScoreValue(node: JsonNode): bool =
+  ## Returns true when a JSON node can be read as a score.
+  case node.kind
+  of JInt, JFloat:
+    true
+  of JObject:
+    let score = node.field("score")
+    score.kind in {JInt, JFloat}
+  else:
+    false
+
+proc legacyFocusSummary(meta: JsonNode): RunFocus =
+  ## Returns the old slot-zero summary for legacy run metadata.
+  result = RunFocus(
+    found: true,
+    groupIndex: 0,
+    label: meta.metaBotLabel(0),
+    abbr: "Player 0",
+    opponentLabel: "best opponent",
+    scored: meta.intField("completed", meta.intField("games")),
+    wins: meta.intField("wins"),
+    losses: meta.intField("losses"),
+    ties: meta.intField("ties"),
+    avg: meta.numberField("avg_a"),
+    opponentAvg: meta.numberField("avg_b"),
+    avgMargin: meta.numberField("avg_margin")
+  )
+
+proc focusSummaryFor(meta: JsonNode): RunFocus =
+  ## Summarizes the optimized bot group from stored run metadata.
+  let groups = groupedBots(meta.metaBotRefs())
+  let focusIndex = groups.focusGroupIndex()
+  result = groups.initRunFocus(focusIndex)
+  if focusIndex < 0 or focusIndex >= groups.len:
+    return meta.legacyFocusSummary()
+  var
+    total = 0.0
+    opponentTotal = 0.0
+  for episode in meta.arrayField("episodes"):
+    let scores = episode.arrayField("scores")
+    if focusIndex >= scores.len or not scores[focusIndex].hasScoreValue():
+      continue
+    var
+      foundOpponent = false
+      bestOpponent = -1.0e300
+    for i in 0 ..< scores.len:
+      if i == focusIndex or not scores[i].hasScoreValue():
+        continue
+      let score = scores[i].scoreValue()
+      if score > bestOpponent:
+        bestOpponent = score
+        foundOpponent = true
+    if not foundOpponent:
+      continue
+    let focusScore = scores[focusIndex].scoreValue()
+    total += focusScore
+    opponentTotal += bestOpponent
+    inc result.scored
+    if focusScore > bestOpponent + ScoreEpsilon:
+      inc result.wins
+    elif bestOpponent > focusScore + ScoreEpsilon:
+      inc result.losses
+    else:
+      inc result.ties
+  if result.scored == 0:
+    return meta.legacyFocusSummary()
+  result.finishRunFocus(total, opponentTotal)
+
 proc versionAverageIndex(
   averages: var seq[VersionAverage],
   version: int
@@ -1994,10 +2487,10 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
     maxVersion = VersionChartDefaultMaxVersion
   for meta in metas:
     let
-      label = meta.metaBotLabel(0)
-      version = label.notsusVersion()
-      games = meta.intField("completed")
-      score = meta.numberField("avg_a")
+      focus = meta.focusSummaryFor()
+      version = focus.label.focusLabelVersion()
+      games = focus.scored
+      score = focus.avg
     if version <= 0 or games <= 0:
       continue
     averages.addVersionAverage(version, score, games)
@@ -2074,17 +2567,6 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
     result.add title.htmlEscape() & "</title></circle>\n"
   result.add "</svg>\n</div>\n"
 
-proc hasScoreValue(node: JsonNode): bool =
-  ## Returns true when a JSON node can be read as a score.
-  case node.kind
-  of JInt, JFloat:
-    true
-  of JObject:
-    let score = node.field("score")
-    score.kind in {JInt, JFloat}
-  else:
-    false
-
 proc scoreOutcome(score, bestOpponent: float): ScoreChartOutcome =
   ## Returns a chart outcome for one score against best opponent.
   if score > bestOpponent + ScoreEpsilon:
@@ -2134,24 +2616,30 @@ proc addEpisodeScorePoints(
 ): bool =
   ## Adds per-game score points from run metadata when available.
   let
-    label = meta.metaBotLabel(0)
+    botGroups = groupedBots(meta.metaBotRefs())
+    focusIndex = botGroups.focusGroupIndex()
     runNumber = meta.intField("run_number")
     created = meta.strField("created_at")
+  if focusIndex < 0 or focusIndex >= botGroups.len:
+    return false
+  let label = botGroups[focusIndex].focusDisplayLabel()
   for episode in meta.arrayField("episodes"):
     let scores = episode.arrayField("scores")
-    if scores.len == 0 or not scores[0].hasScoreValue():
+    if focusIndex >= scores.len or not scores[focusIndex].hasScoreValue():
       continue
     var
       foundOpponent = false
       bestOpponent = -1.0e300
-    for i in 1 ..< scores.len:
+    for i in 0 ..< scores.len:
+      if i == focusIndex:
+        continue
       if scores[i].hasScoreValue():
         bestOpponent = max(bestOpponent, scores[i].scoreValue())
         foundOpponent = true
     if not foundOpponent:
       continue
     let
-      score = scores[0].scoreValue()
+      score = scores[focusIndex].scoreValue()
       outcome = score.scoreOutcome(bestOpponent)
       gameIndex = episode.intField("index")
       title = label & " " & numberText(score, 2) & ", " &
@@ -2173,7 +2661,7 @@ proc addPairScorePoints(
 ): bool =
   ## Adds legacy per-game score points from stored pair rows.
   let
-    label = meta.metaBotLabel(0)
+    label = meta.focusSummaryFor().label
     runNumber = meta.intField("run_number")
     created = meta.strField("created_at")
   for pair in meta.arrayField("pairs"):
@@ -2229,14 +2717,16 @@ proc addAverageScorePoint(
   meta: JsonNode
 ) =
   ## Adds one average score point for older run metadata.
-  let completed = meta.intField("completed")
+  let
+    focus = meta.focusSummaryFor()
+    completed = meta.intField("completed")
   if completed <= 0:
     return
   let
-    label = meta.metaBotLabel(0)
+    label = focus.label
     runNumber = meta.intField("run_number")
-    score = meta.numberField("avg_a")
-    bestOpponent = meta.numberField("avg_b")
+    score = focus.avg
+    bestOpponent = focus.opponentAvg
     outcome = score.scoreOutcome(bestOpponent)
     title = label & " avg " & numberText(score, 2) & ", " &
       outcome.scoreChartOutcomeText() & ", run " & $runNumber &
@@ -2303,24 +2793,26 @@ proc writeMainIndex(config: ToolConfig) =
   html.add "<col class=\"score-col\"><col class=\"win-col\">"
   html.add "<col class=\"count-col\">"
   html.add "<col class=\"count-col\"><col class=\"time-col\"></colgroup>\n"
-  html.add "<thead><tr><th>#</th><th>Player 0</th><th>Avg</th>"
+  html.add "<thead><tr><th>#</th><th>Player</th><th>Avg</th>"
   html.add "<th>Best Opp</th><th>Avg</th><th>Win%</th>"
   html.add "<th>Completed</th><th>Games</th><th>Run time</th>"
   html.add "</tr></thead>\n<tbody>\n"
   for i, meta in metas:
     let
+      focus = meta.focusSummaryFor()
       slug = meta.strField("slug")
-      playerA = meta.metaBotLabel(0)
-      playerB = "best opponent"
-      avgA = meta.numberField("avg_a")
-      avgB = meta.numberField("avg_b")
+      playerA = focus.label
+      playerB = focus.opponentLabel
+      avgA = focus.avg
+      avgB = focus.opponentAvg
       scoreA = numberText(avgA, 2)
       scoreB = numberText(avgB, 2)
       wonA = avgA > avgB + ScoreEpsilon
-      wins = meta.intField("wins")
+      wins = focus.wins
+      scored = focus.scored
       games = meta.intField("games")
       completed = meta.intField("completed")
-      rate = winRate(wins, games)
+      rate = winRate(wins, scored)
       rateText = rate.winRateText()
       durationSeconds = meta.numberField("duration_seconds", -1.0)
       duration = durationText(durationSeconds)
@@ -2370,6 +2862,48 @@ proc writeMainIndex(config: ToolConfig) =
   html.add pageEnd()
   writeFile(config.outDir / "index.html", html)
 
+proc seatsText(slots: openArray[int]): string =
+  ## Renders compact seat letters for one bot group.
+  if slots.len == 0:
+    return "-"
+  var clean: seq[int]
+  for slot in slots:
+    clean.add slot
+  clean.sort(system.cmp[int])
+  var
+    i = 0
+    parts: seq[string]
+  while i < clean.len:
+    let start = clean[i]
+    var finish = start
+    while i + 1 < clean.len and clean[i + 1] == finish + 1:
+      inc i
+      finish = clean[i]
+    if start == finish:
+      parts.add start.playerLetter()
+    else:
+      parts.add start.playerLetter() & "-" & finish.playerLetter()
+    inc i
+  parts.join(", ")
+
+proc seatScoreHtml(
+  episode: Episode,
+  groups: openArray[BotGroup],
+  slot: int,
+  winners: openArray[int]
+): string =
+  ## Renders one compact seat score cell.
+  let groupIndex = groups.groupForSlot(slot)
+  if groupIndex < 0:
+    return "-"
+  let score = episode.scoreForGroup(groups, groupIndex)
+  var html = "<span class=\"abbr\">" &
+    groups[groupIndex].abbr.htmlEscape() & "</span> " &
+    score.scoreText().htmlEscape()
+  if groupIndex in winners:
+    html = "<mark>" & html & "</mark>"
+  html
+
 proc renderRunIndex(
   config: ToolConfig,
   paths: RunPaths,
@@ -2380,9 +2914,17 @@ proc renderRunIndex(
 ) =
   ## Writes the per-run static index page.
   let
+    groups = groupedBots(config.bots)
     summary = summaryFor(episodes, config.bots)
-    players = playerSummaries(episodes, config.bots)
-    labels = shortBotLabels(config.bots)
+    groupStats = groupSummaries(episodes, groups)
+    focus = focusSummaryFor(episodes, groups)
+    firstLabel =
+      if focus.abbr.len > 0:
+        focus.abbr
+      elif groups.len > 0:
+        groups[0].abbr
+      else:
+        "First bot"
   var html = pageStart(config.name, config.assetHref(1))
   html.add "<section>\n"
   html.add "<p><a href=\"../index.html\">all runs</a></p>\n"
@@ -2396,53 +2938,56 @@ proc renderRunIndex(
   html.add "<ul>\n"
   html.add "<li>Status: " & detail.strField("status").htmlEscape() & "</li>\n"
   html.add "<li>Games: " & $episodes.len & "</li>\n"
-  html.add "<li>Player 0 record versus best opponent: "
-  html.add $summary.wins & "-" & $summary.losses
-  html.add "-" & $summary.ties & "</li>\n"
-  html.add "<li>Player 0 average score: "
-  html.add numberText(summary.avgA, 2) & "</li>\n"
+  html.add "<li>" & firstLabel.htmlEscape()
+  html.add " record versus best opponent: "
+  if focus.scored > 0:
+    html.add $focus.wins & "-" & $focus.losses
+    html.add "-" & $focus.ties & "</li>\n"
+  else:
+    html.add $summary.wins & "-" & $summary.losses
+    html.add "-" & $summary.ties & "</li>\n"
+  html.add "<li>" & firstLabel.htmlEscape() & " average score: "
+  if focus.scored > 0:
+    html.add numberText(focus.avg, 2) & "</li>\n"
+  else:
+    html.add numberText(summary.avgA, 2) & "</li>\n"
   html.add "<li>Average margin: "
-  html.add numberText(summary.avgMargin, 2) & "</li>\n"
+  if focus.scored > 0:
+    html.add numberText(focus.avgMargin, 2) & "</li>\n"
+  else:
+    html.add numberText(summary.avgMargin, 2) & "</li>\n"
   if durationSeconds >= 0.0:
     html.add "<li>Run time: " & durationText(durationSeconds) & "</li>\n"
   html.add "</ul>\n"
   html.add "<table class=\"wide no-sort name-key\">\n"
-  html.add "<thead><tr><th>Name</th><th>Short name</th></tr></thead>\n"
+  html.add "<thead><tr><th>Abbr</th><th>Bot</th><th>Seats</th>"
+  html.add "<th>Average</th><th>Wins</th><th>Ties</th>"
+  html.add "<th>Losses</th></tr></thead>\n"
   html.add "<tbody>\n"
-  var seen: seq[string]
-  for i, bot in config.bots:
-    let full = botTitle(bot)
-    if full in seen:
-      continue
-    seen.add full
+  for i, group in groups:
+    let stats =
+      if i < groupStats.len:
+        groupStats[i]
+      else:
+        PlayerSummary()
     html.add "<tr>"
-    html.add full.tableCell()
-    html.add labels[i].tableCell()
-    html.add "</tr>\n"
-  html.add "</tbody></table>\n"
-  html.add "<table class=\"wide\">\n"
-  html.add "<thead><tr><th>Player</th><th>Average</th>"
-  html.add "<th>Wins</th><th>Ties</th><th>Losses</th></tr></thead>\n"
-  html.add "<tbody>\n"
-  for i, player in players:
-    html.add "<tr>"
-    html.add ("P" & $i & " " & labels[i]).tableCell()
-    html.add numberText(player.avg, 2).tableCell(numeric = true)
-    html.add ($player.wins).tableCell(numeric = true)
-    html.add ($player.ties).tableCell(numeric = true)
-    html.add ($player.losses).tableCell(numeric = true)
+    html.add group.abbr.tableCell()
+    html.add group.label.tableCell()
+    html.add group.slots.seatsText().tableCell()
+    html.add numberText(stats.avg, 2).tableCell(numeric = true)
+    html.add ($stats.wins).tableCell(numeric = true)
+    html.add ($stats.ties).tableCell(numeric = true)
+    html.add ($stats.losses).tableCell(numeric = true)
     html.add "</tr>\n"
   html.add "</tbody></table>\n"
   html.add "<table class=\"wide games-table\">\n"
   html.add "<colgroup><col class=\"game-col\">"
   for i in 0 ..< config.bots.len:
-    html.add "<col class=\"player-col\"><col class=\"score-col\">"
+    html.add "<col class=\"seat-col\">"
   html.add "</colgroup>\n"
   html.add "<thead><tr><th>Game</th>"
   for i in 0 ..< config.bots.len:
-    html.add "<th>Player " & i.playerLetter() & "</th>"
-    html.add "<th class=\"score-heading\" aria-label=\"Score "
-    html.add i.playerLetter().htmlEscape() & "\"></th>"
+    html.add "<th>" & i.playerLetter().htmlEscape() & "</th>"
   html.add "</tr></thead>\n<tbody>\n"
   for episode in episodes:
     let gameLabel =
@@ -2456,15 +3001,10 @@ proc renderRunIndex(
       gameLabel,
       "game-cell"
     )
-    let winners = winnerSlots(episode, config.bots)
+    let winners = episode.winnerGroups(groups)
     for i in 0 ..< config.bots.len:
-      let score = episode.scoreForSlot(i)
-      html.add labels[i].tableCell()
-      let text = score.scoreText()
-      if i in winners:
-        html.add markHtml(text).tableHtmlCell(numeric = true)
-      else:
-        html.add text.tableCell(numeric = true)
+      html.add episode.seatScoreHtml(groups, i, winners).
+        tableHtmlClass("seat-cell")
     html.add "</tr>\n"
   html.add "</tbody></table>\n"
   html.add "</section>\n"
@@ -2477,8 +3017,10 @@ proc renderReplayHtml(
   replayPath,
   replayHref: string
 ): string =
-  ## Renders replay metadata without decoding the game artifact.
-  discard bots
+  ## Renders replay metadata and the extracted game event log.
+  var labels: seq[string]
+  for bot in bots:
+    labels.add bot.label
   result.add "<section>\n"
   result.add "<h1>Crewrift Prime Game " & $episode.index & "</h1>\n"
   result.add "<ul>\n"
@@ -2498,7 +3040,6 @@ proc renderReplayHtml(
   result.add "</section>\n"
   result.add "<section>\n"
   result.add "<h2>Replay artifact</h2>\n"
-  result.add "<p>Replay decoding is disabled for this Crewrift Prime port.</p>\n"
   result.add "<ul>\n"
   result.add "<li><a href=\"" & replayHref.htmlEscape()
   result.add "\">Downloaded replay</a></li>\n"
@@ -2506,6 +3047,7 @@ proc renderReplayHtml(
   result.add "</code></li>\n"
   result.add "</ul>\n"
   result.add "</section>\n"
+  result.add renderReplayHtmlForPath(replayPath, replayHref, labels)
 
 proc renderPendingHtml(episode: Episode, gameIndex = -1): string =
   ## Renders one episode page before a replay is available.
@@ -2539,13 +3081,27 @@ proc downloadReplay(episode: Episode, path: string): string =
   ## Downloads one replay artifact and returns an error summary on failure.
   if episode.replayUrl.len == 0 or fileExists(path):
     return
-  let client = newHttpClient()
+  let tmpPath = path & ".download"
+  if fileExists(tmpPath):
+    removeFile(tmpPath)
   try:
-    writeFile(path, client.getContent(episode.replayUrl))
+    discard runCommand(
+      [
+        "curl",
+        "--fail",
+        "--location",
+        "--silent",
+        "--show-error",
+        "--output",
+        tmpPath,
+        episode.replayUrl
+      ]
+    )
+    moveFile(tmpPath, path)
   except CatchableError as e:
     result = e.msg.shortCommandError()
-  finally:
-    client.close()
+    if fileExists(tmpPath):
+      removeFile(tmpPath)
 
 proc fillReplayScores(
   episodes: var seq[Episode],
