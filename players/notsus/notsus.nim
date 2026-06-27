@@ -452,6 +452,9 @@ type
     framesDropped: int
     skippedFrames: int
     lastDropLogTick: int
+    lastLoggedRoom: string
+    visibleRoomNames: array[PlayerColorCount, string]
+    bedrockConfigLogged: bool
     lastMask: uint8
     lastThought: string
     pendingChat: string
@@ -1200,6 +1203,10 @@ proc updateRole(bot: var Bot)
 
 proc updateSelfColor(bot: var Bot)
 
+proc logEvent(bot: Bot, message: string)
+
+proc logBlock(bot: Bot, title, text: string)
+
 proc applyMeetingCallToVoting(bot: var Bot)
 
 proc applyVotedAgainstEvidence(bot: var Bot)
@@ -1783,6 +1790,9 @@ proc resetRoundState(bot: var Bot) =
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
   bot.pendingChat = ""
+  bot.lastLoggedRoom = ""
+  for i in 0 ..< bot.visibleRoomNames.len:
+    bot.visibleRoomNames[i] = ""
   bot.lastBodySeenX = low(int)
   bot.lastBodySeenY = low(int)
   bot.lastBodyReportX = low(int)
@@ -2468,10 +2478,12 @@ proc applyProtocolVotingState(
   bot.applyVotedAgainstEvidence()
   bot.updateVotingLlmSnapshots(hadVoting, previousChat, previousSus)
   if not hadVoting:
-    echo "notsus voting protocol detected: count=", playerCount,
-      " cursor=", bot.voteTargetName(cursor),
-      " self=", bot.voteTargetName(selfSlot),
-      " chat=", bot.voteChatText.len
+    bot.logEvent(
+      "notsus voting protocol detected: count=" & $playerCount &
+        " cursor=" & bot.voteTargetName(cursor) &
+        " self=" & bot.voteTargetName(selfSlot) &
+        " chat=" & $bot.voteChatText.len
+    )
   true
 
 proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} =
@@ -2745,9 +2757,10 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} 
   bot.protocolVoteScreenSeen = voteScreenSeen
   if voteScreenSeen and votePlayerCount > 0:
     if voteGeometryFallbackUsed:
-      echo "notsus voting geometry fallback ready: cursorSeen=",
-        voteCursorSeen,
-        " selfSeen=", voteSelfSeen
+      bot.logEvent(
+        "notsus voting geometry fallback ready: cursorSeen=" &
+          $voteCursorSeen & " selfSeen=" & $voteSelfSeen
+      )
     if voteCursorSeen:
       voteCursor =
         if voteCursorIsSkip:
@@ -3701,6 +3714,7 @@ proc pendingChatReady(bot: Bot): bool =
 proc markPendingChatSent(bot: var Bot) =
   ## Records a sent pending chat packet and clears the buffer.
   if bot.voting and bot.interstitial:
+    bot.logEvent("notsus sent voting chat: " & bot.pendingChat)
     bot.voteSaidSomething = true
     inc bot.voteLlmSayCount
   bot.pendingChat = ""
@@ -3747,6 +3761,130 @@ proc playerColorName(colorIndex: int): string =
     PlayerColorNames[colorIndex]
   else:
     "unknown"
+
+proc logTick(bot: Bot): int =
+  ## Returns the server tick used for human-readable log time.
+  if bot.serverTick >= 0:
+    bot.serverTick
+  else:
+    bot.frameTick
+
+proc gameTimeText(tick: int): string =
+  ## Formats one game tick as minutes and seconds.
+  let
+    safeTick = max(0, tick)
+    millis = (int64(safeTick) * 1000'i64) div int64(sim.TargetFps)
+    totalSeconds = int(millis div 1000'i64)
+    minutes = totalSeconds div 60
+    seconds = totalSeconds mod 60
+  result = $minutes & ":"
+  if seconds < 10:
+    result.add "0"
+  result.add $seconds
+
+proc logEvent(bot: Bot, message: string) =
+  ## Logs one bot observation with replay-compatible game time.
+  echo "[", bot.logTick().gameTimeText(), "] ", message
+
+proc logBlock(bot: Bot, title, text: string) =
+  ## Logs a multiline bot observation with one timestamp per line.
+  bot.logEvent(title & " begin")
+  if text.len == 0:
+    bot.logEvent(title & " | <empty>")
+  else:
+    for line in text.splitLines():
+      bot.logEvent(title & " | " & line)
+  bot.logEvent(title & " end")
+
+proc roomLabelAt(bot: Bot, x, y: int): string =
+  ## Returns a readable room label for one world point.
+  let room = bot.roomAt(x, y)
+  if not room.found:
+    return "unknown"
+  if room.inside:
+    room.name
+  else:
+    "near " & room.name
+
+proc visibleCrewmateRoom(bot: Bot, crewmate: CrewmateMatch): string =
+  ## Returns the room label for one visible crewmate sprite.
+  let tracked = bot.playerPointSeen(crewmate.colorIndex)
+  if tracked.found:
+    return bot.roomLabelAt(
+      tracked.x + CollisionW div 2,
+      tracked.y + CollisionH div 2
+    )
+  bot.roomLabelAt(
+    bot.detectionCameraX() + crewmate.x + SpriteDrawOffX +
+      CollisionW div 2,
+    bot.detectionCameraY() + crewmate.y + SpriteDrawOffY +
+      CollisionH div 2
+  )
+
+proc clearVisibleRoomLogs(bot: var Bot) =
+  ## Logs exits for all previously visible player room observations.
+  for i in 0 ..< bot.visibleRoomNames.len:
+    if bot.visibleRoomNames[i].len == 0:
+      continue
+    bot.logEvent(
+      "notsus saw " & playerColorName(i) &
+        " exit " & bot.visibleRoomNames[i]
+    )
+    bot.visibleRoomNames[i] = ""
+
+proc logRoomTransitions(bot: var Bot) =
+  ## Logs room changes for this bot and visible players.
+  if bot.interstitial or not bot.localized:
+    if bot.lastLoggedRoom.len > 0:
+      bot.logEvent("notsus exited " & bot.lastLoggedRoom)
+      bot.lastLoggedRoom = ""
+    bot.clearVisibleRoomLogs()
+    return
+  let currentRoom = bot.roomName()
+  if currentRoom.len > 0 and
+      currentRoom != "unknown" and
+      currentRoom != bot.lastLoggedRoom:
+    if bot.lastLoggedRoom.len > 0:
+      bot.logEvent("notsus exited " & bot.lastLoggedRoom)
+    bot.lastLoggedRoom = currentRoom
+    bot.logEvent(
+      "notsus entered " & currentRoom & " as " & bot.role.roleName()
+    )
+  var seen: array[PlayerColorCount, bool]
+  for crewmate in bot.visibleCrewmates:
+    let colorIndex = crewmate.colorIndex
+    if colorIndex < 0 or colorIndex >= PlayerColorCount:
+      continue
+    if colorIndex == bot.selfColorIndex:
+      bot.visibleRoomNames[colorIndex] = ""
+      continue
+    let room = bot.visibleCrewmateRoom(crewmate)
+    if room.len == 0 or room == "unknown":
+      continue
+    seen[colorIndex] = true
+    let previousRoom = bot.visibleRoomNames[colorIndex]
+    if previousRoom == room:
+      continue
+    if previousRoom.len > 0:
+      bot.logEvent(
+        "notsus saw " & playerColorName(colorIndex) &
+          " exit " & previousRoom
+      )
+    bot.visibleRoomNames[colorIndex] = room
+    bot.logEvent(
+      "notsus saw " & playerColorName(colorIndex) &
+        " enter " & room
+    )
+  for i in 0 ..< bot.visibleRoomNames.len:
+    if i == bot.selfColorIndex:
+      bot.visibleRoomNames[i] = ""
+      continue
+    if bot.visibleRoomNames[i].len > 0 and not seen[i]:
+      bot.logEvent(
+        "notsus saw " & playerColorName(i) &
+          " exit " & bot.visibleRoomNames[i]
+      )
+      bot.visibleRoomNames[i] = ""
 
 proc voteTargetSafeForRole(bot: Bot, target: int): bool =
   ## Returns true when this role should be willing to vote for a target.
@@ -4846,42 +4984,67 @@ proc printVotingEvidence(bot: var Bot) =
   bot.voteEvidenceLogged = true
   let evidence = bot.votingEvidenceText()
   if evidence.len > 0:
-    echo evidence
+    bot.logBlock("notsus voting evidence", evidence)
 
-proc envOrFile(name, fileName: string): string =
+proc envOrFile(
+  name,
+  fileName: string
+): tuple[value: string, source: string] =
   ## Returns an environment value or the stripped content of a file env.
-  result = getEnv(name).strip()
-  if result.len > 0:
+  result.value = getEnv(name).strip()
+  if result.value.len > 0:
+    result.source = name
     return
   let path = getEnv(fileName).strip()
   if path.len > 0 and fileExists(path):
-    result = readFile(path).strip()
+    result.value = readFile(path).strip()
+    if result.value.len > 0:
+      result.source = "file from " & fileName
 
-proc bedrockVotingToken(): string =
+proc bedrockVotingToken(): tuple[value: string, source: string] =
   ## Returns the configured Bedrock bearer token for voting.
   result = envOrFile(
     "AWS_BEARER_TOKEN_BEDROCK",
     "AWS_BEARER_TOKEN_BEDROCK_FILE"
   )
-  if result.len == 0:
+  if result.value.len == 0:
     result = envOrFile("BEDROCK_KEY", "BEDROCK_API_KEY_FILE")
 
-proc configureVotingBedrock(): bool =
+proc configureVotingBedrock(bot: var Bot): bool =
   ## Copies voting Bedrock env and file settings into the shared adapter.
   let token = bedrockVotingToken()
-  if token.len == 0:
+  let
+    model = getEnv(
+      "BEDROCK_CLAUDE_MODEL_ID",
+      getEnv("BEDROCK_MODEL")
+    ).strip()
+    region = getEnv(
+      "AWS_REGION",
+      getEnv("AWS_DEFAULT_REGION")
+    ).strip()
+  if not bot.bedrockConfigLogged:
+    if token.value.len > 0:
+      bot.logEvent(
+        "notsus bedrock token found: source=" & token.source
+      )
+    else:
+      bot.logEvent(
+        "notsus bedrock token missing: checked " &
+          "AWS_BEARER_TOKEN_BEDROCK, " &
+          "AWS_BEARER_TOKEN_BEDROCK_FILE, BEDROCK_KEY, " &
+          "BEDROCK_API_KEY_FILE"
+      )
+    bot.logEvent(
+      "notsus bedrock config: model=" &
+        (if model.len > 0: model else: "default") &
+        " region=" & (if region.len > 0: region else: "default")
+    )
+    bot.bedrockConfigLogged = true
+  if token.value.len == 0:
     return false
-  bedrockAi.bedrockKey = token
-  let model = getEnv(
-    "BEDROCK_CLAUDE_MODEL_ID",
-    getEnv("BEDROCK_MODEL")
-  ).strip()
+  bedrockAi.bedrockKey = token.value
   if model.len > 0:
     bedrockAi.bedrockModel = model
-  let region = getEnv(
-    "AWS_REGION",
-    getEnv("AWS_DEFAULT_REGION")
-  ).strip()
   if region.len > 0:
     bedrockAi.bedrockRegion = region
   true
@@ -5133,17 +5296,24 @@ proc votingPromptText(bot: Bot): string =
 
 proc logVotingLlmPrompt(bot: Bot) =
   ## Logs the current and previous sus snapshots for voting.
-  let currentSus = bot.votingEvidenceText()
-  echo "notsus voting sus current:"
-  if currentSus.len > 0:
-    echo currentSus
-  else:
-    echo "none"
-  echo "notsus voting sus previous:"
-  if bot.voteLlmPreviousSusText.len > 0:
-    echo bot.voteLlmPreviousSusText
-  else:
-    echo "none"
+  let
+    currentSus = bot.votingEvidenceText()
+    observation = bot.votingObservationJson()
+  if observation.hasKey("sus_metrics"):
+    bot.logEvent(
+      "notsus voting sus metrics: " & $observation["sus_metrics"]
+    )
+  bot.logBlock(
+    "notsus voting sus current",
+    if currentSus.len > 0: currentSus else: "none"
+  )
+  bot.logBlock(
+    "notsus voting sus previous",
+    if bot.voteLlmPreviousSusText.len > 0:
+      bot.voteLlmPreviousSusText
+    else:
+      "none"
+  )
 
 proc updateVotingLlmSnapshots(
   bot: var Bot,
@@ -5167,35 +5337,60 @@ proc updateVotingLlmSnapshots(
   if bot.voteLlmWaiting:
     bot.voteLlmNeedsDecision = true
 
+proc voteLlmActionLogText(action: VoteLlmAction): string =
+  ## Returns a compact log description for one LLM voting action.
+  case action.kind
+  of VoteLlmSay:
+    result = "say message=" & action.message
+  of VoteLlmWait:
+    result = "wait"
+  of VoteLlmVote:
+    result = "vote target=" & playerColorName(action.targetColor)
+  of VoteLlmNone:
+    result = "none"
+  if action.reason.len > 0:
+    result.add(" reason=")
+    result.add(action.reason)
+
 proc logSendingToLlm(
+  bot: Bot,
   messages: openArray[bedrockAi.ConversationMessage]
 ) =
   ## Logs the full prompt sent to the voting LLM.
-  echo "sending to llm:"
+  bot.logEvent("notsus llm prompt message count: " & $messages.len)
   for message in messages:
-    echo message.role, ":"
-    echo message.content
+    bot.logBlock("notsus llm prompt " & message.role, message.content)
 
 proc callVotingLlm(bot: var Bot): bool =
   ## Calls Bedrock for one voting action when credentials are configured.
-  if not configureVotingBedrock():
-    echo "notsus voting llm skipped: no Bedrock token configured"
-    echo "set AWS_BEARER_TOKEN_BEDROCK_FILE or AWS_BEARER_TOKEN_BEDROCK"
-    return false
   bot.logVotingLlmPrompt()
+  if not bot.configureVotingBedrock():
+    bot.logEvent("notsus voting llm skipped: no Bedrock token configured")
+    bot.logEvent(
+      "set AWS_BEARER_TOKEN_BEDROCK_FILE or AWS_BEARER_TOKEN_BEDROCK"
+    )
+    return false
   var messages = @[
     bedrockAi.ConversationMessage(role: "system", content: VotingPrompt),
-    bedrockAi.ConversationMessage(role: "user", content: bot.votingPromptText())
+    bedrockAi.ConversationMessage(
+      role: "user",
+      content: bot.votingPromptText()
+    )
   ]
-  logSendingToLlm(messages)
+  bot.logSendingToLlm(messages)
   var reply = bedrockAi.talkToAI(messages)
-  echo "notsus voting llm raw: ", reply
+  bot.logBlock("notsus voting llm raw", reply)
   var parsed = parseVotingLlmAction(reply)
+  if parsed.ok:
+    bot.logEvent(
+      "notsus voting llm parsed: " &
+        parsed.action.voteLlmActionLogText()
+    )
   let needsMoreChat = bot.voteLlmSayCount < VoteLlmMinSayCount
   if parsed.ok and
       (not bot.voteSaidSomething or needsMoreChat) and
       parsed.action.kind != VoteLlmSay:
-    echo "notsus voting llm retry: needs more chat before vote"
+    bot.logEvent("notsus voting llm retry: needs more chat before vote")
     messages.add bedrockAi.ConversationMessage(
       role: "assistant",
       content: reply
@@ -5208,16 +5403,21 @@ proc callVotingLlm(bot: var Bot): bool =
         "Saying too little disqualifies us. " &
         "Return one say action now. Do not wait or vote."
     )
-    logSendingToLlm(messages)
+    bot.logSendingToLlm(messages)
     reply = bedrockAi.talkToAI(messages)
-    echo "notsus voting llm raw: ", reply
+    bot.logBlock("notsus voting llm raw", reply)
     parsed = parseVotingLlmAction(reply)
+    if parsed.ok:
+      bot.logEvent(
+        "notsus voting llm parsed: " &
+          parsed.action.voteLlmActionLogText()
+      )
   if not parsed.ok:
-    echo "notsus voting llm fallback: invalid action"
+    bot.logEvent("notsus voting llm fallback: invalid action")
     return false
   if (not bot.voteSaidSomething or needsMoreChat) and
       parsed.action.kind != VoteLlmSay:
-    echo "notsus voting llm fallback: missing required chat"
+    bot.logEvent("notsus voting llm fallback: missing required chat")
     return false
   bot.voteLlmAction = parsed.action
   bot.voteLlmNeedsDecision = false
@@ -5227,16 +5427,18 @@ proc callVotingLlm(bot: var Bot): bool =
   of VoteLlmSay:
     bot.pendingChat = parsed.action.message
     bot.voteLlmWaiting = true
-    echo "notsus voting llm say: ", parsed.action.message
+    bot.logEvent("notsus voting llm say: " & parsed.action.message)
   of VoteLlmWait:
     bot.pendingChat = ""
     bot.voteLlmWaiting = true
-    echo "notsus voting llm wait: ", parsed.action.reason
+    bot.logEvent("notsus voting llm wait: " & parsed.action.reason)
   of VoteLlmVote:
     bot.pendingChat = ""
     bot.voteLlmWaiting = false
-    echo "notsus voting llm vote: ",
-      playerColorName(parsed.action.targetColor)
+    bot.logEvent(
+      "notsus voting llm vote: " &
+        playerColorName(parsed.action.targetColor)
+    )
   of VoteLlmNone:
     discard
   true
@@ -5262,11 +5464,13 @@ proc refreshVotingLlmDecision(bot: var Bot) =
   ## Refreshes the model voting action when the current snapshot needs one.
   if not bot.voteLlmNeedsDecision:
     return
-  echo "notsus voting llm poll: tick=", bot.frameTick,
-    " chat=", bot.voteLlmSayCount,
-    "/", VoteLlmMinSayCount,
-    " pending=", bot.pendingChat.len,
-    " action=", $bot.voteLlmAction.kind
+  bot.logEvent(
+    "notsus voting llm poll: tick=" & $bot.logTick() &
+      " chat=" & $bot.voteLlmSayCount &
+      "/" & $VoteLlmMinSayCount &
+      " pending=" & $bot.pendingChat.len &
+      " action=" & $bot.voteLlmAction.kind
+  )
   try:
     if not bot.callVotingLlm():
       bot.voteLlmAction = VoteLlmAction(
@@ -5276,7 +5480,7 @@ proc refreshVotingLlmDecision(bot: var Bot) =
       bot.voteLlmWaiting = false
       bot.voteLlmNeedsDecision = true
   except CatchableError as e:
-    echo "notsus voting llm fallback: ", e.msg
+    bot.logEvent("notsus voting llm fallback: " & e.msg)
     bot.voteLlmAction = VoteLlmAction(
       kind: VoteLlmNone,
       targetColor: VoteUnknown
@@ -5583,7 +5787,9 @@ proc logVoteDecision(bot: var Bot, target: int, reason: string) =
     return
   bot.voteLoggedTarget = target
   bot.voteLoggedReason = reason
-  echo "voting for ", bot.voteTargetName(target), ": ", reason
+  bot.logEvent(
+    "notsus voting for " & bot.voteTargetName(target) & ": " & reason
+  )
 
 proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
   ## Chooses voting-screen input from parsed vote state.
@@ -6237,6 +6443,7 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   ## Updates perception and chooses the next input mask.
   let centerStart = getMonoTime()
   bot.updateLocation()
+  bot.logRoomTransitions()
   bot.centerMicros = int((getMonoTime() - centerStart).inMicroseconds)
   bot.astarMicros = 0
   if bot.interstitial:
