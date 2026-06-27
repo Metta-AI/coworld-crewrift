@@ -7,9 +7,10 @@ from scratch unless the human explicitly asks for that.
 The fast path is:
 
 ```
-use players/crewborg-aaln -> build -> upload with explicit run argv -> submit
-    -> confirm qualification -> run small hosted evals -> make one scoped change
-    -> verify over enough completed games -> submit the winner
+choose crewborg-aaln or notsus -> build -> upload with explicit run argv
+    -> submit -> confirm qualification -> run small hosted evals
+    -> make one scoped change -> verify over enough completed games
+    -> submit the winner
 ```
 
 Commands below use `coworld` on PATH. If your environment normally runs the CLI
@@ -55,27 +56,55 @@ Crewrift is an Among-Us-style, 8-seat, hidden-role game:
 You do not need to reread the full rules before adopting the default policy.
 Read [`README.md`](./README.md#crewrift-rules) only when changing game strategy.
 
-## Default policy decision
+## Choose the starting policy
 
-Use **`players/crewborg-aaln/`** unless you have a specific reason not to.
+Both shipped policies are viable bases. Pick one deliberately, then submit it
+before doing deeper research.
 
-It is the strongest shipped scripted baseline and already handles the hard parts
-that cost agents time: Sprite-v1 parsing, world-coordinate localization,
-walkability/pathing, role detection, legal actions every tick, meeting/vote
-fallbacks, task routing, imposter behavior, artifact logging, Docker packaging,
-and a policy-specific optimizer workspace.
+### `crewborg-aaln` - stronger league baseline, richer optimizer
 
-Use **`players/notsus/`** only if you intentionally want the Nim reference bot or
-a weak baseline to compare against. Do not port old code from another checkout
-while `crewborg-aaln` exists.
+Use **`players/crewborg-aaln/`** when you want the fastest path to a competitive
+league policy. It already handles Sprite-v1 parsing, world-coordinate
+localization, walkability/pathing, role detection, legal actions every tick,
+meeting/vote fallbacks, task routing, imposter behavior, artifact logging,
+Docker packaging, and a policy-specific optimizer workspace.
 
-## First submission, copy-paste path
+Tradeoff: it is a larger Python cognitive stack with more historical strategy
+knobs. That is powerful once you are optimizing, but it is not the smallest base
+when you want to understand every line.
+
+### `notsus` - credible mechanics-first base, smaller surface
+
+Use **`players/notsus/`** when you want a simpler, engine-close starting point
+with strengths `crewborg-aaln` does not have:
+
+- **Single Nim policy close to the game code.** Fewer framework layers, easier
+  to reason about end-to-end behavior and protocol details.
+- **Strong mechanics baseline.** It parses Sprite v1, uses the walkability map,
+  navigates with A*/momentum control, completes tasks, handles meetings/voting,
+  and can play imposter.
+- **Visual debugger.** `nim r -d:notsusGui players/notsus/notsus.nim` shows the
+  viewport, walkability mask, position, visible objects, goal, A* path, selected
+  step, input mask, velocity, and stuck state. That makes movement/task bugs much
+  faster to inspect than in a headless-only stack.
+- **Good substrate for mechanics work.** If your hypothesis is about navigation,
+  task routing, kill positioning, task radar interpretation, or low-level
+  protocol handling, `notsus` may be the cleaner base even if its current
+  strategy is deliberately simple.
+- **Simple hosted run contract.** The run argv is just `/bin/notsus`, and the
+  public image/build path is straightforward.
+
+Tradeoff: it has less optimizer infrastructure and less accumulated social/vote
+strategy than `crewborg-aaln`, so you will add more of that yourself.
+
+Do not port old code from another checkout while these two bases exist.
+
+## First submission, copy-paste paths
 
 Run from the repo root.
 
 ```sh
 export LEAGUE_ID=league_a12f5172-0907-4d04-8bcb-ca02f5360e3a
-export POLICY=crewborg-aaln
 ```
 
 Check auth and the active player before mutating anything:
@@ -92,9 +121,10 @@ If the active player is not your human's player, select it:
 coworld player use <player_id>
 ```
 
-Build the default policy:
+### Submit `crewborg-aaln`
 
 ```sh
+export POLICY=crewborg-aaln
 docker build --platform=linux/amd64 -t "$POLICY:prime" "players/$POLICY"
 ```
 
@@ -118,7 +148,19 @@ coworld submit "$POLICY:vN" --league "$LEAGUE_ID" \
   --auto-champion always --no-open-browser
 ```
 
-Then confirm the submission and qualification state:
+### Submit `notsus`
+
+This is the mechanics-first alternative, not just a throwaway baseline:
+
+```sh
+export POLICY=notsus
+docker build --platform=linux/amd64 -f players/notsus/Dockerfile -t notsus:prime .
+coworld upload-policy "$POLICY:prime" --name "$POLICY" --run /bin/notsus
+coworld submit "$POLICY:vN" --league "$LEAGUE_ID" \
+  --auto-champion always --no-open-browser
+```
+
+After either path, confirm the submission and qualification state:
 
 ```sh
 coworld submissions --league "$LEAGUE_ID" --policy "$POLICY:vN" --json
@@ -133,25 +175,19 @@ current CLI is still broken, follow
 for the policy-version upload contract and record the workaround; do not rewrite
 the player.
 
-### If you chose `notsus`
-
-Use this only for the Nim/reference path:
-
-```sh
-docker build --platform=linux/amd64 -f players/notsus/Dockerfile -t notsus:prime .
-coworld upload-policy notsus:prime --name notsus --run /bin/notsus
-coworld submit notsus:vN --league "$LEAGUE_ID" \
-  --auto-champion always --no-open-browser
-```
-
 ## Optional smoke before submitting
 
 Skip long local A/B harnesses during onboarding. If you need a smoke check,
 prefer one of these:
 
-- Build-only check: `docker build --platform=linux/amd64 -t crewborg-aaln:prime players/crewborg-aaln`
-- Unit tests after edits:
+- Build-only check for `crewborg-aaln`:
+  `docker build --platform=linux/amd64 -t crewborg-aaln:prime players/crewborg-aaln`
+- Build-only check for `notsus`:
+  `docker build --platform=linux/amd64 -f players/notsus/Dockerfile -t notsus:prime .`
+- `crewborg-aaln` unit tests after edits:
   `cd players/crewborg-aaln && python -m pytest players/crewrift/crewborg/tests/`
+- `notsus` fast source check after edits:
+  `nim c players/notsus/notsus.nim`
 - Hosted 1-3 episode XP smoke after upload if you are unsure it starts. Use it
   only to detect crashes, `-100`, missing `run`, or qualification-gate failures.
 
@@ -170,6 +206,16 @@ For `crewborg-aaln`, read exactly these first:
 3. [`players/crewborg-aaln/optimizer/playbooks/optimize-policy.md`](./players/crewborg-aaln/optimizer/playbooks/optimize-policy.md)
    - the one-loop optimization procedure.
 
+For `notsus`, read exactly these first:
+
+1. [`players/notsus/README.md`](./players/notsus/README.md)
+   - the bot's mechanics, debugger, navigation model, and strategy notes.
+2. [`players/notsus/notsus.nim`](./players/notsus/notsus.nim)
+   - the single-file policy surface.
+3. [`players/notsus/tools/run.nim`](./players/notsus/tools/run.nim)
+   - useful automation patterns for build/upload/eval when you stay on the Nim
+   path.
+
 Then run this loop:
 
 ```
@@ -183,6 +229,8 @@ read live standings/submissions -> inspect recent evals/replays/artifacts
 
 Map the hypothesis to the smallest surface:
 
+For `crewborg-aaln`:
+
 | Goal | Start here |
 |---|---|
 | Flip a known behavior variant | `players/crewborg-aaln/Dockerfile` `ENV` flags (`BE_DUMB`, `CREWBORG_LLM_MEETINGS`, `CREWBORG_DICK_MODE`) |
@@ -195,6 +243,20 @@ Map the hypothesis to the smallest surface:
 | Add evidence before deciding | `events.py`, `trace.py`, `artifact.py` |
 
 Keep one hypothesis per candidate. Broad rewrites make the eval uninterpretable.
+
+For `notsus`:
+
+| Goal | Start here |
+|---|---|
+| Inspect movement/task behavior visually | `nim r -d:notsusGui players/notsus/notsus.nim` |
+| Change navigation, task routing, momentum, role handling, vote UI, or imposter behavior | `players/notsus/notsus.nim` |
+| Keep the hosted package simple | `players/notsus/Dockerfile` and `players/notsus/coplayer_manifest.json` |
+| Automate repeatable build/upload/eval work | `players/notsus/tools/run.nim` |
+
+`notsus` is most attractive when the next improvement is low-level and
+observable: reaching tasks faster, avoiding oscillation, selecting cleaner kill
+positions, interpreting task radar better, or using the visual debugger to close
+the loop on a movement bug.
 
 ## Eval rules that prevent wasted time
 
