@@ -453,6 +453,12 @@ proc resultDisplay(player: PlayerInfo): string =
     return "win"
   "loss"
 
+proc resultClass(player: PlayerInfo): string =
+  ## Returns the CSS class for one player result cell.
+  result = "result-col"
+  if player.hasResult and player.won:
+    result.add " result-win"
+
 proc hasLogHrefs(logHrefs: openArray[string]): bool =
   ## Returns true when any player log link is available.
   for href in logHrefs:
@@ -605,7 +611,7 @@ proc renderPlayersHtml(
     result.add player.label.playerChipHtml()
     result.add "</td><td class=\"role-col\">"
     result.add player.role.roleDisplay().htmlEscape()
-    result.add "</td><td class=\"result-col\">"
+    result.add "</td><td class=\"" & player.resultClass().htmlEscape() & "\">"
     result.add player.resultDisplay().htmlEscape()
     result.add "</td>"
     if showLogs:
@@ -718,6 +724,8 @@ proc replayExtractorCss*(): string =
   result.add "    .replay-players { max-width: 48rem; }\n"
   result.add "    .replay-players .role-col { width: 7rem; }\n"
   result.add "    .replay-players .result-col { width: 5rem; }\n"
+  result.add "    .replay-players .result-win { color: "
+  result.add "var(--failure-color, #f03b20); font-weight: 600; }\n"
   result.add "    .replay-players .log-col { width: 4rem; }\n"
   result.add "    .crew-chip { display: inline-flex; align-items: center; "
   result.add "gap: 0.35rem; white-space: nowrap; }\n"
