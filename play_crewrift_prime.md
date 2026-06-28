@@ -7,7 +7,7 @@ from scratch unless the human explicitly asks for that.
 The fast path is:
 
 ```
-choose crewborg-aaln or notsus -> build -> upload with explicit run argv
+choose crewborg, crewborg-aaln, or notsus -> build -> upload with explicit run argv
     -> submit -> confirm qualification -> run small hosted evals
     -> make one scoped change -> verify over enough completed games
     -> submit the winner
@@ -221,6 +221,11 @@ the player.
 Skip long local A/B harnesses during onboarding. If you need a smoke check,
 prefer one of these:
 
+- Build-only check for `crewborg`:
+  `docker build --platform=linux/amd64 -f players/crewborg/crewborg/coworld/Dockerfile -t crewborg:prime players/crewborg`
+- `crewborg` unit tests after edits:
+  `cd players/crewborg && PYTHONPATH="$PWD" python -m pytest crewborg/tests/`
+  (or its `coworld-local-run` skill for a Gate-1 connect→play→exit smoke)
 - Build-only check for `crewborg-aaln`:
   `docker build --platform=linux/amd64 -t crewborg-aaln:prime players/crewborg-aaln`
 - Build-only check for `notsus`:
@@ -236,6 +241,17 @@ Do not promote or reject a strategy from a 1-3 episode smoke. Crewrift variance
 is too high.
 
 ## Start optimizing without rediscovery
+
+For `crewborg`, read exactly these first:
+
+1. [`players/crewborg/README.md`](./players/crewborg/README.md) and
+   [`players/crewborg/AGENTS.md`](./players/crewborg/AGENTS.md) — orientation, the
+   evaluate→diagnose→experiment→improve loop, and the full skills/tools catalog.
+2. [`players/crewborg/docs/best_practices.md`](./players/crewborg/docs/best_practices.md) —
+   the measurement/diagnosis/hypothesis disciplines (decompose by role, ops vs behavior, no
+   causal claim without the falsifying query).
+3. [`players/crewborg/crewborg/design.md`](./players/crewborg/crewborg/design.md) — the
+   cognitive-stack architecture and where each behavior lives.
 
 For `crewborg-aaln`, read exactly these first:
 
@@ -347,6 +363,10 @@ Use these only after you have a specific failure to inspect:
   `player_joined`, `kill`, `body`, `vote_cast`, `chat`, and `score`.
 - `grader/graders/crewrift/` - ranks episodes worth opening by score, task,
   kill, and vote signals.
+- `crewborg` analysis - its in-folder skills are the primary path and are batch-first
+  (start wide, then drill): `crewrift-survey` (fast per-policy/role overview + win heat map),
+  a `crewrift-event-warehouse` (queryable DuckDB/Parquet event store re-keyed by policy/role),
+  then `crewrift-diagnose`/`crewrift-experiment`. See `players/crewborg/AGENTS.md`.
 - `crewborg-aaln` artifacts - `trace.db` + `summary.json`, joined to replay
   events by server tick. Start from the optimizer guide before querying these.
 

@@ -28,8 +28,8 @@ of the ready-to-deploy default policies in
 [`players/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players)
 (`crewborg`, `crewborg-aaln`, `notsus`), deploy it as-is, then optimize it:
 
-- **▶ How to play Crewrift Prime:** **[`play.md`](play.md)** (60-second orientation)
-  → **[`play_crewrift_prime.md`](play_crewrift_prime.md)** (deploy + optimize).
+- **▶ How to play Crewrift Prime:** **[`play_crewrift_prime.md`](play_crewrift_prime.md)** —
+  the deploy + optimize fast path (**[`play.md`](play.md)** is an alias of it).
 - Commissioner internals & rules of record:
   [`crewrift-prime/commissioner/README.md`](crewrift-prime/commissioner/README.md).
 
