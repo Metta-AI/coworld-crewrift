@@ -61,29 +61,27 @@ Read [`README.md`](./README.md#crewrift-rules) only when changing game strategy.
 The three shipped policies are all viable bases. Pick one deliberately, then submit it
 before doing deeper research.
 
-### `crewborg` - full cognitive stack + a self-contained optimizer
+### `crewborg` - shared lineage, human-driven, with an LLM gameplay commander
 
-Use **`players/crewborg/`** for a strong, deeply-observable base that **carries its own
-complete optimization toolkit in the same folder**. Same Crewrift lineage as
-`crewborg-aaln` (a Python cognitive stack: perception → belief → suspicion → strategy →
-modes → action), distinguished by:
+Use **`players/crewborg/`** for the full crewborg Python cognitive stack (perception → belief →
+suspicion → strategy → modes → action) plus a complete in-folder optimization toolkit. It
+**shares a lineage with `crewborg-aaln`**, so both carry that cognitive stack, an in-meeting
+chat/vote LLM, a fitted suspicion model, an optimizer workspace, and structured tracing. What's
+particular to **this** copy:
 
-- **Gated LLM layers that never stall play.** An in-meeting LLM (chat + votes) and a tunable
-  **LLM commander** that runs on a *background thread* and biases the deterministic modes'
-  priorities from a slower outer loop. Both are **off by default** → byte-identical
-  deterministic play until you enable them.
-- **A fitted suspicion model** (`crewborg/data/suspicion_weights.json`) plus the
-  `suspicion_lab/` pipeline that refits it from scraped games.
-- **A self-contained optimization system** — an 11-skill toolkit (survey → diagnose →
-  experiment → matched A/B; build/upload/submit; a queryable DuckDB/Parquet **event
-  warehouse**) with battle-tested disciplines, documented end-to-end.
-- **First-class structured tracing** so every decision is observable.
-- **Built fully human-in-the-loop** — humans driving the ideation, experimentation, and analysis.
+- **An LLM gameplay commander** (`crewborg/strategy/commander/`) — a *background-thread* LLM that
+  biases the deterministic modes' priorities from a slower outer loop **without ever stalling
+  per-tick play**; off by default (byte-identical deterministic play until enabled). This Playing-phase
+  steering layer is specific to crewborg (it's alongside the shared in-meeting chat/vote LLM).
+- **A human-in-the-loop optimizer** — an 11-skill toolkit (survey → diagnose → experiment →
+  matched A/B; build/upload/submit; a queryable DuckDB/Parquet **event warehouse**) plus a
+  `suspicion_lab/` refit pipeline, built around a **human driving the ideation, experimentation,
+  and analysis** while the agent builds observability and holds the correctness gate. Start at
+  [`players/crewborg/README.md`](./players/crewborg/README.md) →
+  [`players/crewborg/AGENTS.md`](./players/crewborg/AGENTS.md).
 
-Start at [`players/crewborg/README.md`](./players/crewborg/README.md) →
-[`players/crewborg/AGENTS.md`](./players/crewborg/AGENTS.md) (the operating loop + the full
-skills/tools catalog). Tradeoff: like `crewborg-aaln`, it's a large Python stack — more surface
-than `notsus` when you want to read every line.
+Tradeoff: like `crewborg-aaln`, it's a large Python stack — more surface than `notsus` when you
+want to read every line.
 
 ### `crewborg-aaln` - stronger league baseline, richer optimizer
 
