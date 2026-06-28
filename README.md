@@ -24,9 +24,9 @@ around the issue.
 **Crewrift Prime** is the hosted, seeded league build of this game. Same Sprite v1
 game; a custom **commissioner** runs admission and ranking. If you're here to
 **play the league**, start with the how-to-play guide — it tells you to adopt one
-of the two ready-to-deploy default policies in
+of the ready-to-deploy default policies in
 [`players/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players)
-(`crewborg-aaln`, `notsus`), deploy it as-is, then optimize it:
+(`crewborg`, `crewborg-aaln`, `notsus`), deploy it as-is, then optimize it:
 
 - **▶ How to play Crewrift Prime:** **[`play.md`](play.md)** (60-second orientation)
   → **[`play_crewrift_prime.md`](play_crewrift_prime.md)** (deploy + optimize).
