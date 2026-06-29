@@ -1,21 +1,17 @@
 """Regression guard for the leaderboard-score-flip bug.
 
 The Competition board kept flip-flopping because two platform writers persisted
-two DIFFERENT boards to ``division.leaderboard_config``:
+two DIFFERENT boards to ``division.leaderboard_config``: the scheduling tick's
+``rank_division`` and every round completion (whose ``RoundComplete`` lacked a
+``leaderboards`` payload, so the platform's compatibility shim fabricated its own
+board from the per-round ``results`` and overwrote the commissioner's).
 
-  - the scheduling tick called ``rank_division`` and wrote the OpenSkill MMR board
-    (e.g. Aaron 23.84, with names), while
-  - every round completion sent a ``RoundComplete`` WITHOUT a ``leaderboards``
-    payload, so the platform's compatibility shim fabricated a WIN-COUNT board
-    from the per-round ``results`` (Jordan 5.00, Matt Van 4.00, ...) and overwrote
-    the MMR board.
-
-The fix makes ``_complete_competition_round`` publish the SAME OpenSkill MMR board
-``rank_division`` computes, by replaying the division's full per-round history
-(carried in commissioner ``state``) through the shared ``rank_by_mmr`` +
-``_mmr_board_from_ranking``. These tests assert round-complete publishes that MMR
-board, that it equals what ``rank_division`` produces over the same history, and
-that the history accumulation is idempotent on a retried round-complete.
+The fix makes ``_complete_competition_round`` publish the SAME win-rate board
+``rank_division`` computes, by aggregating the division's per-round win history
+(carried in commissioner ``state``) through the shared ``_win_total_board``.
+These tests assert round-complete publishes that win-rate board, that it equals
+what ``rank_division`` produces over the same history, and that the history
+accumulation is idempotent on a retried round-complete.
 """
 
 from __future__ import annotations
@@ -40,10 +36,14 @@ from commissioners.common.protocol import (
     VariantInfo,
 )
 from commissioners.common.ruleset_strategy.config import load_ruleset_strategy_config_file
+from commissioners.common.utils import (
+    COMPLETED_EPISODE_COUNT_METADATA_KEY,
+    RANKED_SCORE_COUNT_METADATA_KEY,
+)
 
 from crewrift_prime_skill_commissioner import (
     _COMPETITION_SCORE_KIND,
-    _MMR_HISTORY_STATE_KEY,
+    _WIN_HISTORY_STATE_KEY,
     CrewriftPrimeSkillCommissioner,
 )
 from test_observability import _CONFIG_PATH, _COMPETITION_DIV, _divisions
@@ -106,7 +106,9 @@ def _rank_division_board(commissioner, memberships, history_rows):
             score=row["score"],
             player_id=row["player_id"],
             player_name=None,
-            result_metadata={},
+            result_metadata={
+                COMPLETED_EPISODE_COUNT_METADATA_KEY: row.get("episodes_played", 0),
+            },
         )
         for row in history_rows
     ]
@@ -134,13 +136,12 @@ def _rank_division_board(commissioner, memberships, history_rows):
 
 
 class LeaderboardFlipRegressionTest(unittest.TestCase):
-    def test_round_complete_publishes_mmr_leaderboards(self) -> None:
+    def test_round_complete_publishes_win_total_leaderboards(self) -> None:
         commissioner = _commissioner()
         policy_a, policy_b = uuid4(), uuid4()
         memberships = _memberships([(policy_a, "ply_a"), (policy_b, "ply_b")])
 
         state: Any = {"round_config": {"current_division_id": str(_COMPETITION_DIV)}}
-        # Play enough rounds (>= placement gate) for at least one player to rank.
         last_complete = None
         for round_number in range(1, 9):
             rs = _round_start(memberships, round_number, state)
@@ -151,25 +152,24 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
             )
             state = last_complete.state
 
-        # The round-complete response carries an explicit MMR leaderboard so the
-        # platform never synthesizes the win-count board.
+        # The round-complete response carries an explicit win-rate leaderboard
+        # so the platform never synthesizes its own competing board.
         self.assertEqual(len(last_complete.leaderboards), 1)
         board = last_complete.leaderboards[0]
         self.assertEqual(board.division_id, _COMPETITION_DIV)
         rows = board.views[0].rows
         # Both players appear, keyed by player id.
         self.assertEqual({row.subject_id for row in rows}, {"ply_a", "ply_b"})
-        # The consistent winner is rank 1 with a HIGHER MMR than the loser — this is
-        # the OpenSkill ordinal, NOT the win-count score (which would be per-round
-        # integers like 1.0/0.0).
         by_player = {row.subject_id: row for row in rows}
+        # The consistent winner is rank 1; its score is the all-time WIN RATE (won
+        # all 8 of the 8 episodes it played => 1.0), and the loser scored 0.0.
         self.assertEqual(by_player["ply_a"].values["rank"], 1)
-        self.assertGreater(by_player["ply_a"].values["score"], by_player["ply_b"].values["score"])
-        # rounds_played is tracked (the win-count shim left this at 0).
+        self.assertEqual(by_player["ply_a"].values["score"], 1.0)
+        self.assertEqual(by_player["ply_b"].values["score"], 0.0)
+        # rounds_played is tracked.
         self.assertEqual(by_player["ply_a"].values["rounds_played"], 8)
 
-        # The per-round results stay win-count (they feed MMR + the recent strip);
-        # the published board is the only thing that must be MMR.
+        # The per-round results carry the win-count score kind.
         self.assertEqual(
             last_complete.results[0].rankings[0].result_metadata["score_kind"], _COMPETITION_SCORE_KIND
         )
@@ -191,7 +191,7 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
             )
             state = last_complete.state
 
-        history = state[_MMR_HISTORY_STATE_KEY]
+        history = state[_WIN_HISTORY_STATE_KEY]
         published = last_complete.leaderboards[0].views[0].rows
 
         # rank_division over the SAME history must yield the SAME ordering + scores.
@@ -216,14 +216,90 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
         first = commissioner.complete_round_for_round_start(
             rs, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
         )
-        history_after_first = list(first.state[_MMR_HISTORY_STATE_KEY])
+        history_after_first = list(first.state[_WIN_HISTORY_STATE_KEY])
 
         # Re-run the SAME round (same round_id via the same RoundStart) with the
         # already-updated state: a retried round-complete must not double-count.
         retried = commissioner.complete_round_for_round_start(
             rs, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
         )
-        self.assertEqual(retried.state[_MMR_HISTORY_STATE_KEY], history_after_first)
+        self.assertEqual(retried.state[_WIN_HISTORY_STATE_KEY], history_after_first)
+
+
+class EveryParticipantVisibleTest(unittest.TestCase):
+    """No active participant is ever dropped from the standings.
+
+    Regression guard for the "6 active players, only 5 rows" bug: a player whose
+    only round results were tainted/unranked (``ranked_score_count <= 0``) must
+    still appear on the board with a 0 win rate, not vanish.
+    """
+
+    def test_rank_division_includes_tainted_only_player(self) -> None:
+        commissioner = _commissioner()
+        winner, taint_only = uuid4(), uuid4()
+        memberships = _memberships([(winner, "ply_win"), (taint_only, "ply_taint")])
+        round_id = uuid4()
+        round_results = [
+            LeaderboardRoundResultSnapshot(
+                round_id=round_id,
+                policy_version_id=winner,
+                rank=1,
+                score=2.0,
+                player_id="ply_win",
+                player_name="Winner",
+                result_metadata={
+                    RANKED_SCORE_COUNT_METADATA_KEY: 4,
+                    COMPLETED_EPISODE_COUNT_METADATA_KEY: 4,
+                },
+            ),
+            # ply_taint only ever has a tainted row (ranked_score_count <= 0).
+            LeaderboardRoundResultSnapshot(
+                round_id=round_id,
+                policy_version_id=taint_only,
+                rank=2,
+                score=-100.0,
+                player_id="ply_taint",
+                player_name="Tainted",
+                result_metadata={
+                    RANKED_SCORE_COUNT_METADATA_KEY: 0,
+                    COMPLETED_EPISODE_COUNT_METADATA_KEY: 0,
+                },
+            ),
+        ]
+        ctx = DivisionLeaderboardContext(
+            league=LeagueSnapshot(
+                id=memberships[0].league_id, commissioner_key="container", commissioner_config=None
+            ),
+            division=DivisionSnapshot(
+                id=_COMPETITION_DIV,
+                name="Competition",
+                level=1,
+                league_id=memberships[0].league_id,
+                type="competition",
+            ),
+            completed_rounds=[
+                RoundSnapshot(
+                    id=round_id,
+                    public_id=str(round_id),
+                    division_id=_COMPETITION_DIV,
+                    round_number=1,
+                    status="completed",
+                    round_config={},
+                )
+            ],
+            recent_rounds=[],
+            round_results=round_results,
+        )
+        snapshots = commissioner.rank_division(ctx)
+        by_player = {str(s.player_id): s for s in snapshots}
+        # BOTH players are shown — the tainted-only player is not dropped.
+        self.assertEqual(set(by_player), {"ply_win", "ply_taint"})
+        # The tainted-only player has a 0 win rate and 0 rounds played.
+        self.assertEqual(by_player["ply_taint"].score, 0.0)
+        self.assertEqual(by_player["ply_taint"].rounds_played, 0)
+        # The real winner ranks first with a positive win rate.
+        self.assertEqual(by_player["ply_win"].rank, 1)
+        self.assertGreater(by_player["ply_win"].score, 0.0)
 
 
 if __name__ == "__main__":
