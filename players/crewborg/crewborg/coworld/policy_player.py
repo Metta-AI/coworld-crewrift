@@ -139,7 +139,7 @@ class _BridgeState:
     tick_offset: int | None = None  # (server_tick - scene.tick) when the marker first appears
 
 # The engine pushes one frame per game tick at ~24 Hz and does NOT wait for the
-# player (docs/crewrift-player.md). At the hosted 250m-CPU budget that gives
+# player (docs/reference/crewrift-protocol.md). At the hosted 250m-CPU budget that gives
 # runtime.step() ~42 ms per tick; exceeding it makes frames queue and inputs
 # land late.
 #
@@ -387,7 +387,7 @@ def main() -> None:
 
     # Canonical player-contract var is COWORLD_PLAYER_WS_URL; COGAMES_ENGINE_WS_URL is
     # a legacy alias the runner also sets to the same value. Prefer the canonical one,
-    # fall back to the alias (see metta docs/roles/PLAYER.md, ../../player-build.md).
+    # fall back to the alias (see docs/reference/coworld-platform.md).
     engine_ws_url = os.environ.get("COWORLD_PLAYER_WS_URL") or os.environ.get("COGAMES_ENGINE_WS_URL")
     if not engine_ws_url:
         raise SystemExit("no player websocket URL: set COWORLD_PLAYER_WS_URL "

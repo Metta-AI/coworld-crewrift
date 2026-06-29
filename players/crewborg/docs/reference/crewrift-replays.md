@@ -390,7 +390,7 @@ pick the right one; **defer the how-to to each tool's own documentation.**
 - **`coworld-episode-artifacts` skill** — downloads an episode's replay + per-slot
   logs + metadata, handling the league/experience-request disjoint-population
   discovery. Use first, to get the files this doc reads.
-- **`crewrift-report` skill** — turns a *set* of episodes (an experience request, a
+- **`crewrift-survey` skill** — turns a *set* of episodes (an experience request, a
   policy's recent league games, a tournament batch) into a dense
   strengths/weaknesses report. Use when surveying many games, not one.
 - **`crewrift-event-warehouse`** — batch-ingests expanded timelines into a queryable

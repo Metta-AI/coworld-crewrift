@@ -87,7 +87,7 @@ server.
    `results.json` + the episode row drive scoring; `logs/` and the
    `artifacts/*.zip` telemetry hold per-agent behaviour; replays open in the viewer
    (`uv run coworld replay <coworld_id> <replay.json>`) or `expand_replay`. Turn a
-   whole batch into a report with the **`crewrift-report`** skill.
+   whole batch into a report with the **`crewrift-survey`** skill.
 
 ## Notes
 
