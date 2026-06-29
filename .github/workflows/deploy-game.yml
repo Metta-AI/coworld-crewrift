@@ -81,4 +81,4 @@ jobs:
             --patch crewrift-prime/crewrift_prime.patch.json \
             --version ${{ steps.ver.outputs.version }} \
             --image game=crewrift-game:${{ github.sha }} \
-            --no-wait-hosted-smoke-certification
+            --no-wait-hosted-smoke
