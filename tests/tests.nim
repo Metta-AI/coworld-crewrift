@@ -1,6 +1,7 @@
 {.warning[UnusedImport]: off.}
 import
   test_ascii_text,
+  test_connect_race,
   test_discrete_buttons,
   test_expand_replay_events,
   test_game_info,

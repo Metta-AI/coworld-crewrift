@@ -1063,8 +1063,10 @@ proc runServerLoop*(
                 appState.playerIndices[websocket] = -1
             pendingPlayers.sort(comparePendingPlayerJoins)
             for join in pendingPlayers:
-              if join.slotIndex != sim.nextPlayerSlot():
-                continue
+              # Admit any pending socket whose resolved slot is free. The slot is
+              # decoupled from the players-seq index, so out-of-order/concurrent
+              # connects no longer have to wait for strictly sequential slots,
+              # which previously stranded validly-connected sockets in pending.
               try:
                 appState.playerIndices[join.websocket] = sim.addPlayer(
                   join.address,
@@ -1087,6 +1089,27 @@ proc runServerLoop*(
               while replayWriter.lastMasks.len < sim.players.len:
                 replayWriter.lastMasks.add(0)
               progressed = true
+
+        if not replayLoaded:
+          # Compute the set of slots that currently have an accepted live
+          # /player socket. This is the connect-timeout safety net: a slot in
+          # this set is never declared connect_timeout, even if the socket has
+          # not yet been promoted into sim.players on this exact tick.
+          var connectedSlots: seq[int] = @[]
+          for websocket, playerIndex in appState.playerIndices.pairs:
+            if not websocket.isPlayerWebSocket():
+              continue
+            if playerIndex >= 0 and playerIndex < sim.players.len:
+              let slot = sim.players[playerIndex].joinOrder
+              if slot notin connectedSlots:
+                connectedSlots.add(slot)
+            elif playerIndex == 0x7fffffff:
+              let requestedSlot =
+                appState.playerSlots.getOrDefault(websocket, -1)
+              if requestedSlot >= 0 and requestedSlot < MaxPlayers and
+                  requestedSlot notin connectedSlots:
+                connectedSlots.add(requestedSlot)
+          sim.setLiveConnectedSlots(connectedSlots)
 
         if not replayLoaded:
           inputs = newSeq[InputState](sim.players.len)
@@ -1205,8 +1228,8 @@ proc runServerLoop*(
                 socketsToClose.add(websocket)
             pendingPlayers.sort(comparePendingPlayerJoins)
             for join in pendingPlayers:
-              if join.slotIndex != sim.nextPlayerSlot():
-                continue
+              # Admit any pending socket whose resolved slot is free; slots no
+              # longer have to arrive in strict sequential order.
               try:
                 appState.playerIndices[join.websocket] = sim.addPlayer(
                   join.address,

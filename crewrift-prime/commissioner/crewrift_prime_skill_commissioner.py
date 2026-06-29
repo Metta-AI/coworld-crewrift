@@ -1,10 +1,10 @@
-"""Crewrift Prime qualifier commissioner — event-driven, replay-evaluated gate.
+"""Crewrift Prime qualifier commissioner — event-driven, results-JSON gate.
 
 A subclass of the stock config-driven ``RulesetStrategyCommissioner`` that owns an
 EVENT-DRIVEN qualification loop end to end. There is NO "Qualifiers" staging
 division any more: when a new policy is submitted to the league, the commissioner
 itself (1) creates and runs an EXPERIENCE REQUEST (xp request) self-play episode
-for it, (2) downloads and parses the resulting ``.bitreplay`` to derive the skill
+for it, (2) reads the episode's per-slot RESULTS JSON artifact to derive the skill
 metrics, (3) evaluates the strict three-skill gate, and (4) on pass promotes the
 policy DIRECTLY into the Competition division (on fail, holds for retry or DQs).
 
@@ -15,9 +15,13 @@ The stock ruleset_strategy commissioner's transition vocabulary
 ``completed_episodes_*`` / ``score_*`` and discards every other field of the
 per-slot ``results_schema``. To gate on advanced skills we must read the game's
 results ourselves -> new image. We go further: we own the xp-request client
-(``xp_request_client.py``) and the replay parser (``replay_parser.py``) so the
-"submit -> run xp request -> evaluate replay -> promote" loop lives entirely in
-the commissioner. The Competition division and its win-count scoring are reused.
+(``xp_request_client.py``) so the "submit -> run xp request -> read results JSON
+-> promote" loop lives entirely in the commissioner. The qualifier reads the
+game's own end-of-episode ``results`` artifact (the seat-indexed
+``results_schema`` the platform stores per job at ``/jobs/{job_id}/artifacts/results``)
+— the SAME shape the Competition path already consumes from
+``EpisodeResult.game_results`` — so no replay download or Nim re-expansion is
+needed. The Competition division and its win-count scoring are reused.
 
 The submission seam (no per-submission protocol message exists)
 ---------------------------------------------------------------
@@ -35,18 +39,19 @@ The gate ("one xp-request game and we're in")
 ---------------------------------------------
 Each submitted policy plays ONE 8-seat *self-play* combined game via an xp
 request. Self-play fills all 8 seats with the entrant, so the single game
-exercises every role and all three signals come from the parsed replay's per-slot
-metrics:
+exercises every role and all three signals come from the episode results JSON's
+per-slot metrics:
 
 - VOTING  = ``meeting_participation`` — capability/participation, not correctness.
 - HUNTING = ``imposter_kills`` — total kills landed by the imposter seat(s).
 - TASKS   = ``crew_tasks_mean`` — mean tasks completed across the crew seats.
 
 Pass ALL three -> Competition (competing/champion). Fail any -> hold (status
-qualifying) and re-run next time. Crash/infra safety: a completed, parseable
-replay with results is not a crash; a genuine non-completion DQs; xp-request infra
-failures and replay-parse failures HOLD-retry (never DQ) — there is no qualifier
-division to hold IN, so the hold keeps the membership ``qualifying`` in place.
+qualifying) and re-run next time. Crash/infra safety: a completed episode with a
+populated results JSON is not a crash; a genuine non-completion DQs; xp-request
+infra failures and missing/unfetchable results JSON HOLD-retry (never DQ) — there
+is no qualifier division to hold IN, so the hold keeps the membership
+``qualifying`` in place.
 
 Competition scoring: 1 point per winning PLAYER (seat), by role (unchanged).
 
@@ -68,6 +73,8 @@ from uuid import UUID
 
 from commissioners.common.protocol import (
     CommissionerRoundReport,
+    DivisionLeaderboard as CommissionerDivisionLeaderboard,
+    DivisionLeaderboardEntry as CommissionerDivisionLeaderboardEntry,
     DivisionRanking as CommissionerDivisionRanking,
     EpisodeFailed as CommissionerProtocolEpisodeFailed,
     EpisodeRequest as CommissionerProtocolEpisodeRequest,
@@ -76,6 +83,7 @@ from commissioners.common.protocol import (
     RoundComplete as CommissionerRoundComplete,
     RoundStart as CommissionerRoundStart,
     ScheduleEpisodes as CommissionerScheduleEpisodes,
+    division_leaderboard_from_entries,
 )
 from commissioners.common.commissioners import register_commissioner
 from commissioners.common.models import (
@@ -98,7 +106,7 @@ from commissioners.common.utils import (
     RANKED_SCORE_COUNT_METADATA_KEY,
 )
 
-from game_results_loader import coerce_results_schema
+from game_results_loader import coerce_results_schema, has_results_schema_arrays
 from mmr import MMR_PLACEMENT_MIN_GAMES, RatedRoundResult, rank_by_mmr
 from decision import (
     DECISION_LOG_TAG,
@@ -115,7 +123,6 @@ from interview import (
     run_interview,
     transport_from_address,
 )
-from replay_parser import ReplayParseError, parse_replay_metrics
 from xp_request_client import XpRequestClient, XpRequestError, XpRequestInfraError, XpRequestRun
 
 NUM_SEATS = 8
@@ -127,6 +134,21 @@ COMPETITION_VARIANT = "default"
 _COMPETITION_DIVISION_TYPE = "competition"
 # result_metadata score kind tag for Competition win-count rounds.
 _COMPETITION_SCORE_KIND = "competition_wins"
+# commissioner-state key holding the append-only per-round MMR inputs (one entry
+# per scored policy per round) so ``_complete_competition_round`` can replay the
+# full division history through ``rank_by_mmr`` and publish the SAME OpenSkill board
+# ``rank_division`` computes. Without this, the platform's RoundComplete compat shim
+# fabricates a win-count board from this round's results and that board ping-pongs
+# against the MMR board the scheduling tick writes — the leaderboard-flip bug.
+_MMR_HISTORY_STATE_KEY = "crewrift_prime_mmr_history"
+# Episode-request tag names recording how the closed-roster 8-seat game was topped
+# up. ``filler_seats`` is the comma-separated 0-based seat indices that are NOT a
+# real, uniquely-seated entrant; ``filler_policy_version_ids`` is the comma-
+# separated set of policy_version_ids placed in those seats. Both are read back at
+# scoring time so a filler/duplicate seat — and any policy that only ever appears
+# as a filler — is EXCLUDED from scoring and never represented as a real entrant.
+_FILLER_SEATS_TAG = "filler_seats"
+_FILLER_POLICY_IDS_TAG = "filler_policy_version_ids"
 # Statuses a freshly submitted (not-yet-qualified) policy carries; these are the
 # memberships the event-driven gate runs the xp-request qualification loop for.
 _SUBMITTED_STATUSES = ("submitted", "qualifying")
@@ -146,8 +168,13 @@ _QUALIFIER_NUM_EPISODES = max(int(os.getenv("CREWRIFT_PRIME_QUALIFIER_EPISODES",
 # crewrift game cannot dispatch with empty seats, so when e.g. only 3 real policies
 # are competing the remaining 5 seats are filled with these standard bots so the
 # game can run. Filler bots are seat-fillers ONLY: their wins/results NEVER count
-# toward scoring, rankings, or the leaderboard (see ``_complete_competition_round``,
-# which scores by the REAL entrants' own seats and never attributes a filler seat).
+# toward scoring, rankings, or the leaderboard. This is enforced with
+# defense-in-depth in ``_complete_competition_round``: each scheduled episode tags
+# both the filler SEAT indices (``filler_seats``) and the filler POLICY ids
+# (``filler_policy_version_ids``), and scoring excludes a seat if it is a filler
+# seat OR holds a filler policy, and never ranks/represents a filler policy as a
+# real entrant. The filler policy ids are also surfaced explicitly in the decision
+# log and ``round_display`` so they are always LABELED as fillers, never counted.
 #
 # The filler set is resolved at scheduling time with a clear precedence
 # (see :meth:`CrewriftPrimeSkillCommissioner._filler_policy_version_ids`):
@@ -222,8 +249,8 @@ _DISPATCH_FAILURE_HTTP_CODES = (
     "504",
 )
 _INFRA_REASON = (
-    "Qualifier could not be evaluated (experience-request dispatch or replay "
-    "expansion failed — infrastructure, not a policy crash) — holding for retry."
+    "Qualifier could not be evaluated (experience-request dispatch or results-JSON "
+    "fetch failed — infrastructure, not a policy crash) — holding for retry."
 )
 
 # Interview hard gate (2026-06-25): in addition to the three skills, every
@@ -308,10 +335,10 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
 
     When a new policy is submitted, the commissioner runs the qualification loop
     itself (see :meth:`qualify_submission`): create a self-play xp request, poll
-    it, download + parse the resulting ``.bitreplay`` into the per-slot metrics,
-    evaluate the strict three-skill gate, and on pass promote the policy DIRECTLY
-    into Competition. There is no Qualifiers staging division. The Competition
-    division's win-count scheduling/scoring is reused unchanged.
+    it, read the episode's per-slot results JSON artifact into the per-slot
+    metrics, evaluate the strict three-skill gate, and on pass promote the policy
+    DIRECTLY into Competition. There is no Qualifiers staging division. The
+    Competition division's win-count scheduling/scoring is reused unchanged.
     """
 
     # Lazily-created xp-request client (network I/O). Injectable for tests.
@@ -461,7 +488,12 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         Returns an episode request whose ``policy_version_ids`` is exactly
         ``NUM_SEATS`` long. The 0-based seat indices that are NOT a real, uniquely
         seated entrant (filler or duplicate top-up) are recorded as a comma-separated
-        ``filler_seats`` tag so ``_complete_competition_round`` can exclude them.
+        ``filler_seats`` tag, and the distinct CONFIGURED filler policy_version_ids
+        used to top up (never real-entrant duplicates) are recorded as a comma-
+        separated ``filler_policy_version_ids`` tag. Both are read back by
+        ``_complete_competition_round`` so filler seats — and any policy that only
+        appears as a filler — are excluded from scoring and never scored as a real
+        entrant.
         """
         # Real entrants, each seated at most once, rotated per episode for balance.
         seat_policies: list[UUID] = []
@@ -475,14 +507,21 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         # excluded); when none are configured, cycle real entrants so the closed
         # roster can still dispatch (those duplicate seats are excluded too).
         remaining = NUM_SEATS - real_seat_count
+        topup_is_filler = bool(filler_ids)
         if remaining > 0:
-            topup_pool = filler_ids if filler_ids else entrant_ids
+            topup_pool = filler_ids if topup_is_filler else entrant_ids
             seat_policies.extend(
                 topup_pool[(episode_index + index) % len(topup_pool)]
                 for index in range(remaining)
             )
 
         filler_seats = list(range(real_seat_count, NUM_SEATS))
+        # Only CONFIGURED filler policies (never duplicated real entrants) are
+        # recorded as filler policy ids — a duplicated real entrant is still a real
+        # policy that scores at its own legitimate seat.
+        filler_policy_ids = (
+            {str(seat_policies[seat]) for seat in filler_seats} if topup_is_filler else set()
+        )
         return CommissionerProtocolEpisodeRequest(
             request_id=f"competition:{round_start.round_id}:{episode_index}",
             variant_id=variant_id,
@@ -490,7 +529,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             tags={
                 "pool_id": str(round_start.round_id),
                 "competition": "1",
-                "filler_seats": ",".join(str(seat) for seat in filler_seats),
+                _FILLER_SEATS_TAG: ",".join(str(seat) for seat in filler_seats),
+                _FILLER_POLICY_IDS_TAG: ",".join(sorted(filler_policy_ids)),
             },
         )
 
@@ -526,7 +566,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             round_start, episode_results, scheduled_episodes, failed_episodes
         )
 
-    # ---- event-driven qualification (submission -> xp request -> replay) -------
+    # ---- event-driven qualification (submission -> xp request -> results JSON) -
 
     def migrate_league(self, ctx: LeagueMigrationContext) -> LeagueMigrationResult:
         """Submission seam: qualify every submitted/qualifying policy.
@@ -561,12 +601,12 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     ) -> ModelsPolicyMembershipEventChange:
         """Run the qualification loop for ONE submitted policy and return its event.
 
-        Steps: create + poll a self-play xp request for the policy, download +
-        parse its ``.bitreplay`` into per-slot metrics, evaluate the strict gate,
-        and return the membership change — promote to ``target_division_id`` on
-        pass, hold (status qualifying) on infra/parse failure, DQ on a genuine
-        non-completion. Emits the same ``COMMISSIONER_DECISION`` log + evidence as
-        the legacy path. Never raises: infra failures become holds.
+        Steps: create + poll a self-play xp request for the policy, read its
+        per-slot results JSON, evaluate the strict gate, and return the membership
+        change — promote to ``target_division_id`` on pass, hold (status qualifying)
+        on infra/missing-results failure, DQ on a genuine non-completion. Emits the
+        same ``COMMISSIONER_DECISION`` log + evidence as the legacy path. Never
+        raises: infra failures become holds.
         """
         policy_version_id = str(membership.policy_version_id)
         division_id = str(membership.division_id)
@@ -627,7 +667,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         )
         evidence = ModelsPolicyMembershipEventEvidence(
             type=SKILL_GATE_EVIDENCE_TYPE,
-            title="Qualifier skill gate (xp-request replay + LLM interview)",
+            title="Qualifier skill gate (xp-request results JSON + LLM interview)",
             summary=record.reason,
             metadata={"xreq_id": run.xreq_id, **interview_meta, **record.to_dict()},
         )
@@ -657,29 +697,43 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     def _game_results_from_run(
         self, run: XpRequestRun
     ) -> tuple[dict | None, str | None]:
-        """Parse the first completed episode's replay into a game_results dict.
+        """Build a game_results dict from the first completed episode's results JSON.
+
+        Reads the game's own end-of-episode ``results`` artifact
+        (``GET /jobs/{job_id}/artifacts/results`` via
+        :meth:`XpRequestClient.get_episode_results`) — the seat-indexed
+        ``results_schema`` payload (``scores``/``win``/``tasks``/``kills``
+        /``imposter``/``crew``/``vote_players``/``vote_skip``/``vote_timeout``)
+        that :func:`decision.evaluate_combined_game` consumes. NO replay download
+        or Nim re-expansion is involved.
 
         Returns ``(game_results, None)`` on success, ``(None, error)`` when a
-        completed episode existed but its replay could not be parsed (an infra
-        hold), or ``(None, None)`` when no completed episode existed at all (a
-        genuine non-completion -> caller DQs).
+        completed episode existed but its results JSON was missing/unfetchable (an
+        infra hold), or ``(None, None)`` when no completed episode existed at all
+        (a genuine non-completion -> caller DQs).
         """
         completed = run.completed_episodes
         if not completed:
             return None, None
         last_error: str | None = None
         for episode in completed:
-            if not episode.replay_url:
-                last_error = f"completed episode {episode.id} has no replay_url"
+            if not episode.job_id:
+                last_error = f"completed episode {episode.id} has no job_id"
                 continue
             try:
-                replay_bytes = self._xp_request_client().download_replay(episode.replay_url)
-                game_results = parse_replay_metrics(replay_bytes, num_seats=NUM_SEATS)
-            except (XpRequestInfraError, ReplayParseError) as exc:
-                last_error = f"replay parse failed for {episode.id}: {exc}"
+                game_results = self._xp_request_client().get_episode_results(episode.job_id)
+            except XpRequestInfraError as exc:
+                last_error = f"results fetch failed for {episode.id}: {exc}"
                 continue
-            return coerce_results_schema(game_results), None
-        return None, last_error or "no parseable completed episode replay"
+            coerced = coerce_results_schema(game_results)
+            if not has_results_schema_arrays(coerced or {}):
+                last_error = (
+                    f"completed episode {episode.id} results JSON missing per-slot "
+                    f"arrays (keys: {sorted((game_results or {}).keys())})"
+                )
+                continue
+            return coerced, None
+        return None, last_error or "no completed episode with parseable results JSON"
 
     def _run_interview(self, membership: MembershipSnapshot) -> InterviewResult:
         """Conduct the out-of-band LLM interview for a candidate (I/O lives here).
@@ -703,7 +757,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     def _infra_hold_event(
         self, membership: MembershipSnapshot, detail: str, *, interview: bool = False
     ) -> ModelsPolicyMembershipEventChange:
-        """An xp-request/replay infra failure -> HOLD qualifying (never DQ)."""
+        """An xp-request/results-fetch infra failure -> HOLD qualifying (never DQ)."""
         reason_text = _INTERVIEW_REASON if interview else _INFRA_REASON
         evidence_type = "crewrift_prime_interview_failure" if interview else "crewrift_prime_dispatch_failure"
         evidence_title = "Interview infrastructure failure" if interview else "Qualifier infrastructure failure"
@@ -784,11 +838,32 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         closed-roster 8-seat game when fewer than ``NUM_SEATS`` real entrants are
         competing) are EXCLUDED: a policy is only credited for the seat it was
         legitimately assigned as a real entrant, never for a filler/duplicate seat.
-        Filler seats are read from the scheduled episode's ``filler_seats`` tag.
+
+        Filler exclusion is defense-in-depth:
+
+        - by SEAT — the scheduled episode's ``filler_seats`` tag marks the top-up
+          seat indices, and
+        - by POLICY — the ``filler_policy_version_ids`` tag marks policies placed
+          purely as fillers; such a policy is dropped from scoring AND never ranked
+          or represented as a real entrant, even if it also slipped into a seat the
+          tags did not mark.
+
+        The configured filler policy ids this round are surfaced explicitly in the
+        decision log, ``round_display["filler_policy_version_ids"]``, and the
+        observability notes so they are always labeled as fillers and never counted.
         """
         rule = select_rule(self._config(), view.current_division, view.memberships)
         entries = view.entries(rule)
         filler_seats_by_request = _filler_seats_by_request(scheduled_episodes)
+        filler_policy_ids = _all_filler_policy_ids(scheduled_episodes)
+
+        # A policy that only ever appears as a configured filler must never be
+        # scored or ranked. Real entrants are taken from the division roster, so a
+        # pure filler should not be in ``entries`` at all — but drop it explicitly
+        # as belt-and-suspenders so a misconfiguration can never score a filler.
+        scored_entries = [
+            entry for entry in entries if str(entry.policy_version_id) not in filler_policy_ids
+        ]
 
         # Per episode: coerced game_results, the policy at each seat, and the seat
         # indices that are filler/duplicate top-up (excluded from scoring).
@@ -800,12 +875,17 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             if game_results is None:
                 continue
             seat_policies = [str(score.policy_version_id) for score in result.scores]
-            filler_seats = filler_seats_by_request.get(result.request_id, set())
+            filler_seats = set(filler_seats_by_request.get(result.request_id, set()))
+            # Defense-in-depth: any seat holding a configured filler policy is a
+            # filler seat regardless of what the seat-index tag recorded.
+            filler_seats |= {
+                i for i, sp in enumerate(seat_policies) if sp in filler_policy_ids
+            }
             games.append((game_results, seat_policies, filler_seats))
 
         records = {}
         completed_counts: dict[str, int] = {}
-        for entry in entries:
+        for entry in scored_entries:
             pid = str(entry.policy_version_id)
             episodes_with_seats = []
             for game_results, seat_policies, filler_seats in games:
@@ -820,7 +900,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             completed_counts[pid] = len(episodes_with_seats)
 
         ranked = sorted(
-            entries,
+            scored_entries,
             key=lambda e: (-records[str(e.policy_version_id)].score, e.seed_order, str(e.policy_version_id)),
         )
         rankings = []
@@ -865,19 +945,137 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                     "episodes_counted": completed_counts[pid],
                 }
             )
+        filler_ids_sorted = sorted(filler_policy_ids)
+        if filler_ids_sorted:
+            _emit_decision_log(
+                {
+                    "round_id": str(round_start.round_id),
+                    "round_number": round_start.round_number,
+                    "division": "Competition",
+                    "decision": "FILLER_POLICIES_EXCLUDED",
+                    "filler_policy_version_ids": filler_ids_sorted,
+                    "note": (
+                        "Filler policies seat-fill the closed-roster 8-seat game and are "
+                        "NOT counted in scoring, ranking, or the leaderboard."
+                    ),
+                }
+            )
+        filler_note = (
+            "Filler policies are seat-fillers only and are EXCLUDED from scoring: "
+            + ", ".join(f"filler policy {fid}" for fid in filler_ids_sorted)
+            if filler_ids_sorted
+            else "No filler policies were used this round."
+        )
+        leaderboards, next_state = self._competition_mmr_leaderboards(
+            incoming_state=round_start.state,
+            division_id=view.current_division.id,
+            round_id=round_start.round_id,
+            rankings=rankings,
+        )
         return CommissionerRoundComplete(
             results=[CommissionerDivisionRanking(division_id=view.current_division.id, rankings=rankings)],
+            # Publish the OpenSkill MMR board the platform should persist. Without an
+            # explicit leaderboards payload the platform's RoundComplete shim fabricates
+            # a win-count board from ``results`` that overwrites (and ping-pongs against)
+            # the MMR board the scheduling tick writes via rank_division.
+            leaderboards=leaderboards,
+            state=next_state,
             round_display={
                 "phases": [{"label": "Competition — winning players (1 pt/player, by role)", "episodes": len(games)}],
                 "competition_wins": breakdown,
+                # Explicitly mark which policies were fillers so any consumer labels
+                # them "filler policy <id>" and never treats them as a real entrant.
+                "filler_policy_version_ids": filler_ids_sorted,
             },
             observability=CommissionerRoundReport.model_validate(
                 build_competition_report(
                     breakdown,
-                    notes=[f"Scored {len(games)} completed game(s) this round."],
+                    notes=[f"Scored {len(games)} completed game(s) this round.", filler_note],
                 )
             ),
         )
+
+    def _competition_mmr_leaderboards(
+        self,
+        *,
+        incoming_state: Any,
+        division_id: UUID,
+        round_id: UUID,
+        rankings: list[CommissionerRankingEntry],
+    ) -> tuple[list[CommissionerDivisionLeaderboard], dict[str, Any]]:
+        """Replay the division's full MMR history (incl. this round) and publish the board.
+
+        We keep an append-only list of ``(round_id, policy_version_id, player_id,
+        rank, score)`` in commissioner state and replay it through the SAME
+        ``rank_by_mmr`` ``rank_division`` uses, then collapse it with the SAME
+        helper. So both writers emit byte-identical MMR scores and ordering — the
+        board can no longer flip between the MMR and win-count schemes.
+
+        Player names are intentionally not stored here (round-start memberships
+        don't carry them); the platform's leaderboard read path resolves names live
+        from the players table, so the published board's null names render correctly.
+        """
+        state: dict[str, Any] = dict(incoming_state) if isinstance(incoming_state, dict) else {}
+        history: list[dict[str, Any]] = list(state.get(_MMR_HISTORY_STATE_KEY, []))
+        round_id_str = str(round_id)
+        # Idempotency: a round is appended exactly once. A retried round-complete
+        # must not double-count its results into the rating replay.
+        already_recorded = any(row.get("round_id") == round_id_str for row in history)
+        if not already_recorded:
+            for entry in rankings:
+                # Skip tainted/unranked entries, mirroring rank_division's gate.
+                if int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0:
+                    continue
+                history.append(
+                    {
+                        "round_id": round_id_str,
+                        "policy_version_id": str(entry.policy_version_id),
+                        "player_id": entry.player_id,
+                        "rank": entry.rank,
+                        "score": entry.score,
+                    }
+                )
+        state[_MMR_HISTORY_STATE_KEY] = history
+
+        # Replay oldest-first. History is appended in round order, so the order of
+        # first appearance of each round_id is chronological.
+        round_order: list[UUID] = []
+        seen_rounds: set[str] = set()
+        rated_results: list[RatedRoundResult] = []
+        for row in history:
+            rid = row["round_id"]
+            if rid not in seen_rounds:
+                seen_rounds.add(rid)
+                round_order.append(UUID(rid))
+            rated_results.append(
+                RatedRoundResult(
+                    round_id=UUID(rid),
+                    policy_version_id=UUID(row["policy_version_id"]),
+                    player_id=row["player_id"],
+                    rank=int(row["rank"]),
+                    score=float(row["score"]),
+                )
+            )
+
+        ranking = rank_by_mmr(
+            completed_round_ids_oldest_first=round_order,
+            round_results=rated_results,
+        )
+        snapshots = self._mmr_board_from_ranking(ranking, name_by_player={}, recent=lambda _pid: None)
+        entries = [
+            CommissionerDivisionLeaderboardEntry(
+                player_id=str(snapshot.player_id),
+                player_name=snapshot.player_name,
+                rank=snapshot.rank,
+                score=snapshot.score,
+                rounds_played=snapshot.rounds_played,
+                policy_version_ids=snapshot.policy_version_ids,
+            )
+            for snapshot in snapshots
+            if snapshot.player_id is not None
+        ]
+        leaderboards = [division_leaderboard_from_entries(division_id=division_id, entries=entries)]
+        return leaderboards, state
 
     def describe_division(self, ctx: DivisionDescriptionContext) -> DivisionCommissionerDescriptionPublic:
         """Inherit the base description, but state the REAL Competition scoring
@@ -961,9 +1159,43 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         if not ranking.by_policy:
             return []
 
-        # Collapse policy versions -> player: a player's row is their best
-        # out-of-placement policy; if none cleared placement, their best
-        # in-placement policy (so brand-new players still appear, unranked).
+        ranks_by, scores_by = self._mmr_recent_round_lookup(ctx, completed_ids)
+
+        def recent(player_id):
+            if not ctx.recent_rounds:
+                return None
+            return [
+                LeaderboardRecentRoundPublic(
+                    id=round_row.public_id,
+                    round_number=round_row.round_number,
+                    status=round_row.status,
+                    rank=ranks_by.get((round_row.id, player_id)),
+                    score=scores_by.get((round_row.id, player_id)),
+                    started_at=round_row.started_at,
+                    completed_at=round_row.completed_at,
+                )
+                for round_row in ctx.recent_rounds
+            ]
+
+        return self._mmr_board_from_ranking(ranking, name_by_player, recent)
+
+    def _mmr_board_from_ranking(
+        self,
+        ranking,
+        name_by_player: dict[Any, str | None],
+        recent,
+    ) -> list[DivisionLeaderboardSnapshot]:
+        """Collapse the per-policy MMR ranking to the player-keyed Competition board.
+
+        Single source of truth for the board shape so ``rank_division`` (full
+        history, with recent-round strips) and ``_complete_competition_round``
+        (replayed history, ``recent`` returns None) emit IDENTICAL standings —
+        which is what stops the leaderboard from flip-flopping between the MMR
+        board and the win-count round results.
+
+        A player's row is their best out-of-placement policy version (falling back
+        to their best in-placement policy when none has cleared placement).
+        """
         best_by_player: dict[Any, Any] = {}
         agg_by_player: dict[Any, dict] = {}
         for policy in ranking.by_policy:
@@ -993,24 +1225,6 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 best_by_player[player_id] = policy
             elif current.in_placement == policy.in_placement and policy.mmr > current.mmr:
                 best_by_player[player_id] = policy
-
-        ranks_by, scores_by = self._mmr_recent_round_lookup(ctx, completed_ids)
-
-        def recent(player_id):
-            if not ctx.recent_rounds:
-                return None
-            return [
-                LeaderboardRecentRoundPublic(
-                    id=round_row.public_id,
-                    round_number=round_row.round_number,
-                    status=round_row.status,
-                    rank=ranks_by.get((round_row.id, player_id)),
-                    score=scores_by.get((round_row.id, player_id)),
-                    started_at=round_row.started_at,
-                    completed_at=round_row.completed_at,
-                )
-                for round_row in ctx.recent_rounds
-            ]
 
         # Player MMR = their representative policy's MMR. Out-of-placement players
         # (the representative policy cleared placement) sort first by descending
@@ -1118,7 +1332,7 @@ def _filler_seats_by_request(
     """
     mapping: dict[str, set[int]] = {}
     for episode in scheduled_episodes or []:
-        raw = episode.tags.get("filler_seats", "")
+        raw = episode.tags.get(_FILLER_SEATS_TAG, "")
         seats: set[int] = set()
         for token in raw.split(","):
             token = token.strip()
@@ -1131,6 +1345,40 @@ def _filler_seats_by_request(
         if seats:
             mapping[episode.request_id] = seats
     return mapping
+
+
+def _filler_policy_ids_by_request(
+    scheduled_episodes: list[CommissionerProtocolEpisodeRequest] | None,
+) -> dict[str, set[str]]:
+    """Map each scheduled episode's ``request_id`` to its CONFIGURED filler policy ids.
+
+    The ``filler_policy_version_ids`` tag lists the distinct policy_version_ids that
+    were placed purely as fillers (never duplicated real entrants). A policy that
+    only ever appears as a filler must NEVER be scored or represented as a real
+    entrant; this map lets scoring drop it defensively even if a seat-index slipped.
+    """
+    mapping: dict[str, set[str]] = {}
+    for episode in scheduled_episodes or []:
+        raw = episode.tags.get(_FILLER_POLICY_IDS_TAG, "")
+        ids = {token.strip() for token in raw.split(",") if token.strip()}
+        if ids:
+            mapping[episode.request_id] = ids
+    return mapping
+
+
+def _all_filler_policy_ids(
+    scheduled_episodes: list[CommissionerProtocolEpisodeRequest] | None,
+) -> set[str]:
+    """The union of every CONFIGURED filler policy id across the round's episodes.
+
+    Used to (1) drop a pure-filler policy from scoring/ranking everywhere and (2)
+    surface, in observability, which policies were fillers this round so they are
+    explicitly labeled as fillers and never mistaken for a real entrant.
+    """
+    ids: set[str] = set()
+    for seat_ids in _filler_policy_ids_by_request(scheduled_episodes).values():
+        ids |= seat_ids
+    return ids
 
 
 register_commissioner(COMMISSIONER_KEY, CrewriftPrimeSkillCommissioner)

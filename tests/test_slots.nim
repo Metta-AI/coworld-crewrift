@@ -505,16 +505,23 @@ suite "player slots":
     expect CrewriftError:
       discard sim.addPlayer("extra", 2)
 
-  test "manual slot must match next player index":
+  test "explicit out-of-order slots are admitted":
     let config = defaultGameConfig()
     var sim = initCrewriftForTest(config)
 
-    expect CrewriftError:
-      discard sim.addPlayer("manual", 5)
-    let manualIndex = sim.addPlayer("manual", 0)
+    # An explicit, in-range, unoccupied slot must be admitted directly even when
+    # it does not match the next sequential player index. Previously this raised
+    # and stranded validly-connected out-of-order sockets in the lobby.
+    let manualIndex = sim.addPlayer("manual", 5)
+    check sim.players[manualIndex].joinOrder == 5
     let autoIndex = sim.addPlayer("auto")
-    check sim.players[manualIndex].joinOrder == 0
-    check sim.players[autoIndex].joinOrder == 1
+    check sim.players[autoIndex].joinOrder == 0
+    # The occupied slot cannot be reused.
+    expect CrewriftError:
+      discard sim.addPlayer("dup", 5)
+    # Out-of-range slots are still rejected.
+    expect CrewriftError:
+      discard sim.addPlayer("oob", MaxPlayers)
 
   test "configured roles override random roles":
     var config = defaultGameConfig()
