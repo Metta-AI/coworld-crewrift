@@ -75,6 +75,7 @@ const
   BotReceiveTimeoutMs = 250
   PacketWaitLogAfterMs = 1000
   PacketWaitLogEveryMs = 1000
+  ProgressHeartbeatTicks = sim.TargetFps * 10
   RadarTaskColor = 8'u8
   RadarPeripheryMargin = 1
   RadarMatchTolerance = 2
@@ -479,6 +480,10 @@ type
     packetWaitMs: int
     packetWaitTimeouts: int
     packetWaitLogMs: int
+    lastPacketFrameTick: int
+    lastActionFrameTick: int
+    lastEventFrameTick: int
+    lastHeartbeatFrameTick: int
     lastLoggedRoom: string
     visibleRoomNames: array[PlayerColorCount, string]
     bedrockConfigLogged: bool
@@ -4103,6 +4108,7 @@ proc gameTimeText(tick: int): string =
 proc logEvent(bot: Bot, message: string) =
   ## Logs one bot observation with replay-compatible game time.
   echo "[", bot.logTick().gameTimeText(), "] ", message
+  bot.lastEventFrameTick = bot.frameTick
 
 proc logBlock(bot: Bot, title, text: string) =
   ## Logs a multiline bot observation with one timestamp per line.
@@ -4113,6 +4119,78 @@ proc logBlock(bot: Bot, title, text: string) =
     for line in text.splitLines():
       bot.logEvent(title & " | " & line)
   bot.logEvent(title & " end")
+
+proc frameAgeText(bot: Bot, previousTick: int): string =
+  ## Returns a compact seconds age for one frame timestamp.
+  if previousTick < 0:
+    return "unknown"
+  let
+    ageTicks = max(0, bot.frameTick - previousTick)
+    ageSeconds = ageTicks.float / sim.TargetFps.float
+  ageSeconds.formatFloat(ffDecimal, 1) & "s"
+
+proc positionText(bot: Bot): string =
+  ## Returns this bot's current world position or unknown.
+  if not bot.localized:
+    return "unknown"
+  "(" & $bot.playerWorldX() & "," & $bot.playerWorldY() & ")"
+
+proc aliveStateText(bot: Bot): string =
+  ## Returns this bot's current alive state.
+  if bot.isGhost or bot.selfVotingDead():
+    return "dead"
+  "alive"
+
+proc notePacketReceived(bot: Bot) =
+  ## Records the latest received frame tick.
+  bot.lastPacketFrameTick = bot.frameTick
+
+proc noteActionActivity(bot: Bot) =
+  ## Records the latest non-idle control or chat action tick.
+  bot.lastActionFrameTick = bot.frameTick
+
+proc heartbeatAllowed(bot: Bot): bool =
+  ## Returns true when active-run heartbeat logs are useful.
+  if not bot.gameStarted:
+    return false
+  if bot.interstitialText.isGameOverText():
+    return false
+  bot.aliveStateText() == "alive"
+
+proc logProgressHeartbeat(bot: Bot) =
+  ## Logs one active-run heartbeat with packet and progress ages.
+  if not bot.heartbeatAllowed():
+    return
+  if bot.lastHeartbeatFrameTick >= 0 and
+      bot.frameTick - bot.lastHeartbeatFrameTick < ProgressHeartbeatTicks:
+    return
+  let
+    packetAge = bot.frameAgeText(bot.lastPacketFrameTick)
+    actionAge = bot.frameAgeText(bot.lastActionFrameTick)
+    eventAge = bot.frameAgeText(bot.lastEventFrameTick)
+    room =
+      if bot.localized:
+        bot.roomName()
+      else:
+        "unknown"
+    eventTickBeforeLog = bot.lastEventFrameTick
+  bot.lastHeartbeatFrameTick = bot.frameTick
+  bot.logEvent(
+    "notsus heartbeat: serverTick=" & $bot.serverTick &
+      " room=" & room &
+      " position=" & bot.positionText() &
+      " state=" & bot.aliveStateText() &
+      " role=" & bot.role.roleName() &
+      " voting=" & $bot.voting &
+      " interstitial=" & $bot.interstitial &
+      " packetAge=" & packetAge &
+      " actionAge=" & actionAge &
+      " eventAge=" & eventAge &
+      " mask=" & inputMaskSummary(bot.lastMask) &
+      " velocity=(" & $bot.velocityX & "," & $bot.velocityY & ")" &
+      " intent=" & bot.intent
+  )
+  bot.lastEventFrameTick = eventTickBeforeLog
 
 proc packetWaitText(bot: Bot): string =
   ## Returns one human-readable packet wait state.
@@ -7418,6 +7496,10 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.lastTaskRadarResetTick = -TaskRadarResetTicks
   result.lastDropLogTick = -1_000_000
   result.packetWaitLogMs = -1
+  result.lastPacketFrameTick = -1
+  result.lastActionFrameTick = -1
+  result.lastEventFrameTick = -1
+  result.lastHeartbeatFrameTick = -1
   when not defined(botHeadless):
     result.buildPatchEntries()
   result.cameraX = result.sim.buttonCameraX()
@@ -8230,6 +8312,10 @@ when not defined(italkalotLibrary):
         bot.packetWaitMs = 0
         bot.packetWaitTimeouts = 0
         bot.packetWaitLogMs = -1
+        bot.lastPacketFrameTick = -1
+        bot.lastActionFrameTick = -1
+        bot.lastEventFrameTick = -1
+        bot.lastHeartbeatFrameTick = -1
         connected = true
         everConnected = true
 
@@ -8261,6 +8347,7 @@ when not defined(italkalotLibrary):
             bot.notePacketTimeout()
             continue
           bot.frameTick += client.frameAdvance
+          bot.notePacketReceived()
           bot.frameBufferLen = client.frameBufferLen
           bot.framesDropped = client.framesDropped
           bot.skippedFrames = client.skippedFrames
@@ -8285,6 +8372,8 @@ when not defined(italkalotLibrary):
           else:
             profileBlock "decide next mask":
               nextMask = bot.decideNextMask()
+          if nextMask != 0:
+            bot.noteActionActivity()
           if not gui and profileShouldDump(bot.frameTick):
             finishProfileTrace()
           bot.lastMask = nextMask
@@ -8303,12 +8392,14 @@ when not defined(italkalotLibrary):
               profileBlock "send chat":
                 ws.send(chatBlob(bot.pendingChat), BinaryMessage)
                 bot.markPendingChatSent()
+            bot.noteActionActivity()
           if bot.readyMessageReady():
             if gui:
               ws.send(readyBlob(), BinaryMessage)
             else:
               profileBlock "send ready":
                 ws.send(readyBlob(), BinaryMessage)
+          bot.logProgressHeartbeat()
       except CatchableError as e:
         ws.closeConnection()
         if connected:
