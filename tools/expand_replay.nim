@@ -19,6 +19,8 @@ type
     PlayerJoined
     EnteredRoom
     LeftRoom
+    Disconnected
+    Reconnected
     PhaseChanged
     VoteCalledBody
     VoteCalledButton
@@ -617,6 +619,7 @@ proc syncPlayers(
   tasks: var seq[int],
   votes: var seq[int],
   rooms: var seq[int],
+  connected: var seq[bool],
   rewards: var seq[int]
 ) =
   ## Adds tracking state for newly joined players.
@@ -626,10 +629,21 @@ proc syncPlayers(
     tasks.add(sim.players[i].activeTask)
     votes.add(if i < sim.voteState.votes.len: sim.voteState.votes[i] else: -1)
     rooms.add(sim.roomAt(i))
+    connected.add(sim.players[i].connected)
     rewards.add(sim.players[i].reward)
     events.addPlayerEvent(tick, PlayerJoined, sim, i)
     if rooms[i] >= 0:
       events.addRoomEvent(tick, EnteredRoom, sim, i, rooms[i])
+  for i in 0 ..< sim.players.len:
+    if connected[i] == sim.players[i].connected:
+      continue
+    connected[i] = sim.players[i].connected
+    let kind =
+      if connected[i]:
+        Reconnected
+      else:
+        Disconnected
+    events.addPlayerEvent(tick, kind, sim, i)
 
 proc printNewBodies(
   sim: SimServer,
@@ -959,6 +973,10 @@ proc key*(event: ReplayEvent): string =
     result = "entered_room"
   of LeftRoom:
     result = "left_room"
+  of Disconnected:
+    result = "disconnected"
+  of Reconnected:
+    result = "reconnected"
   of PhaseChanged:
     result = "phase"
   of VoteCalledBody:
@@ -993,6 +1011,10 @@ proc text*(event: ReplayEvent): string =
     result = "  player " & event.actorLabel & " entered room " & event.room
   of LeftRoom:
     result = "  player " & event.actorLabel & " left room " & event.room
+  of Disconnected:
+    result = "  player " & event.actorLabel & " disconnected"
+  of Reconnected:
+    result = "  player " & event.actorLabel & " reconnected"
   of PhaseChanged:
     result = "  phase " & $event.phase
   of VoteCalledBody:
@@ -1050,7 +1072,7 @@ proc jsonRow*(event: ReplayEvent): JsonNode =
   of BodyFound:
     value["label"] = %event.actorLabel
     value["room"] = %event.room
-  of Died, Revived:
+  of Died, Revived, Disconnected, Reconnected:
     discard
   of StartedTask:
     value["task"] = %event.task
@@ -1106,6 +1128,7 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
       tasks: seq[int]
       votes: seq[int]
       rooms: seq[int]
+      connected: seq[bool]
       rewards: seq[int]
       printedBodies: seq[string]
       done: seq[seq[bool]]
@@ -1154,6 +1177,7 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
         tasks,
         votes,
         rooms,
+        connected,
         rewards
       )
       let bodyVictims = sim.printNewBodies(

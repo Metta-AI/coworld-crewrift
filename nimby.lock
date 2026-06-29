@@ -12,6 +12,7 @@ webby 0.2.1 https://github.com/treeform/webby 55a2c03abbd32abf4775712c1959d975dc
 curly 1.1.1 https://github.com/guzba/curly a0f42baacbc48f4e5924b18854c0df9dcc251466
 libcurl 1.0.0 https://github.com/Araq/libcurl 7a420498f60a31d99fc8513886ce36c4e8c3a4ae
 chroma 1.0.0 https://github.com/treeform/chroma 2381748f92e5ea16cb2403ff7e20c6dd5443a59d
+chrono 0.3.2 https://github.com/treeform/chrono f46160d469602757e25178702f4fc0d2789b49b7
 flatty 0.3.4 https://github.com/treeform/flatty 05d878b397933331966a7f80dd0c55664559201f
 zippy 0.10.19 https://github.com/guzba/zippy bcb8c1e1be6abb0a0e35a3c6040cdd9391cc993f
 bumpy 1.1.3 https://github.com/treeform/bumpy 8f4d5ee2005af166b0a08e64e2035f8ff27f1531

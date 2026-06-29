@@ -13,6 +13,7 @@ import
   test_meeting_call_interstitial,
   test_max_ticks,
   test_movement_slide,
+  test_notsus_social,
   test_replay,
   test_replay_controls,
   test_rooms,

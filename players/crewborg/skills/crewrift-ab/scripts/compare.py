@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-# --- per-appearance record (compact; mirrors crewrift-report's results.json model) ---
+# --- per-appearance record (compact; mirrors crewrift-survey's results.json model) ---
 
 @dataclass
 class Rec:

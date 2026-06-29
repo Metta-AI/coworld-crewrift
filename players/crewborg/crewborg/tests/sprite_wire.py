@@ -1,6 +1,6 @@
 """Helpers to build synthetic Sprite-v1 messages for decoder/resolve tests.
 
-These mirror the wire format in ``docs/sprite_v1.md`` (all little-endian) so tests
+These mirror the wire format in ``docs/reference/crewrift-protocol.md`` (all little-endian) so tests
 can assert the decoder against hand-built message sequences rather than pixels.
 """
 
