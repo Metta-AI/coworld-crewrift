@@ -65,7 +65,7 @@ const
   ImposterCount* = 2
   AutoImposterCount* = true
   StartWaitTicks* = 5 * TargetFps
-  VoteTimerTicks* = TargetFps * 50
+  VoteTimerTicks* = TargetFps * 300
   MeetingCallTicks* = TargetFps * 3
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
