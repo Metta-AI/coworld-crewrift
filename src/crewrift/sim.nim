@@ -69,7 +69,7 @@ const
   MeetingCallTicks* = TargetFps * 3
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
-  MaxTicks* = 60_000  ## 0 = no limit.
+  MaxTicks* = 10_000  ## 0 = no limit.
   MaxGames* = 0  ## 0 = no limit.
   TasksPerPlayer* = 8
   ShowTaskArrows* = true
