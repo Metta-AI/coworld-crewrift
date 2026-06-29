@@ -70,8 +70,15 @@ jobs:
           python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
 
       - name: Deploy coworld
+        # The patch pins game.version to 0.1.0, so every push re-uploaded the same
+        # version and the platform rejected it with HTTP 409 ("already exists for
+        # equivalent version"). Override with a unique, monotonic PEP 440 release
+        # derived from the run number. We bump the core release (not a +build local
+        # segment) because the server's version-equivalence check normalizes to the
+        # public version, so a +sha suffix would still 409.
         run: |
           coworld upload-coworld \
             --from-coworld crewrift_prime \
             --patch crewrift-prime/crewrift_prime.patch.json \
+            --version 0.1.${{ github.run_number }} \
             --image game=crewrift-game:${{ github.sha }}
