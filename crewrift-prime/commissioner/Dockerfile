@@ -7,6 +7,10 @@
 # Wiring:
 #   COMMISSIONER_KEY=crewrift_prime_skill        -> resolves CrewriftPrimeSkillCommissioner
 #   RULESET_STRATEGY_CONFIG_PATH=/config/...yaml -> the skill-gate ruleset config
+#   CREWRIFT_PRIME_INTERVIEW_ENABLED=0           -> interview hard gate OFF (the
+#     platform interview-mode launcher is not wired yet, so an enabled gate would
+#     INFRA-HOLD every candidate forever; interview support will move into the game
+#     itself later). Qualification runs on the three-skill gate only until then.
 # The custom app module (app.py) imports the subclass (registering the key) then
 # builds commissioner_app(), which reads COMMISSIONER_KEY from the env.
 FROM --platform=linux/amd64 python:3.13-slim
@@ -14,23 +18,28 @@ FROM --platform=linux/amd64 python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     COMMISSIONER_KEY=crewrift_prime_skill \
-    RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml
+    RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml \
+    CREWRIFT_PRIME_INTERVIEW_ENABLED=0
 
 WORKDIR /app
 
-# 1) Install the vendored stock commissioners package (unmodified upstream),
-#    plus OpenSkill (patent-free Bayesian skill rating) that powers the
-#    per-policy MMR Competition leaderboard (see mmr.py / rank_division).
+# 1) Install the vendored stock commissioners package (unmodified upstream).
+#    NOTE: the Competition leaderboard now ranks by WIN RATE (all-time episodes
+#    won / all-time episodes played; see rank_division / _win_total_board), NOT
+#    OpenSkill MMR. The OpenSkill install and mmr.py are retained only as an
+#    unused, test-covered ranking option and are no longer on the live scoring path.
 COPY vendor /app/vendor
 RUN pip install --no-cache-dir /app/vendor "openskill>=6.0.0"
 
 # 2) Overlay the Crewrift Prime decision logic, subclass, entrypoint, debug
 #    script, and ruleset config.
+#    NOTE: the qualifier reads the episode's per-slot RESULTS JSON artifact
+#    (/jobs/{job_id}/artifacts/results) directly, so the Nim replay expander +
+#    replay_parser.py are NO LONGER part of the image (Dependency A retired).
 COPY decision.py /app/decision.py
 COPY mmr.py /app/mmr.py
 COPY game_results_loader.py /app/game_results_loader.py
 COPY xp_request_client.py /app/xp_request_client.py
-COPY replay_parser.py /app/replay_parser.py
 COPY interview.py /app/interview.py
 COPY crewrift_prime_skill_commissioner.py /app/crewrift_prime_skill_commissioner.py
 COPY app.py /app/app.py

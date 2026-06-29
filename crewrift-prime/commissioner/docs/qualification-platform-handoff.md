@@ -5,7 +5,7 @@
 The Crewrift Prime commissioner was reworked from a "Qualifiers staging division"
 model into an **event-driven qualification flow**. On a new submission the
 commissioner now: (1) runs a self-play *experience-request* game for the policy,
-(2) re-simulates the resulting `.bitreplay` into skill metrics, (3) runs a strict
+(2) reads the episode's per-slot **results JSON** artifact for skill metrics, (3) runs a strict
 three-skill gate plus an optional out-of-band **LLM interview** hard gate, and
 (4) promotes a passing policy directly into the **Competition** division. There is
 no longer a Qualifiers staging division.
@@ -103,19 +103,35 @@ interview gate (neutral pass). Base qualification (skill gate) is unaffected.
 
 ## Enabling dependencies
 
-### A. Bundle the Nim replay expander into the commissioner image
+### A. Bundle the Nim replay expander into the commissioner image — RETIRED (no longer required)
 
-The replay re-simulation step shells out to a Nim expander
+> **Status (update):** This dependency is **no longer required.** The qualifier now
+> reads the game's own end-of-episode per-slot **results JSON** artifact
+> (`GET /jobs/{job_id}/artifacts/results` — the seat-indexed `results_schema` the
+> platform stores per job, the same endpoint `coworld episode-results` reads)
+> instead of downloading + re-expanding the `.bitreplay`. The Nim expander
+> (`tools/expand_replay.nim`) and `replay_parser.py` are no longer on the qualifier
+> path and are not bundled into the commissioner image (`Dockerfile` no longer
+> copies `replay_parser.py`). No build stage / `CREWRIFT_PRIME_EXPAND_REPLAY_CMD` /
+> `CREWRIFT_PRIME_GAME_DIR` is needed.
+>
+> Verified live (2026-06-27): a completed `crewrift_prime` qualifier episode's
+> results artifact contains every per-slot array `decision.py` needs — `scores`,
+> `win`, `tasks`, `kills`, `imposter`, `crew`, `vote_players`, `vote_skip`,
+> `vote_timeout` (plus `names`, `connect_timeout`, `disconnect_timeout`), 8 entries
+> per slot. The old text is preserved below for history only.
+
+~~The replay re-simulation step shells out to a Nim expander
 (`tools/expand_replay.nim`, invoked via `CREWRIFT_PRIME_EXPAND_REPLAY_CMD` run in
 `CREWRIFT_PRIME_GAME_DIR`). That binary is **not present** in the commissioner
 image — `crewrift-prime/commissioner/Dockerfile` installs only the vendored
 `commissioners` package plus the Crewrift Prime overlay. Without the expander,
 every qualifier becomes an **infra hold** (replay can't be expanded → metrics
-can't be derived).
+can't be derived).~~
 
-**Fix.** Add a build stage that compiles a `crewrift-expand-replay` binary from the
+~~**Fix.** Add a build stage that compiles a `crewrift-expand-replay` binary from the
 game repo's `tools/expand_replay.nim`, copy it into the image, and set
-`CREWRIFT_PRIME_EXPAND_REPLAY_CMD` / `CREWRIFT_PRIME_GAME_DIR` accordingly.
+`CREWRIFT_PRIME_EXPAND_REPLAY_CMD` / `CREWRIFT_PRIME_GAME_DIR` accordingly.~~
 
 ### B. Secret-injection path for commissioner env
 

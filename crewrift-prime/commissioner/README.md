@@ -1,7 +1,7 @@
 # Crewrift Prime — advanced-skill commissioner
 
 A custom Coworld commissioner for the **Crewrift Prime** league that replaces the
-stock score-only Qualifiers→Competition gate with an **event-driven, replay-evaluated
+stock score-only Qualifiers→Competition gate with an **event-driven, results-JSON
 three-skill gate**, plus first-class **decision observability** (per-skill scores,
 verdicts, and a human-readable reason for every promotion decision).
 
@@ -11,12 +11,12 @@ The stock config-driven `ruleset_strategy` commissioner's transition vocabulary
 (`TransitionCriteriaConfig`, `extra="forbid"`) only allows `completed_episodes_*`
 / `score_*`, discarding every other field of the per-slot `results_schema`. Gating
 on advanced skills requires reading the game's results ourselves. We go further:
-this image owns the **xp-request client** (`xp_request_client.py`) and the
-**replay parser** (`replay_parser.py`) so the whole "submit → run an experience
-request → evaluate the replay → promote" loop lives in the commissioner. The
-Competition division's win-count scheduling/scoring/ranking is reused.
+this image owns the **xp-request client** (`xp_request_client.py`) so the whole
+"submit → run an experience request → read the per-slot results JSON → promote"
+loop lives in the commissioner. The Competition division's win-count
+scheduling/scoring/ranking is reused.
 
-## Qualification — event-driven, replay-evaluated ("one game and we're in")
+## Qualification — event-driven, results-JSON ("one game and we're in")
 
 There is **no Qualifiers staging division**. When a new policy is submitted, the
 commissioner runs the qualification loop itself (`migrate_league` →
@@ -24,12 +24,13 @@ commissioner runs the qualification loop itself (`migrate_league` →
 
 1. **Create + poll** a one-game self-play *experience request* for the policy
    (`POST /v2/experience-requests`, then poll `GET .../{xreq}` / `.../episodes`).
-2. **Download + parse** the completed episode's `.bitreplay`. A Crewrift
-   `.bitreplay` is only per-tick input masks, so deriving metrics requires
-   **re-simulating** it: `replay_parser.py` runs the repo's Nim expander
-   (`tools/expand_replay.nim --format jsonl`, overridable via
-   `CREWRIFT_PRIME_EXPAND_REPLAY_CMD`) to produce the structured `{ts, player,
-   key, value}` event log, then folds it into a per-slot `results_schema` dict.
+2. **Read the per-slot results JSON.** Each completed episode carries a `job_id`;
+   the commissioner fetches the game's own end-of-episode `results` artifact
+   (`GET /jobs/{job_id}/artifacts/results` — the same endpoint the
+   `coworld episode-results` CLI reads) and gets the seat-indexed `results_schema`
+   dict directly (`scores`/`win`/`tasks`/`kills`/`imposter`/`crew`/`vote_players`/
+   `vote_skip`/`vote_timeout`/…). **No `.bitreplay` download or Nim re-expansion** —
+   the game has already re-simulated and emitted these per-slot results.
 3. **Evaluate** the strict three-skill AND gate (`decision.evaluate_combined_game`,
    reused unchanged) over that one self-play game. Self-play fills all 8 seats with
    the entrant, so a single game exercises both roles:
@@ -46,9 +47,9 @@ commissioner runs the qualification loop itself (`migrate_league` →
    division to hold in) and re-evaluated on its next submission.
 
 **Crash / infra safety** (no separate crash_check stage):
-- a completed, parseable replay with results is, by definition, not a crash → evaluate the 3 skills;
+- a completed episode with a populated results JSON is, by definition, not a crash → evaluate the 3 skills;
 - a terminal run with **no completed game** (no results, not infra) → **DQ** ("Failed to complete the qualifier game");
-- an **xp-request infra failure** (HTTP 4xx/5xx, run never completes within the budget) or a **replay-expansion failure** (Nim expander unavailable/errors) → **hold & retry**, never DQ.
+- an **xp-request infra failure** (HTTP 4xx/5xx, run never completes within the budget) or a **missing/unfetchable results JSON** on a completed episode (no `job_id`, artifact HTTP error, or the JSON lacks the per-slot arrays) → **hold & retry**, never DQ.
 
 > **Submission seam.** The stock platform↔commissioner protocol carries no
 > per-submission message, so the commissioner reacts on `migrate_league` — the only
@@ -57,47 +58,36 @@ commissioner runs the qualification loop itself (`migrate_league` →
 > hook) when a policy is submitted for qualification to fire promptly. See the
 > repo-root `crewrift-prime/README.md` "Qualifier" section.
 
-## Competition division — score = WINNING PLAYERS (per round), ranked by OpenSkill MMR
+## Competition division — score = WON EPISODES (per round), ranked by WIN RATE
 
 Once promoted, a policy competes in the **Competition** division. Each round's
-**score** counts **every winning player (seat)**: **1 point for each seat that won
-as imposter, plus 1 point for each seat that won as crew** (score =
-`imposter_wins + crew_wins`). A seat scores if its per-slot `game_results.win` is
-True; the role of that winning seat (imposter vs crew) comes from the per-slot
-`imposter`/`crew` arrays. An entrant occupying several winning seats in one game
-scores once **per winning seat** (not once per winning episode). That per-round
-score/finishing-rank is the *match outcome* fed to the rating — it is no longer
-summed directly into the leaderboard.
+**score** counts **the number of episodes the entrant won**: **1 point per won
+episode, capped at 1 per episode** regardless of how many of its seats won
+(role-agnostic — winning as imposter or crew counts the same). An entrant wins an
+episode if any of its (non-filler) seats has its per-slot `game_results.win` True.
+The role split of the winning seats (`imposter_wins`/`crew_wins`) is tracked for
+observability only and does **not** inflate the score past 1 per episode.
 
 - `_complete_competition_round` (subclass override) sets each entrant's per-round
-  score = winning players that round, with `imposter_wins`/`crew_wins` in
-  `result_metadata` and a `competition_wins` breakdown in `round_display`. A
+  score = won episodes that round, with `episode_wins`/`imposter_wins`/`crew_wins`
+  in `result_metadata` and a `competition_wins` breakdown in `round_display`. A
   `COMMISSIONER_DECISION {"decision":"COMPETITION_WINS", ...}` line is logged per
   entrant.
-- `rank_division` (subclass override) ranks the Competition leaderboard by a
-  **per-policy OpenSkill (Plackett–Luce) MMR** (see `mmr.py`), faithful to upstream
-  PR [Metta-AI/metta#16527](https://github.com/Metta-AI/metta/pull/16527). It
-  replays the division's completed rounds **oldest-first**; each round is one
-  Plackett–Luce match decided by the finishing rank above. The displayed MMR is the
-  conservative ordinal **`mu − 3σ`**; a player's leaderboard row is their **best
-  out-of-placement policy version** (falling back to their best in-placement policy
-  when none has cleared placement). Other divisions keep the stock ranking.
+- `rank_division` (subclass override) ranks the Competition leaderboard by each
+  player's **all-time win rate** across all completed rounds — total episodes won
+  divided by total episodes played, always a number between 0 and 1 — descending.
+  A player's row aggregates their policy versions' won and played episodes.
+  `_complete_competition_round` publishes the SAME win-rate board on
+  `RoundComplete.leaderboards` (built from an append-only per-round win history —
+  carrying each round's `score` and `episodes_played` — in commissioner state), so
+  both platform writers persist an identical board and the standings never flip.
+  Other divisions keep the stock ranking. A
+  `COMMISSIONER_DECISION {"decision":"WIN_RATE_RANK", ...}` line is logged per
+  player with `win_rate`/`wins`/`episodes_played`/`rounds_played`/`rank`.
 
-### MMR placement (rated but unranked)
-
-A freshly promoted policy is **rated but shows no numeric rank** until it has
-played `CREWRIFT_PRIME_MMR_PLACEMENT_MIN_GAMES` (default **5**) rated Competition
-rounds — so single-round variance can't rocket a new policy to #1. This placement
-gate is *inside* Competition and is orthogonal to the Qualifiers→Competition skill
-gate above (which still decides admission). A `COMMISSIONER_DECISION
-{"decision":"MMR_RANK", ...}` line is logged per player with `mmr`/`mu`/`sigma`,
-W/L, `games_played`, and `in_placement`. A brand-new policy version from a player
-who already has a rated policy starts from that player's best established `mu`
-(wide σ), so its first ranks aren't insane; placement then tightens σ.
-
-> **Behavior change vs. the old board:** the leaderboard was previously a
-> monotonic *cumulative win total*; MMR can go **down**. Wins/losses (first-place
-> finishes vs. the rest) are still tracked per policy for the W/L display.
+> **Note on matchmaking:** seat assignment is **round-robin** — every real entrant
+> plays every round (empty seats topped up with fillers). There is no skill-based
+> matching; the leaderboard only affects displayed standings.
 
 ### Seating — at most ONE real policy per seat, default fillers top up the rest
 
@@ -123,14 +113,28 @@ game can still dispatch.
   gracefully** (logs a `WARNING`, then falls back to env → no-filler seating) — a
   filler lookup never crashes a competition round. The `notsus` bot version(s) are
   the intended default (its concrete UUID is environment-specific).
-- **Filler results never count.** Filler (and, when no fillers are configured, the
-  duplicate real-entrant top-up) seats are recorded in the episode's
-  `filler_seats` tag and **excluded** from scoring, `result_metadata`, the
-  `competition_wins` breakdown, and therefore the leaderboard. A policy is only
-  ever credited for the single seat it was legitimately assigned as a real entrant.
+- **Filler results never count (defense-in-depth).** Filler (and, when no fillers
+  are configured, the duplicate real-entrant top-up) seats are recorded in the
+  episode's `filler_seats` tag, and the **configured filler policy ids** are
+  recorded in the `filler_policy_version_ids` tag. Scoring excludes a seat if it is
+  a filler seat **OR** holds a filler policy id, and a pure-filler policy is never
+  ranked or represented as a real entrant — so fillers are **excluded** from
+  scoring, `result_metadata`, the `competition_wins` breakdown, and the
+  leaderboard. The filler policy ids are surfaced explicitly (decision log
+  `FILLER_POLICIES_EXCLUDED`, `round_display["filler_policy_version_ids"]`, and an
+  observability note) so any consumer references them only as `filler policy <id>`.
+  A policy is only ever credited for the single seat it was legitimately assigned
+  as a real entrant.
 - When the env var is **unset**, no fillers are injected and empty seats fall back
   to cycling real entrants (so the closed roster can still dispatch) — but those
   duplicate seats are still excluded from scoring (1 scored seat per real policy).
+
+  > **Game / UI side:** the commissioner cannot rename or hide fillers inside the
+  > game's own `results.json` `names[]`, replays, or meeting transcripts (those live
+  > in the `../metta` game image / Observatory web app). See
+  > [`docs/filler-players-platform-handoff.md`](docs/filler-players-platform-handoff.md)
+  > for the exact spec to make those layers label fillers as `filler policy <name>`
+  > and never represent them as real players.
 
 ### Threshold rationale (lowered 2026-06-24 — "easier for now")
 
@@ -318,7 +322,7 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
 ## Build / wire (recorded for reproducibility)
 
 ```sh
-docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v8 .
+docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v21 .
 
 # Team-only mutation: clear any active player session so get-token returns the
 # usr_ token (patch-commissioner needs team auth, not a ply_ token).
@@ -328,7 +332,7 @@ uv run python -c "from softmax.auth import clear_active_player_session; clear_ac
 # Repoint the coworld's commissioner runnable image; this pushes to Observatory's
 # registry, rewrites the manifest image to an img_ id, bumps the coworld version,
 # and re-certifies (hosted smoke) to canonical.
-uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v8 \
+uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v21 \
   --runnable-id among-them-commissioner
 ```
 

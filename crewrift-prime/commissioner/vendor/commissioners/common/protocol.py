@@ -178,6 +178,92 @@ class DivisionLeaderboardEntry(BaseModel):
     recent_rounds: list[dict[str, Any]] | None = None
 
 
+LeaderboardValue = str | int | float | bool | None
+
+
+class DivisionLeaderboardAxis(BaseModel):
+    key: str
+    label: str | None = None
+
+
+class DivisionLeaderboardColumn(BaseModel):
+    key: str
+    label: str | None = None
+    value_type: str = "number"
+    sort: str | None = None
+
+
+class DivisionLeaderboardRow(BaseModel):
+    subject_type: str = "player"
+    subject_id: str
+    subject_name: str | None = None
+    values: dict[str, LeaderboardValue] = Field(default_factory=dict)
+    policy_version_ids: set[UUID] = Field(default_factory=set)
+    recent_rounds: list[dict[str, Any]] | None = None
+
+
+class DivisionLeaderboardView(BaseModel):
+    key: str = "score"
+    title: str | None = None
+    description: str | None = None
+    axis_values: dict[str, str] = Field(default_factory=dict)
+    columns: list[DivisionLeaderboardColumn] = Field(default_factory=list)
+    rows: list[DivisionLeaderboardRow] = Field(default_factory=list)
+
+
+class DivisionLeaderboard(BaseModel):
+    division_id: UUID
+    default_view_key: str = "score"
+    axes: list[DivisionLeaderboardAxis] = Field(default_factory=list)
+    views: list[DivisionLeaderboardView] = Field(default_factory=list)
+
+
+def _row_from_division_leaderboard_entry(entry: DivisionLeaderboardEntry) -> DivisionLeaderboardRow:
+    return DivisionLeaderboardRow(
+        subject_type="player",
+        subject_id=entry.player_id,
+        subject_name=entry.player_name,
+        values={"rank": entry.rank, "score": entry.score, "rounds_played": entry.rounds_played},
+        policy_version_ids=entry.policy_version_ids,
+        recent_rounds=entry.recent_rounds,
+    )
+
+
+def division_leaderboard_from_entries(
+    *,
+    division_id: UUID,
+    entries: list[DivisionLeaderboardEntry],
+    title: str = "Score",
+) -> DivisionLeaderboard:
+    """Build the platform's generic-view leaderboard from player-keyed entries.
+
+    Mirrors the platform's own ``rankings -> views/rows`` shape so a leaderboard
+    the commissioner publishes on ``RoundComplete`` is persisted verbatim instead
+    of being re-synthesized by the platform's win-count compatibility shim.
+    """
+    view = DivisionLeaderboardView(
+        key="score",
+        title=title,
+        axis_values={"metric": "score", "timeframe": "legacy"},
+        columns=[
+            DivisionLeaderboardColumn(key="rank", label="Rank", value_type="integer", sort="asc"),
+            DivisionLeaderboardColumn(key="score", label="Score", value_type="number", sort="desc"),
+            DivisionLeaderboardColumn(key="rounds_played", label="Rounds Played", value_type="integer"),
+        ],
+        rows=[_row_from_division_leaderboard_entry(entry) for entry in entries],
+    )
+    return DivisionLeaderboard(
+        division_id=division_id,
+        default_view_key="score",
+        axes=[
+            DivisionLeaderboardAxis(key="metric", label="Metric"),
+            DivisionLeaderboardAxis(key="timeframe", label="Timeframe"),
+        ],
+        views=[view],
+    )
+
+
+
 class DivisionDescription(BaseModel):
     round_schedule: str | None = None
     next_round: str | None = None
@@ -311,6 +397,7 @@ class CommissionerRoundReport(BaseModel):
 
 class RoundComplete(BaseModel):
     results: list[DivisionRanking] = Field(default_factory=list)
+    leaderboards: list[DivisionLeaderboard] = Field(default_factory=list)
     policy_membership_events: list[PolicyMembershipEventChange] = Field(default_factory=list)
     membership_changes: list[MembershipChange] = Field(default_factory=list)
     round_display: dict[str, Any] | None = None

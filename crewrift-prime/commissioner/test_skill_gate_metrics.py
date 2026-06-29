@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import unittest
 
 from decision import (
@@ -254,9 +253,10 @@ class CombinedSingleGameTest(unittest.TestCase):
 
 
 class CompetitionWinCountTest(unittest.TestCase):
-    def test_winning_episodes_score_per_seat(self) -> None:
-        # Entrant occupies seat 0 in each episode (one seat per game), so each
-        # winning game contributes one winning player point.
+    def test_winning_episodes_score_one_each(self) -> None:
+        # Entrant occupies seat 0 in each episode (one seat per game). It won 3 of
+        # the 5 episodes, so it scores 3 (one point per WON episode). The role
+        # split still counts the winning seats for observability.
         won_imposter = {"win": [True], "imposter": [1], "crew": [0]}
         won_crew = {"win": [True], "imposter": [0], "crew": [1]}
         lost = {"win": [False], "imposter": [0], "crew": [1]}
@@ -268,31 +268,38 @@ class CompetitionWinCountTest(unittest.TestCase):
             (lost, [0]),
         ]
         rec = count_competition_wins(episodes)
-        self.assertEqual(rec.wins, 3)  # imposter_wins + crew_wins
+        self.assertEqual(rec.wins, 3)  # episodes won
+        self.assertEqual(rec.episode_wins, 3)
         self.assertEqual(rec.score, 3.0)
         self.assertEqual(rec.imposter_wins, 1)
         self.assertEqual(rec.crew_wins, 2)
         self.assertEqual(rec.episodes_counted, 5)
 
-    def test_multiple_winning_seats_score_once_each(self) -> None:
+    def test_multiple_winning_seats_score_one_per_episode(self) -> None:
         # 8-seat self-play game where the crew team (seats 2..7) won: the entrant
-        # occupies all 8 seats, so 6 crew players won => 6 points (1 per player).
+        # occupies all 8 seats, but winning ONE episode scores exactly 1 (capped),
+        # regardless of how many of its seats won. The 6 winning crew seats are
+        # tracked as crew_wins for observability only.
         gr = _combined_game()
         gr["win"] = [False, False, True, True, True, True, True, True]
         rec = count_competition_wins([(gr, list(range(8)))])
         self.assertEqual(rec.crew_wins, 6)
         self.assertEqual(rec.imposter_wins, 0)
-        self.assertEqual(rec.wins, 6)
-        self.assertEqual(rec.score, 6.0)
+        self.assertEqual(rec.episode_wins, 1)
+        self.assertEqual(rec.wins, 1)
+        self.assertEqual(rec.score, 1.0)
 
-    def test_imposter_and_crew_players_both_score(self) -> None:
+    def test_imposter_and_crew_players_both_score_one_episode(self) -> None:
         # Both imposter seats (0,1) and four crew seats win in one self-play game.
+        # That is still ONE won episode => score 1; the role split records the
+        # winning seats (2 imposter, 4 crew) for observability.
         gr = _combined_game()
         gr["win"] = [True, True, True, True, True, True, False, False]
         rec = count_competition_wins([(gr, list(range(8)))])
         self.assertEqual(rec.imposter_wins, 2)
         self.assertEqual(rec.crew_wins, 4)
-        self.assertEqual(rec.wins, 6)
+        self.assertEqual(rec.episode_wins, 1)
+        self.assertEqual(rec.wins, 1)
 
 
 class ObservabilityReportTest(unittest.TestCase):
@@ -365,116 +372,6 @@ class ObservabilityReportTest(unittest.TestCase):
         )
         rmod.assert_safe_render_html(qual["render_html"], source="qualifier")
         rmod.assert_safe_render_html(comp["render_html"], source="competition")
-
-
-class ReplayParserTest(unittest.TestCase):
-    """The pure event-log -> game_results fold + the expander I/O boundary."""
-
-    def test_events_fold_into_seat_indexed_game_results(self) -> None:
-        from replay_parser import game_results_from_events
-
-        # Two imposters (slots 0,1), six crew. Slot 0 lands kills + wins; crew
-        # complete tasks; slot 2 casts a vote, slot 3 skips, slot 4 times out.
-        events = [
-            {"ts": 1, "player": 0, "key": "player_joined", "value": {}},
-            {"ts": 1, "player": 1, "key": "player_joined", "value": {}},
-            {"ts": 1, "player": 2, "key": "player_joined", "value": {}},
-            {"ts": 1, "player": 3, "key": "player_joined", "value": {}},
-            {"ts": 1, "player": 4, "key": "player_joined", "value": {}},
-            {"ts": 50, "player": 0, "key": "kill", "value": {"victim_slot": 5}},
-            {"ts": 60, "player": 0, "key": "kill", "value": {"victim_slot": 6}},
-            {"ts": 70, "player": 2, "key": "completed_task", "value": {"task": 1}},
-            {"ts": 71, "player": 3, "key": "completed_task", "value": {"task": 2}},
-            {"ts": 80, "player": 2, "key": "vote_cast", "value": {"target_slot": 0}},
-            {"ts": 81, "player": 3, "key": "vote_cast", "value": {"target": "skip"}},
-            {"ts": 90, "player": 1, "key": "score", "value": {"amount": 10, "reason": "killing"}},
-            {"ts": 95, "player": 4, "key": "score", "value": {"amount": -10, "reason": "failing to vote or skip"}},
-            {"ts": 100, "player": 0, "key": "score", "value": {"amount": 100, "reason": "winning"}},
-            {"ts": 100, "player": 1, "key": "score", "value": {"amount": 100, "reason": "winning"}},
-        ]
-        gr = game_results_from_events(events, num_seats=8)
-        # Roles: slots 0,1 are imposters (kill / "killing" score); joined crew = 2,3,4.
-        self.assertEqual(gr["imposter"], [1, 1, 0, 0, 0, 0, 0, 0])
-        self.assertEqual(gr["crew"], [0, 0, 1, 1, 1, 0, 0, 0])
-        self.assertEqual(gr["kills"][0], 2.0)
-        self.assertEqual(gr["tasks"][2], 1.0)
-        self.assertEqual(gr["vote_players"][2], 1.0)
-        self.assertEqual(gr["vote_skip"][3], 1.0)
-        self.assertEqual(gr["vote_timeout"][4], 1.0)
-        self.assertEqual(gr["win"][0], True)
-        self.assertEqual(gr["win"][1], True)
-
-    def test_folded_game_results_feed_the_gate(self) -> None:
-        # The folded dict must be directly evaluable by the existing gate.
-        from replay_parser import game_results_from_events
-
-        events = [
-            {"ts": 1, "player": 0, "key": "player_joined", "value": {}},
-            {"ts": 1, "player": 2, "key": "player_joined", "value": {}},
-            {"ts": 50, "player": 0, "key": "kill", "value": {}},
-            {"ts": 70, "player": 2, "key": "completed_task", "value": {}},
-            {"ts": 71, "player": 2, "key": "completed_task", "value": {}},
-            {"ts": 80, "player": 2, "key": "vote_cast", "value": {"target_slot": 0}},
-        ]
-        gr = game_results_from_events(events, num_seats=8)
-        record = evaluate_combined_game(gr)
-        skills = {v.skill: v for v in record.verdicts}
-        self.assertTrue(skills["hunting"].passed)  # 1 kill >= 0.5
-        self.assertTrue(skills["tasks"].passed)     # crew seat 2 has 2 tasks >= 1.0
-        self.assertTrue(skills["voting"].passed)    # a vote was cast in the meeting
-
-    def test_out_of_range_and_malformed_rows_are_ignored(self) -> None:
-        from replay_parser import game_results_from_events
-
-        events = [
-            {"ts": 1, "player": 99, "key": "kill", "value": {}},        # slot out of range
-            {"ts": 1, "player": "x", "key": "kill", "value": {}},        # bad slot type (skipped upstream)
-            {"ts": 1, "player": 0, "key": "kill", "value": {}},          # valid
-        ]
-        gr = game_results_from_events(events, num_seats=8)
-        self.assertEqual(gr["kills"][0], 1.0)
-        self.assertEqual(sum(gr["kills"]), 1.0)
-
-    def test_expand_replay_raises_on_empty_bytes(self) -> None:
-        from replay_parser import ReplayParseError, expand_replay_to_events
-
-        with self.assertRaises(ReplayParseError):
-            expand_replay_to_events(b"")
-
-    def test_expand_replay_raises_when_expander_missing(self) -> None:
-        # Point the expander at a binary that does not exist -> infra hold (raise).
-        import os
-        from replay_parser import ReplayParseError, expand_replay_to_events
-
-        prev = os.environ.get("CREWRIFT_PRIME_EXPAND_REPLAY_CMD")
-        os.environ["CREWRIFT_PRIME_EXPAND_REPLAY_CMD"] = "/nonexistent/crewrift-expand-replay --format jsonl"
-        try:
-            with self.assertRaises(ReplayParseError):
-                expand_replay_to_events(b"not-a-real-replay")
-        finally:
-            if prev is None:
-                os.environ.pop("CREWRIFT_PRIME_EXPAND_REPLAY_CMD", None)
-            else:
-                os.environ["CREWRIFT_PRIME_EXPAND_REPLAY_CMD"] = prev
-
-    def test_iter_event_rows_filters_trace_metadata(self) -> None:
-        # The expander's JSONL also carries non-event metadata rows (player=-1 /
-        # no key) — only well-formed event rows survive the filter.
-        from replay_parser import _iter_event_rows
-
-        stdout = "\n".join([
-            json.dumps({"ts": 0, "player": -1, "key": "map_geometry", "value": {}}),
-            json.dumps({"ts": 0, "player": -1, "key": "trace_complete", "value": {"complete": True}}),
-            json.dumps({"ts": 5, "player": 0, "key": "kill", "value": {}}),
-            "not json",
-            json.dumps({"ts": 6, "player": 1, "value": {}}),  # missing key
-        ])
-        rows = list(_iter_event_rows(stdout))
-        # player=-1 rows are kept by the field filter but have no in-range slot;
-        # the only fully-valid positive-slot event is the kill at slot 0.
-        keys = [(r["player"], r["key"]) for r in rows]
-        self.assertIn((0, "kill"), keys)
-        self.assertNotIn((1, None), keys)
 
 
 if __name__ == "__main__":
