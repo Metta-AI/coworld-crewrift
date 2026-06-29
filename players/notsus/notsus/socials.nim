@@ -14,6 +14,7 @@ const
   SocialMaxFriendTrust* = 850
   SocialTrustIterations* = 4
   SocialImposterBrigadeVotes* = 2
+  SocialImposterDangerVotes* = 2
   SocialSusWords = [
     "sus", "suspicious", "accuse", "accused", "vote", "voted",
     "eject", "ejected", "bad", "lying", "lie", "liar", "fake",
@@ -496,6 +497,38 @@ proc bestBrigadeTarget(
   if tied:
     result.found = false
 
+proc imposterSkipDefense(
+  state: SocialVoteState
+): tuple[found: bool, colorIndex: int, count: int] =
+  ## Returns an accused imposter teammate that skip can defend.
+  var
+    counts: array[SocialMaxSlots, int]
+    skipCount = 0
+  result.colorIndex = SocialUnknown
+  for voterColor, choice in state.choices:
+    if voterColor == state.selfColor:
+      continue
+    if choice == SocialSkip:
+      inc skipCount
+      continue
+    if choice < 0 or choice >= state.playerCount:
+      continue
+    let targetColor = state.slotColors[choice]
+    if targetColor < 0 or
+        targetColor >= state.knownImposters.len or
+        not state.knownImposters[targetColor] or
+        not state.slotAlive[choice]:
+      continue
+    inc counts[choice]
+  for slot in 0 ..< state.playerCount:
+    if counts[slot] <= result.count:
+      continue
+    result.count = counts[slot]
+    result.colorIndex = state.slotColors[slot]
+  if result.count >= SocialImposterDangerVotes and
+      skipCount + 1 >= result.count:
+    result.found = true
+
 proc chooseSocialVote*(
   state: SocialVoteState,
   scores: openArray[int],
@@ -529,6 +562,16 @@ proc chooseSocialVote*(
         socialColorName(state.slotColors[brigade.slot]),
       instant: false
     )
+  if roleImposter:
+    let defense = state.imposterSkipDefense()
+    if defense.found:
+      return SocialVoteDecision(
+        found: true,
+        target: state.playerCount,
+        reason: "defending accused imposter " &
+          socialColorName(defense.colorIndex) & " with skip",
+        instant: false
+      )
   let best = state.bestSocialTarget(scores, roleImposter)
   if not best.found:
     return

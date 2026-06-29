@@ -19,7 +19,7 @@ It is a pure 1 v 1 competition.
 nim r tools/run.nim -- --vs ???? -n 40
 ```
 
+Our goal is to win all 40 games.
+
 If you feel like our policy is significantly better than what we submitted recently,
 submit this policy as the champion to the tournament (do not wait for qualification it takes too long).
-
-Our goal is to win all 40 games.

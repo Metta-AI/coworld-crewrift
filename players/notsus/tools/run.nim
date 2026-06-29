@@ -207,6 +207,12 @@ type
     ties: int
     losses: int
 
+  RecordOutcome = enum
+    OutcomeMissing,
+    OutcomeWin,
+    OutcomeLoss,
+    OutcomeTie
+
   BotGroup = object
     key: string
     label: string
@@ -1608,6 +1614,74 @@ proc scoreForSlot(
     return (true, episode.scores[slot].score)
   (false, 0.0)
 
+proc nearScore(value, target: float): bool =
+  ## Returns true when a score is close enough to a target.
+  abs(value - target) <= ScoreEpsilon
+
+proc binaryScore(value: float): bool =
+  ## Returns true when one score belongs to the binary result format.
+  value.nearScore(0.0) or value.nearScore(1.0)
+
+proc scoreFlags(scores: openArray[float]): tuple[
+  binary,
+  hasZero,
+  hasOne: bool
+] =
+  ## Returns the binary-state flags for one score vector.
+  if scores.len == 0:
+    return (false, false, false)
+  result.binary = true
+  for score in scores:
+    if not score.binaryScore():
+      result.binary = false
+      return
+    if score.nearScore(0.0):
+      result.hasZero = true
+    if score.nearScore(1.0):
+      result.hasOne = true
+
+proc recordOutcome(score: float, scores: openArray[float]): RecordOutcome =
+  ## Classifies one score under the current score model.
+  if scores.len == 0:
+    return OutcomeMissing
+  let flags = scores.scoreFlags()
+  if flags.binary:
+    if flags.hasZero and flags.hasOne:
+      if score.nearScore(1.0):
+        return OutcomeWin
+      return OutcomeLoss
+    return OutcomeTie
+
+  var
+    best = scores[0]
+    bestCount = 0
+  for value in scores:
+    if value > best:
+      best = value
+  for value in scores:
+    if value.nearScore(best):
+      inc bestCount
+  if score + ScoreEpsilon < best:
+    return OutcomeLoss
+  if bestCount == 1:
+    OutcomeWin
+  else:
+    OutcomeTie
+
+proc winningScoreIndexes(scores: openArray[float]): seq[int] =
+  ## Returns score indexes that should be marked as winners.
+  let flags = scores.scoreFlags()
+  if flags.binary:
+    if not (flags.hasZero and flags.hasOne):
+      return @[]
+    for i, score in scores:
+      if score.nearScore(1.0):
+        result.add i
+    return
+  for i, score in scores:
+    if score.recordOutcome(scores) == OutcomeWin:
+      result.add i
+
 proc playerSummaries(
   episodes: openArray[Episode],
   bots: openArray[BotRef]
@@ -1619,8 +1693,6 @@ proc playerSummaries(
       continue
     var
       complete = true
-      best = -1.0e300
-      winners: seq[int]
       scores = newSeq[float](bots.len)
     for i in 0 ..< bots.len:
       let score = episode.scoreForSlot(i)
@@ -1628,23 +1700,20 @@ proc playerSummaries(
         complete = false
         continue
       scores[i] = score.score
-      if score.score > best + ScoreEpsilon:
-        best = score.score
-        winners = @[i]
-      elif abs(score.score - best) <= ScoreEpsilon:
-        winners.add i
-    if not complete or winners.len == 0:
+    if not complete:
       continue
     for i in 0 ..< bots.len:
       result[i].total += scores[i]
       inc result[i].scored
-      if i in winners:
-        if winners.len == 1:
-          inc result[i].wins
-        else:
-          inc result[i].ties
-      else:
+      case scores[i].recordOutcome(scores)
+      of OutcomeWin:
+        inc result[i].wins
+      of OutcomeLoss:
         inc result[i].losses
+      of OutcomeTie:
+        inc result[i].ties
+      of OutcomeMissing:
+        discard
   for item in result.mitems:
     if item.scored > 0:
       item.avg = item.total / item.scored.float
@@ -1660,8 +1729,6 @@ proc groupSummaries(
       continue
     var
       complete = true
-      best = -1.0e300
-      winners: seq[int]
       scores = newSeq[float](groups.len)
     for i in 0 ..< groups.len:
       let score = episode.scoreForGroup(groups, i)
@@ -1669,23 +1736,20 @@ proc groupSummaries(
         complete = false
         continue
       scores[i] = score.score
-      if score.score > best + ScoreEpsilon:
-        best = score.score
-        winners = @[i]
-      elif abs(score.score - best) <= ScoreEpsilon:
-        winners.add i
-    if not complete or winners.len == 0:
+    if not complete:
       continue
     for i in 0 ..< groups.len:
       result[i].total += scores[i]
       inc result[i].scored
-      if i in winners:
-        if winners.len == 1:
-          inc result[i].wins
-        else:
-          inc result[i].ties
-      else:
+      case scores[i].recordOutcome(scores)
+      of OutcomeWin:
+        inc result[i].wins
+      of OutcomeLoss:
         inc result[i].losses
+      of OutcomeTie:
+        inc result[i].ties
+      of OutcomeMissing:
+        discard
   for item in result.mitems:
     if item.scored > 0:
       item.avg = item.total / item.scored.float
@@ -1694,34 +1758,28 @@ proc winnerGroups(
   episode: Episode,
   groups: openArray[BotGroup]
 ): seq[int] =
-  ## Returns every bot group tied for the highest score.
+  ## Returns every bot group that should be shown as a winner.
   if episode.excluded:
     return @[]
-  var best = -1.0e300
+  var scores = newSeq[float](groups.len)
   for i in 0 ..< groups.len:
     let score = episode.scoreForGroup(groups, i)
     if not score.found:
       return @[]
-    if score.score > best + ScoreEpsilon:
-      best = score.score
-      result = @[i]
-    elif abs(score.score - best) <= ScoreEpsilon:
-      result.add i
+    scores[i] = score.score
+  scores.winningScoreIndexes()
 
 proc winnerSlots(episode: Episode, bots: openArray[BotRef]): seq[int] =
-  ## Returns every slot tied for the highest score.
+  ## Returns every slot that should be shown as a winner.
   if episode.excluded:
     return @[]
-  var best = -1.0e300
+  var scores = newSeq[float](bots.len)
   for i in 0 ..< bots.len:
     let score = episode.scoreForSlot(i)
     if not score.found:
       return @[]
-    if score.score > best + ScoreEpsilon:
-      best = score.score
-      result = @[i]
-    elif abs(score.score - best) <= ScoreEpsilon:
-      result.add i
+    scores[i] = score.score
+  scores.winningScoreIndexes()
 
 proc winnerText(episode: Episode, bots: openArray[BotRef]): string =
   ## Returns a compact winner label for one episode.
@@ -1777,21 +1835,27 @@ proc summaryFor(
         var
           bestOpponent = -1.0e300
           complete = true
+          scores = newSeq[float](groups.len)
+        scores[0] = a.score
         for i in 1 ..< groups.len:
           let b = episode.scoreForGroup(groups, i)
           if not b.found:
             complete = false
             break
+          scores[i] = b.score
           bestOpponent = max(bestOpponent, b.score)
         if complete:
           result.totalA += a.score
           result.totalB += bestOpponent
-          if a.score > bestOpponent + ScoreEpsilon:
+          case a.score.recordOutcome(scores)
+          of OutcomeWin:
             inc result.wins
-          elif bestOpponent > a.score + ScoreEpsilon:
+          of OutcomeLoss:
             inc result.losses
-          else:
+          of OutcomeTie:
             inc result.ties
+          of OutcomeMissing:
+            discard
 
   let scored = result.wins + result.losses + result.ties
   result.margin = result.totalA - result.totalB
@@ -2513,6 +2577,9 @@ proc focusSummaryFor(
     var
       foundOpponent = false
       bestOpponent = -1.0e300
+      scores: seq[float]
+    scores.setLen(groups.len)
+    scores[focusIndex] = focusScore.score
     for i in 0 ..< groups.len:
       if i == focusIndex:
         continue
@@ -2520,17 +2587,25 @@ proc focusSummaryFor(
       if score.found and score.score > bestOpponent:
         bestOpponent = score.score
         foundOpponent = true
+      if score.found:
+        scores[i] = score.score
+      else:
+        foundOpponent = false
+        break
     if not foundOpponent:
       continue
     total += focusScore.score
     opponentTotal += bestOpponent
     inc result.scored
-    if focusScore.score > bestOpponent + ScoreEpsilon:
+    case focusScore.score.recordOutcome(scores)
+    of OutcomeWin:
       inc result.wins
-    elif bestOpponent > focusScore.score + ScoreEpsilon:
+    of OutcomeLoss:
       inc result.losses
-    else:
+    of OutcomeTie:
       inc result.ties
+    of OutcomeMissing:
+      discard
   result.finishRunFocus(total, opponentTotal)
 
 proc focusSummaryFor(
@@ -2587,25 +2662,35 @@ proc focusSummaryFor(meta: JsonNode): RunFocus =
     var
       foundOpponent = false
       bestOpponent = -1.0e300
+      values: seq[float]
+    values.setLen(scores.len)
+    values[focusIndex] = scores[focusIndex].scoreValue()
     for i in 0 ..< scores.len:
-      if i == focusIndex or not scores[i].hasScoreValue():
+      if i == focusIndex:
         continue
+      if not scores[i].hasScoreValue():
+        foundOpponent = false
+        break
       let score = scores[i].scoreValue()
       if score > bestOpponent:
         bestOpponent = score
         foundOpponent = true
+      values[i] = score
     if not foundOpponent:
       continue
     let focusScore = scores[focusIndex].scoreValue()
     total += focusScore
     opponentTotal += bestOpponent
     inc result.scored
-    if focusScore > bestOpponent + ScoreEpsilon:
+    case focusScore.recordOutcome(values)
+    of OutcomeWin:
       inc result.wins
-    elif bestOpponent > focusScore + ScoreEpsilon:
+    of OutcomeLoss:
       inc result.losses
-    else:
+    of OutcomeTie:
       inc result.ties
+    of OutcomeMissing:
+      discard
   if result.scored == 0:
     return meta.legacyFocusSummary()
   result.finishRunFocus(total, opponentTotal)
@@ -2982,6 +3067,7 @@ proc writeMainIndex(config: ToolConfig) =
   html.add "<p>Static hosted-run reports generated by "
   html.add "<code>players/notsus/tools/run.nim</code>.</p>\n"
   html.add renderVersionProgressChart(metas)
+  html.add "<!-- Bottom score chart hidden while binary scoring is active. -->\n"
   html.add "<table class=\"wide runs-index\">\n"
   html.add "<colgroup><col class=\"number-col\"><col class=\"name-col\">"
   html.add "<col class=\"score-col\"><col class=\"name-col\">"
@@ -3052,7 +3138,6 @@ proc writeMainIndex(config: ToolConfig) =
     html.add "</tr>\n"
   html.add "</tbody></table>\n"
   html.add "</section>\n"
-  html.add runScoreChart(config.outDir, metas)
   html.add pageEnd()
   writeFile(config.outDir / "index.html", html)
 
@@ -4162,10 +4247,16 @@ proc versusWinnerText(
   ## Returns the winner label for one direct versus score row.
   if not candidate.found or not opponent.found:
     return "-"
-  if candidate.score > opponent.score + ScoreEpsilon:
+  let scores = @[candidate.score, opponent.score]
+  case candidate.score.recordOutcome(scores)
+  of OutcomeWin:
     return candidateLabel
-  if opponent.score > candidate.score + ScoreEpsilon:
+  of OutcomeLoss:
     return opponentLabel
+  of OutcomeTie:
+    return "tie"
+  of OutcomeMissing:
+    discard
   "tie"
 
 proc versusScoreCell(
@@ -4277,12 +4368,21 @@ proc renderVersusIndex(
         gameIndex = episode.index
         candidateScore = episode.scoreForGroup(groups, 0)
         opponentScore = episode.scoreForGroup(groups, 1)
-        candidateWon = not episode.excluded and candidateScore.found and
-          opponentScore.found and
-          candidateScore.score > opponentScore.score + ScoreEpsilon
-        opponentWon = not episode.excluded and candidateScore.found and
-          opponentScore.found and
-          opponentScore.score > candidateScore.score + ScoreEpsilon
+        scores = @[candidateScore.score, opponentScore.score]
+        candidateOutcome =
+          if not episode.excluded and candidateScore.found and
+            opponentScore.found:
+              candidateScore.score.recordOutcome(scores)
+          else:
+            OutcomeMissing
+        opponentOutcome =
+          if not episode.excluded and candidateScore.found and
+            opponentScore.found:
+              opponentScore.score.recordOutcome(scores)
+          else:
+            OutcomeMissing
+        candidateWon = candidateOutcome == OutcomeWin
+        opponentWon = opponentOutcome == OutcomeWin
         gameText =
           if episode.id.len > 0:
             episode.id.shortId() & " #" & $gameIndex

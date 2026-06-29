@@ -1223,6 +1223,32 @@ proc scoreFor(game: Game, policyId: string): tuple[found: bool, score: float] =
       return (true, score.score)
   (false, 0.0)
 
+proc nearScore(value, target: float): bool =
+  ## Returns true when a score is close enough to a target.
+  abs(value - target) <= ScoreEpsilon
+
+proc binaryScore(value: float): bool =
+  ## Returns true when one score belongs to the binary result format.
+  value.nearScore(0.0) or value.nearScore(1.0)
+
+proc binaryScoreFlags(scores: openArray[Score]): tuple[
+  binary,
+  hasZero,
+  hasOne: bool
+] =
+  ## Returns the binary-state flags for one set of policy scores.
+  if scores.len == 0:
+    return (false, false, false)
+  result.binary = true
+  for score in scores:
+    if not score.score.binaryScore():
+      result.binary = false
+      return
+    if score.score.nearScore(0.0):
+      result.hasZero = true
+    if score.score.nearScore(1.0):
+      result.hasOne = true
+
 proc stripVersionSuffix(label: string): string =
   ## Returns a display label without a trailing version suffix.
   let clean = label.strip()
@@ -1263,6 +1289,13 @@ proc policyResult(game: Game, policyId: string): string =
   let opponents = game.opponentScores(policyId)
   if opponents.len == 0:
     return "-"
+  let binary = game.scores.binaryScoreFlags()
+  if binary.binary:
+    if binary.hasZero and binary.hasOne:
+      if own.score.nearScore(1.0):
+        return "W"
+      return "L"
+    return "T"
   var bestOpponent = opponents[0]
   for i in 1 ..< opponents.len:
     bestOpponent = max(bestOpponent, opponents[i])
@@ -3432,7 +3465,8 @@ proc renderIndexGroup(
   scoreTitle = "Scores",
   strategyDocs = StrategyDocs(),
   showStrategy = false,
-  showWinRates = false
+  showWinRates = false,
+  showScores = false
 ): string =
   ## Renders one grouped index section.
   result.add "<section>\n"
@@ -3446,8 +3480,9 @@ proc renderIndexGroup(
   if showWinRates:
     result.add "<h3>Win Rates</h3>\n"
     result.add renderWinRateChart(policies, stats)
-  result.add "<h3>" & scoreTitle.htmlEscape() & "</h3>\n"
-  result.add renderScorePlot(policies, games, includeMissing = false)
+  if showScores:
+    result.add "<h3>" & scoreTitle.htmlEscape() & "</h3>\n"
+    result.add renderScorePlot(policies, games, includeMissing = false)
   result.add "<div class=\"hidden-report-section\">\n"
   result.add "<h3>Matchups</h3>\n"
   result.add renderHeatMap(policies, games, includeMissing = false)

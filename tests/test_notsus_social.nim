@@ -153,6 +153,21 @@ suite "notsus social reasoning":
     let decision = chooseSocialVote(state, scores, true, false)
     check not decision.found
 
+  test "imposter skips to defend accused partner":
+    var
+      state = emptyVoteState()
+      scores: array[SocialPlayerCount, int]
+    state.selfSlot = 6
+    state.selfColor = 6
+    state.knownImposters[6] = true
+    state.knownImposters[7] = true
+    state.choices[1] = SocialSkip
+    state.choices[4] = 7
+    state.choices[5] = 7
+    let decision = chooseSocialVote(state, scores, true, false)
+    check decision.found
+    check decision.target == state.playerCount
+
   test "forced vote picks top sus even under threshold":
     var
       state = emptyVoteState()

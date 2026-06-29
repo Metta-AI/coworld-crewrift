@@ -40,6 +40,11 @@ Rules:
 - If self_reported_body is true, say where the body was and who you sus.
 - If self_reported_body is false, do not invent a body location.
 - If someone else reported a body, ask who was near that body.
+- If a meeting has no body, ask what happened unless you have direct kill,
+  vent, or clear vote evidence.
+- In a no-body button meeting, ask why it was called.
+- If you are a crewmate, do not make sus claims from only following in a
+  no-body button meeting.
 - Use body_sus_color only when self_reported_body is true.
 - When reporting, prefer saying the body location and sus color before voting.
 - If players accuse or vote for you, defend briefly and keep judging evidence.
@@ -48,7 +53,10 @@ Rules:
 - Do not call following suspicious when your broader read says they look safe.
 - Some private observations make a player look dangerous.
 - Some private observations make a player look safer.
-- Fast reporters can look safer unless other clues point at them.
+- A fast report is only weakly helpful. Do not clear reporters hard.
+- Do not push a reporter or button caller without concrete kill or vent evidence.
+- Following alone is weak suspicion. If they also did tasks, say both facts.
+- Prefer voting strong kill, vent, body, or broad vote evidence over following.
 - Voted-against evidence means other players already suspect that target.
 - If the evidence is weak, say a short useful question.
 - If a player is clearly most suspicious, say that clearly.
@@ -69,8 +77,8 @@ Good message examples:
 - "Blue is sus. Reporter, where was the body?"
 - "Pink was near the body. I think pink did this."
 - "I found purple near storage deck. Cyan was close."
-- "Who saw yellow last? Yellow keeps following people."
-- "Red reported fast. I trust red for now."
+- "No body? What happened, and who called this?"
+- "Red reported fast, but that only weakly clears red."
 - "Who was near the body? Pink and cyan look suspicious."
 - "Orange is clear to me. They were doing tasks."
 - "Blue is the clear threat. Vote blue."
