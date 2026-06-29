@@ -18,6 +18,8 @@ const
   DefaultBedrockModel = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
   DefaultUploadName = "notsus"
   BaselinePolicyLabel = "notsus:v1"
+  LogMissingPrefix = "missing:"
+  LogNotRequestedPrefix = "not-requested:"
   FirstImposterSlot = 6
   ScoreEpsilon = 0.005
   VersionChartWidth = 760
@@ -181,6 +183,22 @@ type
     meta: string
     replays: string
     logs: string
+
+  PlayerLogSummary = object
+    found: bool
+    lineCount: int
+    bedrockCalls: int
+    bedrockErrors: int
+    healthOk: int
+    healthPending: int
+    sentChat: int
+    noOutput: int
+    duplicateSuppressed: int
+    deadSkips: int
+    frameDrops: int
+    finalStatus: string
+    normalEnd: bool
+    notes: seq[string]
 
   PlayerSummary = object
     total: float
@@ -1951,6 +1969,10 @@ proc pageStart(title, cssHref: string): string =
   result.add "color: #777; font-style: italic; text-decoration: none; }\n"
   result.add "    .games-table .reason-cell { overflow: hidden; "
   result.add "text-overflow: ellipsis; }\n"
+  result.add "    .log-muted { color: #777; }\n"
+  result.add "    .log-missing { color: #b00000; font-style: italic; }\n"
+  result.add "    .log-health td, .log-health th { white-space: nowrap; }\n"
+  result.add "    .log-health .notes-cell { white-space: normal; }\n"
   result.add "    .runs-index .bot-name { display: block; "
   result.add "max-width: 100%; overflow: hidden; text-overflow: ellipsis; "
   result.add "white-space: nowrap; }\n"
@@ -3188,7 +3210,13 @@ proc renderRunIndex(
   html.add pageEnd()
   writeFile(paths.root / "index.html", html)
 
+proc renderPlayerLogHealthHtml(
+  paths: RunPaths,
+  logHrefs: openArray[string]
+): string
+
 proc renderReplayHtml(
+  paths: RunPaths,
   episode: var Episode,
   bots: openArray[BotRef],
   replayPath,
@@ -3234,6 +3262,7 @@ proc renderReplayHtml(
     result.add "<li>Error: " & episode.error.htmlEscape() & "</li>\n"
   result.add "</ul>\n"
   result.add "</section>\n"
+  result.add renderPlayerLogHealthHtml(paths, logHrefs)
   result.add rendered.html
 
 proc renderPendingHtml(episode: Episode, gameIndex = -1): string =
@@ -3284,6 +3313,178 @@ proc redactLogTokens(text: string): string =
     else:
       result.add text[i]
       inc i
+
+proc markerInt(text, marker: string): int =
+  ## Returns the integer after one marker or zero when absent.
+  let start = text.find(marker)
+  if start < 0:
+    return 0
+  var
+    i = start + marker.len
+    value = ""
+  while i < text.len and text[i] in {'0' .. '9'}:
+    value.add text[i]
+    inc i
+  if value.len == 0:
+    return 0
+  try:
+    value.parseInt()
+  except ValueError:
+    0
+
+proc finalStatusText(line: string): string =
+  ## Extracts the interstitial text from a connection-lost line.
+  let start = line.find(" text=")
+  if start < 0:
+    return ""
+  let
+    valueStart = start + " text=".len
+    stop = line.find(" framesDropped=", valueStart)
+  if stop > valueStart:
+    return line[valueStart ..< stop]
+  line[valueStart .. ^1]
+
+proc normalFinalStatus(text: string): bool =
+  ## Returns true when one connection close is a normal game end.
+  text in ["CREW WINS", "IMPS WIN", "DRAW"]
+
+proc summarizePlayerLog(path: string): PlayerLogSummary =
+  ## Summarizes one downloaded player log for report health tables.
+  if not fileExists(path):
+    return
+  result.found = true
+  for line in readFile(path).splitLines():
+    inc result.lineCount
+    let lower = line.toLowerAscii()
+    if "notsus bedrock usage:" in lower:
+      inc result.bedrockCalls
+    if "notsus bedrock error:" in lower or
+        "bedrock invokemodel failed" in lower or
+        "returned http 4" in lower or
+        "returned http 5" in lower:
+      inc result.bedrockErrors
+    if "bedrock sidecar health: http=200" in lower:
+      inc result.healthOk
+    if "bedrock sidecar health pending" in lower or
+        "bedrock sidecar health error" in lower:
+      inc result.healthPending
+    if "notsus sent voting chat:" in lower:
+      inc result.sentChat
+    if "notsus voting llm no social output" in lower or
+        "notsus voting llm fallback: invalid social json" in lower:
+      inc result.noOutput
+    if "duplicate chat suppressed" in lower:
+      inc result.duplicateSuppressed
+    if "notsus voting llm skipped: self is dead" in lower:
+      inc result.deadSkips
+    if lower.startsWith("frames dropped:"):
+      result.frameDrops = max(result.frameDrops, line.markerInt("total="))
+    if "connection lost:" in lower:
+      result.finalStatus = line.finalStatusText()
+      result.normalEnd = result.finalStatus.normalFinalStatus()
+  if result.bedrockErrors > 0:
+    result.notes.add "bedrock errors=" & $result.bedrockErrors
+  if result.healthPending > 0 and result.bedrockCalls == 0:
+    result.notes.add "sidecar pending, no calls"
+  elif result.healthPending > 0:
+    result.notes.add "sidecar startup race"
+  if result.frameDrops >= 50:
+    result.notes.add "frame drops=" & $result.frameDrops
+  if result.deadSkips > 20:
+    result.notes.add "dead skips=" & $result.deadSkips
+  if result.noOutput > 5:
+    result.notes.add "empty llm=" & $result.noOutput
+  if result.duplicateSuppressed > 0:
+    result.notes.add "dupes=" & $result.duplicateSuppressed
+  if result.finalStatus.len > 0 and not result.normalEnd:
+    result.notes.add "closed: " & result.finalStatus
+
+proc hrefNote(href, prefix: string): string =
+  ## Returns the status note after one synthetic log href prefix.
+  if not href.startsWith(prefix):
+    return ""
+  result = href[prefix.len .. ^1]
+  if result.len == 0:
+    result = "-"
+
+proc realLogHref(href: string): bool =
+  ## Returns true when a log href points at an actual local text file.
+  href.len > 0 and
+    not href.startsWith(LogMissingPrefix) and
+    not href.startsWith(LogNotRequestedPrefix)
+
+proc renderPlayerLogHealthHtml(
+  paths: RunPaths,
+  logHrefs: openArray[string]
+): string =
+  ## Renders a compact per-seat player log health table.
+  var any = false
+  for href in logHrefs:
+    if href.len > 0:
+      any = true
+      break
+  if not any:
+    return ""
+  result.add "<section>\n"
+  result.add "<h2>Log Health</h2>\n"
+  result.add "<table class=\"wide no-sort log-health\">\n"
+  result.add "<thead><tr><th>Seat</th><th>Status</th><th>Lines</th>"
+  result.add "<th>Bedrock</th><th>Chat</th><th>Dead</th>"
+  result.add "<th>Drops</th><th>End</th><th>Notes</th></tr></thead>\n"
+  result.add "<tbody>\n"
+  for slot, href in logHrefs:
+    var
+      status = "-"
+      lineCount = "-"
+      bedrock = "-"
+      chat = "-"
+      dead = "-"
+      drops = "-"
+      finalStatus = "-"
+      notes = "-"
+    if href.realLogHref():
+      let summary = summarizePlayerLog(paths.root / href)
+      if summary.found:
+        status =
+          if summary.notes.len > 0:
+            "warning"
+          else:
+            "ok"
+        lineCount = $summary.lineCount
+        bedrock =
+          $summary.bedrockCalls & "/" & $summary.bedrockErrors
+        chat = $summary.sentChat
+        dead = $summary.deadSkips
+        drops = $summary.frameDrops
+        finalStatus =
+          if summary.finalStatus.len > 0:
+            summary.finalStatus
+          else:
+            "-"
+        if summary.notes.len > 0:
+          notes = summary.notes.join(", ")
+      else:
+        status = "missing"
+        notes = "file not found"
+    elif href.startsWith(LogMissingPrefix):
+      status = "missing"
+      notes = href.hrefNote(LogMissingPrefix)
+    elif href.startsWith(LogNotRequestedPrefix):
+      status = "opponent"
+      notes = href.hrefNote(LogNotRequestedPrefix)
+    result.add "<tr>"
+    result.add slot.playerLetter().tableCell()
+    result.add status.tableCell()
+    result.add lineCount.tableCell(numeric = true)
+    result.add bedrock.tableCell(numeric = true)
+    result.add chat.tableCell(numeric = true)
+    result.add dead.tableCell(numeric = true)
+    result.add drops.tableCell(numeric = true)
+    result.add finalStatus.tableCell()
+    result.add notes.htmlEscape().tableHtmlClass("notes-cell")
+    result.add "</tr>\n"
+  result.add "</tbody></table>\n"
+  result.add "</section>\n"
 
 proc downloadReplay(episode: Episode, path: string): string =
   ## Downloads one replay artifact and returns an error summary on failure.
@@ -3343,16 +3544,25 @@ proc focusedLogHrefs(
     focusIndex = config.configuredFocusIndex(groups)
   if focusIndex < 0 or focusIndex >= groups.len:
     return
+  for i in 0 ..< result.len:
+    result[i] = LogNotRequestedPrefix & "opponent"
   for slot in groups[focusIndex].slots:
     if slot < 0 or slot >= result.len:
       continue
     let
       fileName = logFileName(gameIndex, slot)
       path = paths.logs / fileName
+    var error = ""
     if config.downloadReplays:
-      discard downloadPlayerLog(config, episode, slot, path)
+      error = downloadPlayerLog(config, episode, slot, path)
     if fileExists(path):
       result[slot] = "logs/" & fileName
+    elif error.len > 0:
+      result[slot] = LogMissingPrefix & error
+    elif config.downloadReplays:
+      result[slot] = LogMissingPrefix & "not returned"
+    else:
+      result[slot] = LogMissingPrefix & "not downloaded"
 
 proc fillReplayScores(
   episodes: var seq[Episode],
@@ -3389,6 +3599,7 @@ proc renderGamePages(
     if fileExists(replayPath):
       try:
         html.add renderReplayHtml(
+          paths,
           episode,
           config.bots,
           replayPath,

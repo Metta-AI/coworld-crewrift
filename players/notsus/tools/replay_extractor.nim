@@ -635,6 +635,16 @@ proc hasLogHrefs(logHrefs: openArray[string]): bool =
     if href.len > 0:
       return true
 
+proc renderLogCell(href: string): string =
+  ## Renders one player log table cell.
+  if href.startsWith("missing:"):
+    return "<span class=\"log-missing\">missing</span>"
+  if href.startsWith("not-requested:"):
+    return "<span class=\"log-muted\">opponent</span>"
+  if href.len > 0:
+    return "<a href=\"" & href.htmlEscape() & "\">log</a>"
+  "-"
+
 proc phasePlayerCount(
   timeline: ReplayTimeline,
   players: openArray[PlayerInfo]
@@ -1246,8 +1256,8 @@ proc renderPlayersHtml(
     result.add "</td><td class=\"count-col\">" & $player.chats & "</td>"
     if showLogs:
       result.add "<td class=\"log-col\">"
-      if slot >= 0 and slot < logHrefs.len and logHrefs[slot].len > 0:
-        result.add "<a href=\"" & logHrefs[slot].htmlEscape() & "\">log</a>"
+      if slot >= 0 and slot < logHrefs.len:
+        result.add renderLogCell(logHrefs[slot])
       else:
         result.add "-"
       result.add "</td>"
