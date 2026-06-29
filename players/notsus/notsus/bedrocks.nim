@@ -1,5 +1,5 @@
 import
-  std/[algorithm, json, os, strutils, times, uri],
+  std/[algorithm, json, options, os, strutils, times, uri],
   crunchy/sha256,
   curly
 
@@ -20,6 +20,8 @@ const
   BedrockMaxTokens = 512
   BedrockTemperature = 0.2
   MaxErrorBodyLen = 600
+  SidecarHealthAttempts = 5
+  SidecarHealthDelayMs = 250
 
 type
   BedrockError = object of CatchableError
@@ -27,6 +29,19 @@ type
   ConversationMessage* = object
     role*: string
     content*: string
+
+  BedrockAsyncResult* = object
+    ready*: bool
+    tag*: string
+    reply*: string
+    usage*: string
+    error*: string
+
+  BedrockRequest = object
+    url: string
+    headers: HttpHeaders
+    body: string
+    tag: string
 
   AwsCredentials = object
     accessKeyId: string
@@ -43,7 +58,8 @@ var
   cachedCredentials: AwsCredentials
 
 let
-  curl = newCurlPool(3)
+  syncCurl = newCurlPool(3)
+  asyncCurl = newCurly()
 
 proc fail(message: string) {.raises: [BedrockError].} =
   ## Raises one Bedrock client error.
@@ -174,15 +190,27 @@ proc sidecarHealthText*(): string =
   ## Returns the Bedrock sidecar health response summary.
   if not hasSidecarEndpoint():
     return "not-configured"
-  let response = curl.get(
-    endpointBase().joinUrl("/healthz"),
-    timeout = 1.0'f32
-  )
-  result = "http=" & $response.code
-  let body = response.body.clippedBody()
-  if body.len > 0:
-    result.add " body="
-    result.add body
+  var lastError = ""
+  for attempt in 0 ..< SidecarHealthAttempts:
+    try:
+      let response = syncCurl.get(
+        endpointBase().joinUrl("/healthz"),
+        timeout = 1.0'f32
+      )
+      result = "http=" & $response.code
+      let body = response.body.clippedBody()
+      if body.len > 0:
+        result.add " body="
+        result.add body
+      if response.code == 200:
+        return
+    except CatchableError as e:
+      lastError = e.msg
+    if attempt + 1 < SidecarHealthAttempts:
+      sleep(SidecarHealthDelayMs)
+  if result.len > 0:
+    return
+  fail(lastError)
 
 proc intField(node: JsonNode, name: string): int =
   ## Reads one integer JSON field if present.
@@ -296,7 +324,7 @@ proc credentialsFromContainer(): AwsCredentials =
   let token = containerAuthorization()
   if token.len > 0:
     headers.add ("Authorization", token)
-  let response = curl.get(url, headers, timeout = 2.0'f32)
+  let response = syncCurl.get(url, headers, timeout = 2.0'f32)
   if response.code != 200:
     fail("Container credentials returned HTTP " & $response.code & ".")
   let data = parseJson(response.body)
@@ -339,7 +367,7 @@ proc credentialsFromWebIdentity(): AwsCredentials =
       "notsus-bedrock"
   let body = stsBody(roleArn, sessionName, readFile(tokenPath).strip())
   let endpoint = "https://sts." & region() & ".amazonaws.com/"
-  let response = curl.post(
+  let response = syncCurl.post(
     endpoint,
     @[("Content-Type", "application/x-www-form-urlencoded")],
     body,
@@ -502,40 +530,93 @@ proc lastErrorText*(): string =
   ## Returns the previous Bedrock call error if any.
   lastError
 
+proc buildBedrockRequest(
+  messages: openArray[ConversationMessage],
+  tag: string
+): BedrockRequest =
+  ## Builds one Bedrock InvokeModel HTTP request.
+  result.body = conversationBody(messages, not hasSidecarEndpoint())
+  result.url = bedrockUrl()
+  result.tag = tag
+  result.headers =
+    if hasSidecarEndpoint():
+      @[
+        ("Content-Type", "application/json"),
+        ("Accept", "application/json")
+      ]
+    else:
+      let credentials = resolveCredentials()
+      signedHeaders(credentials, result.body, now().utc)
+
+proc parseTalkResponse(response: Response): string =
+  ## Parses one Bedrock InvokeModel HTTP response.
+  if response.code != 200:
+    var message = "Bedrock InvokeModel returned HTTP " & $response.code & "."
+    let body = response.body.clippedBody()
+    if body.len > 0:
+      message.add " Body: "
+      message.add body
+    fail(message)
+  response.body.parseReply()
+
 proc talkToAI*(messages: var seq[ConversationMessage]): string =
   ## Sends messages to Bedrock InvokeModel and returns the reply text.
   lastUsage = ""
   lastError = ""
   try:
-    let body = conversationBody(messages, not hasSidecarEndpoint())
-    let response =
-      if hasSidecarEndpoint():
-        curl.post(
-          bedrockUrl(),
-          @[
-            ("Content-Type", "application/json"),
-            ("Accept", "application/json")
-          ],
-          body,
-          timeout = BedrockTimeoutSeconds
-        )
-      else:
-        let credentials = resolveCredentials()
-        curl.post(
-          bedrockUrl(),
-          signedHeaders(credentials, body, now().utc),
-          body,
-          timeout = BedrockTimeoutSeconds
-        )
-    if response.code != 200:
-      var message = "Bedrock InvokeModel returned HTTP " & $response.code & "."
-      let body = response.body.clippedBody()
-      if body.len > 0:
-        message.add " Body: "
-        message.add body
-      fail(message)
-    result = response.body.parseReply()
+    let request = buildBedrockRequest(messages, "")
+    let response = syncCurl.post(
+      request.url,
+      request.headers,
+      request.body,
+      timeout = BedrockTimeoutSeconds
+    )
+    result = response.parseTalkResponse()
     messages.add ConversationMessage(role: "assistant", content: result)
   except CatchableError as error:
+    lastError = error.msg
+    echo "ERROR: notsus Bedrock InvokeModel failed: ", error.msg
+
+proc startTalkToAI*(
+  messages: openArray[ConversationMessage],
+  tag: string
+) =
+  ## Starts one nonblocking Bedrock InvokeModel request.
+  lastUsage = ""
+  lastError = ""
+  try:
+    let request = buildBedrockRequest(messages, tag)
+    asyncCurl.startRequest(
+      "POST",
+      request.url,
+      request.headers,
+      request.body,
+      timeout = max(1, BedrockTimeoutSeconds.int),
+      tag = request.tag
+    )
+  except CatchableError as error:
+    lastError = error.msg
+    echo "ERROR: notsus Bedrock InvokeModel failed: ", error.msg
+
+proc pollTalkToAI*(): BedrockAsyncResult =
+  ## Polls for a completed nonblocking Bedrock InvokeModel request.
+  let pulled = asyncCurl.pollForResponse()
+  if pulled.isNone:
+    return BedrockAsyncResult(ready: false)
+  let item = pulled.get()
+  result.ready = true
+  result.tag = item.response.request.tag
+  lastUsage = ""
+  lastError = ""
+  if item.error.len > 0:
+    result.error = item.error
+    lastError = item.error
+    echo "ERROR: notsus Bedrock InvokeModel failed: ", item.error
+    return
+  try:
+    result.reply = item.response.parseTalkResponse()
+    result.usage = lastUsage
+  except CatchableError as error:
+    result.error = error.msg
     lastError = error.msg
     echo "ERROR: notsus Bedrock InvokeModel failed: ", error.msg

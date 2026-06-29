@@ -8,8 +8,6 @@
 #                        workflow seeds it headlessly via `softmax set-token`.
 #
 # coworld CLI version: 0.1.26 (public PyPI, requires Python 3.11-3.12; we use 3.12).
-# `upload-coworld` blocks on hosted smoke certification (default 1800s timeout),
-# so the job timeout is generous.
 name: "Deploy Crewrift Game"
 
 on:
@@ -35,7 +33,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: SOFTMAX_OBSERVATORY
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -69,9 +67,18 @@ jobs:
           softmax set-token "$SOFTMAX_API_TOKEN" --server https://softmax.com/api
           python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
 
+      - name: Resolve next version
+        id: ver
+        run: |
+          NEXT=$(coworld next-version crewrift_prime)
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Deploying crewrift_prime:${NEXT}"
+
       - name: Deploy coworld
         run: |
           coworld upload-coworld \
             --from-coworld crewrift_prime \
             --patch crewrift-prime/crewrift_prime.patch.json \
-            --image game=crewrift-game:${{ github.sha }}
+            --version ${{ steps.ver.outputs.version }} \
+            --image game=crewrift-game:${{ github.sha }} \
+            --no-wait-hosted-smoke

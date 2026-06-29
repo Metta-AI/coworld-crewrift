@@ -103,5 +103,5 @@ and opponent**.
   the same routes; this script adds live-schema validation, POST/readback race handling, ID
   resolution, and polling.
 - This skill *creates*; **`coworld-episode-artifacts`** *downloads* the episodes it produces;
-  **`crewrift-report`** turns a finished batch into a strengths/weaknesses report; **`crewrift-ab`**
+  **`crewrift-survey`** turns a finished batch into a strengths/weaknesses report; **`crewrift-ab`**
   wraps the A/B shape end-to-end.

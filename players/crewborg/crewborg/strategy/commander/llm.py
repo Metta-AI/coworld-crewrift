@@ -212,7 +212,7 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
         # checks USE_BEDROCK / CLAUDE_CODE_USE_BEDROCK, so it wrongly reports no backend in-pod.
         # Gate on what we actually receive: treat the sidecar endpoint as a Bedrock signal, so
         # select_client(use_bedrock=True) reaches the SDK's sidecar-routing path. See
-        # docs/issues/2026-06-26-bedrock-disabled-crewrift-prime-xp.md (platform/SDK fix tracked there).
+        # docs/reference/coworld-platform.md (Bedrock section) (platform/SDK fix tracked there).
         use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
         if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledCommanderClient("no LLM backend configured")

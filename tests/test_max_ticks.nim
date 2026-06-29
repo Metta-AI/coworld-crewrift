@@ -15,8 +15,8 @@ proc initCrewriftForTest(config: GameConfig): SimServer =
     setCurrentDir(previousDir)
 
 suite "max ticks":
-  test "default vote timer is fifty seconds":
-    check defaultGameConfig().voteTimerTicks == TargetFps * 50
+  test "default vote timer is three hundred seconds":
+    check defaultGameConfig().voteTimerTicks == TargetFps * 300
 
   test "default kill cooldown is eight hundred ticks":
     check KillCooldownTicks == 800

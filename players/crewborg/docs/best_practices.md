@@ -162,7 +162,7 @@ These layer on Part 1; they're the failure modes of *this* game. Add to this par
 - **Go batch-first, then drill.** Start with the distribution across the whole batch; open
   individual episodes only once it flags the interesting ones (the should-have-been-wins). Match the
   tool to the altitude — each tool's own docs cover how to run it (see the tool library):
-  - *Triage a batch* → the **`crewrift-report`** skill (role-decomposed stats; flags interesting episodes).
+  - *Triage a batch* → the **`crewrift-survey`** skill (role-decomposed stats; flags interesting episodes).
   - *Cross-episode behavioral data ("all the data")* → a **`crewrift-event-warehouse`** (queryable event store, re-keyed by policy/role).
   - *One game's objective ground truth* → **`expand_replay`** (the single-game primitive the others build on).
 - **Policy logs are version-independent — the primary source for hosted/league episodes** (no replay

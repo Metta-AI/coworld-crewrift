@@ -2,7 +2,7 @@
 
 With no flag/backend signals the client must report disabled with the no-backend
 reason, so meetings fall back to deterministic in-pod rather than silently
-attempting an LLM call. See docs/issues/2026-06-26-bedrock-disabled-crewrift-prime-xp.md.
+attempting an LLM call. See docs/reference/coworld-platform.md (Bedrock section).
 """
 
 from __future__ import annotations

@@ -1,0 +1,272 @@
+{
+  "game": {
+    "name": "crewrift_prime",
+    "version": "0.1.0",
+    "description": "Crewrift Prime \u2014 a forked social-deduction Crewrift coworld seeded for skill-tested play, with config-only scenario-parameterization variants (hunting, voting, task-pressure drills) per the parameterized-coworlds research. Derived league display name: \"Crewrift Prime\"."
+  },
+  "variants": [
+    {
+      "id": "default",
+      "name": "Default",
+      "description": "Eight-player Crewrift tournament episode using the default balanced game settings.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Player1"
+          },
+          {
+            "name": "Player2"
+          },
+          {
+            "name": "Player3"
+          },
+          {
+            "name": "Player4"
+          },
+          {
+            "name": "Player5"
+          },
+          {
+            "name": "Player6"
+          },
+          {
+            "name": "Player7"
+          },
+          {
+            "name": "Player8"
+          }
+        ],
+        "seed": -1,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 2,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 8,
+        "startWaitTicks": 120,
+        "roleRevealTicks": 120,
+        "gameOverTicks": 360,
+        "maxTicks": 10000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 1200,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 500,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_hunt_isolated",
+      "name": "Scenario: Hunt \u2014 isolated imposter",
+      "description": "Config-only imposter mechanical drill (research \u00a73.3): slot 0 forced to imposter, short maxTicks, low killCooldownTicks, crew fill. Zero engine change.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Hunter"
+          },
+          {
+            "name": "Prey1"
+          },
+          {
+            "name": "Prey2"
+          },
+          {
+            "name": "Prey3"
+          },
+          {
+            "name": "Prey4"
+          },
+          {
+            "name": "Prey5"
+          },
+          {
+            "name": "Prey6"
+          },
+          {
+            "name": "Prey7"
+          }
+        ],
+        "slots": [
+          {
+            "role": "imposter"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          }
+        ],
+        "seed": 2001,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 1,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 4,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 2000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 200,
+        "buttonCalls": 0,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_vote_basic",
+      "name": "Scenario: Basic Vote \u2014 single clear imposter",
+      "description": "Config-only coarse voting drill (research \u00a73.1): forced imposter seat + short task phase + low voteTimerTicks induce a fast meeting. True mid-game vote seeding is a Phase-4 engine change; this is the achievable config-only approximation.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Suspect"
+          },
+          {
+            "name": "Voter1"
+          },
+          {
+            "name": "Voter2"
+          },
+          {
+            "name": "Voter3"
+          },
+          {
+            "name": "Voter4"
+          },
+          {
+            "name": "Voter5"
+          },
+          {
+            "name": "Voter6"
+          },
+          {
+            "name": "Voter7"
+          }
+        ],
+        "slots": [
+          {
+            "role": "imposter"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          },
+          {
+            "role": "crew"
+          }
+        ],
+        "seed": 1001,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 1,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 2,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 3000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "voteResultTicks": 72,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 300,
+        "buttonCalls": 1,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    },
+    {
+      "id": "scn_task_pressure",
+      "name": "Scenario: Task Pressure",
+      "description": "Config-only crew task-throughput drill (research \u00a76 Phase-1): tasksPerPlayer raised under a shortened maxTicks to stress crew task completion. Zero engine change.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Crew1"
+          },
+          {
+            "name": "Crew2"
+          },
+          {
+            "name": "Crew3"
+          },
+          {
+            "name": "Crew4"
+          },
+          {
+            "name": "Crew5"
+          },
+          {
+            "name": "Crew6"
+          },
+          {
+            "name": "Crew7"
+          },
+          {
+            "name": "Crew8"
+          }
+        ],
+        "seed": 3001,
+        "closedRoster": true,
+        "minPlayers": 8,
+        "imposterCount": 1,
+        "autoImposterCount": false,
+        "tasksPerPlayer": 12,
+        "startWaitTicks": 0,
+        "roleRevealTicks": 0,
+        "gameOverTicks": 72,
+        "maxTicks": 4000,
+        "maxGames": 1,
+        "mapPath": "data/croatoan.resources",
+        "voteTimerTicks": 600,
+        "connectTimeoutTicks": 2880,
+        "disconnectTimeoutTicks": 720,
+        "killCooldownTicks": 500,
+        "showTaskArrows": true,
+        "showTaskBubbles": true,
+        "showPlayerLabels": true
+      }
+    }
+  ]
+}
