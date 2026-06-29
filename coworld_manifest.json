@@ -151,7 +151,7 @@
           "description": "Voting phase duration in ticks.",
           "type": "integer",
           "minimum": 1,
-          "default": 1200
+          "default": 7200
         },
         "voteResultTicks": {
           "description": "Vote result display duration in ticks.",
@@ -532,7 +532,7 @@
         "maxTicks": 10000,
         "maxGames": 1,
         "mapPath": "data/croatoan.resources",
-        "voteTimerTicks": 1200,
+        "voteTimerTicks": 7200,
         "connectTimeoutTicks": 2880,
         "disconnectTimeoutTicks": 720,
         "killCooldownTicks": 800,
