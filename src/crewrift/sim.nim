@@ -65,11 +65,11 @@ const
   ImposterCount* = 2
   AutoImposterCount* = true
   StartWaitTicks* = 5 * TargetFps
-  VoteTimerTicks* = TargetFps * 50
+  VoteTimerTicks* = TargetFps * 500
   MeetingCallTicks* = TargetFps * 3
   MessageCooldownTicks* = 100
   GameOverTicks* = 360
-  MaxTicks* = 10_000  ## 0 = no limit.
+  MaxTicks* = 60_000  ## 0 = no limit.
   MaxGames* = 0  ## 0 = no limit.
   TasksPerPlayer* = 8
   ShowTaskArrows* = true
@@ -434,6 +434,7 @@ type
     lastLobbyPlayersLogged*: int
     lastLobbyNeededLogged*: int
     lastLobbySecondsLogged*: int
+    liveConnectedSlots*: seq[int]
 
   PlayerView* = object
     cameraX*, cameraY*: int
@@ -2292,13 +2293,21 @@ proc addPlayer*(
         sim.resolveTrustedPlayerSlot(address, requestedSlot)
       else:
         sim.resolvePlayerSlot(address, token, requestedSlot)
-    nextSlot = sim.nextPlayerSlot()
-  if not trusted and order != nextSlot:
-    raise newException(
-      CrewriftError,
-      "Player slot " & $order & " cannot join before slot " &
-        $nextSlot & "."
-    )
+  # `order` is the player's stable slot (joinOrder), decoupled from the `players`
+  # seq index. An explicit requested slot (validated as in-range, unoccupied, and
+  # auth-matched by resolvePlayerSlot) may be admitted out of sequence: concurrent
+  # connects with explicit slot=N must not be stranded waiting for lower slots to
+  # fill. Auto-assigned slots (requestedSlot < 0) keep their reservation
+  # semantics: an auto join may not skip ahead of any still-open lower slot
+  # (e.g. an unfilled restricted/token slot reserved for another player).
+  if not trusted and requestedSlot < 0:
+    for lower in 0 ..< order:
+      if not sim.slotOccupied(lower):
+        raise newException(
+          CrewriftError,
+          "Player slot " & $order & " cannot join before slot " &
+            $lower & "."
+        )
   let
     slot = sim.config.slotConfig(order)
     spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
@@ -2509,7 +2518,14 @@ proc reconnectPlayerIndex*(
   -1
 
 proc playerResultsJson*(sim: SimServer): string =
-  ## Returns final player rewards and win states as JSON.
+  ## Returns final per-slot results as JSON.
+  ##
+  ## ``scores`` is the WIN-POINT each seat earned this episode: ``1`` for a
+  ## seat that won, ``0`` otherwise (max 1 per seat per episode). The dense
+  ## per-action reward (``+100`` win, ``+1`` task, ``+10`` kill, ``-10`` no-vote,
+  ## ``-1`` idle) is still tracked internally on the reward account, but the
+  ## emitted ``scores`` is the sparse win-point so each episode/round/leaderboard
+  ## scores by player wins only (one point per win).
   var
     resultSlots: seq[int] = @[]
     names = newJArray()
@@ -2542,7 +2558,6 @@ proc playerResultsJson*(sim: SimServer): string =
           slotConfig.name
         else:
           "player-" & $slotIndex
-      reward = 0
       playerRole = Crewmate
       hasRole = false
       playerWon = false
@@ -2556,7 +2571,6 @@ proc playerResultsJson*(sim: SimServer): string =
     if accountIndex >= 0:
       let account = sim.rewardAccounts[accountIndex]
       name = account.address
-      reward = account.reward
       playerRole = account.role
       hasRole = account.hasRole
       playerWon = account.won
@@ -2570,16 +2584,18 @@ proc playerResultsJson*(sim: SimServer): string =
     if playerIndex >= 0:
       let player = sim.players[playerIndex]
       name = player.address
-      if accountIndex < 0:
-        reward = player.reward
       playerRole = player.role
       hasRole = true
-      playerWon = not sim.timeLimitReached and player.role == sim.winner
+      # A live player has only won once the game is actually decided; mid-game
+      # ``sim.winner`` is the enum default and must not award a win-point.
+      playerWon =
+        sim.phase == GameOver and not sim.timeLimitReached and
+        player.role == sim.winner
     if not hasRole and slotConfig.hasRole:
       playerRole = slotConfig.role
       hasRole = true
     names.add(%name)
-    scores.add(%reward)
+    scores.add(%(if playerWon: 1 else: 0))
     win.add(%playerWon)
     tasksList.add(%tasks)
     killsList.add(%kills)
@@ -4329,11 +4345,33 @@ proc resetToLobby*(sim: var SimServer) =
     account.won = false
     account.abandoned = false
 
+proc setLiveConnectedSlots*(sim: var SimServer, slots: openArray[int]) =
+  ## Records the slots that currently have an accepted live /player socket.
+  ## The live server loop refreshes this every tick (including pending sockets
+  ## not yet promoted into `sim.players`) so the connect-timeout final re-check
+  ## never times out a slot whose socket is connected. Live-only: replays leave
+  ## this empty so timeout behavior is reconstructed deterministically from
+  ## recorded join events. Stored as a deduplicated seq so the value survives
+  ## Flatty replay-keyframe serialization without custom set hooks.
+  sim.liveConnectedSlots = @[]
+  for slot in slots:
+    if slot notin sim.liveConnectedSlots:
+      sim.liveConnectedSlots.add(slot)
+
 proc connectTimeoutSlots(sim: SimServer): seq[int] =
   ## Returns closed-roster slots that missed the initial connect deadline.
+  ## A slot is only considered timed out when it has neither a connected live
+  ## player nor a currently-connected /player socket. `liveConnectedSlots` is
+  ## populated by the live server loop with every slot that has an accepted
+  ## socket (including pending sockets not yet promoted into `sim.players`), so
+  ## a socket that connected inside the window is never discarded. In replay
+  ## mode `liveConnectedSlots` is empty and the roster is reconstructed purely
+  ## from recorded join events, preserving determinism.
   if not sim.config.closedRoster:
     return
   for slotIndex in 0 ..< sim.config.slots.len:
+    if slotIndex in sim.liveConnectedSlots:
+      continue
     let playerIndex = sim.playerIndexForSlot(slotIndex)
     if playerIndex < 0 or not sim.players[playerIndex].connected:
       result.add(slotIndex)
