@@ -1,6 +1,7 @@
 import
   std/[algorithm, json, os, osproc, sets, streams, strutils,
     tables, times],
+  chrono,
   common,
   replay_extractor
 
@@ -50,6 +51,13 @@ const
   WinRateLabelShiftX = 3
   RoundPlayerSlots = 8
   RoundPlayerLetters = ["A", "B", "C", "D", "E", "F", "G", "H"]
+  RoundTimeZone = "America/Los_Angeles"
+  RoundTimeZoneData = staticRead("tournament_tzdata.json")
+  RoundTimeFormat = "{hour/ap}:{minute/2}{am/pm}"
+  RoundTimestampFormats = [
+    "{year/4}-{month/2}-{day/2}T{hour/2}:{minute/2}:{second}.{secondFraction}Z",
+    "{year/4}-{month/2}-{day/2}T{hour/2}:{minute/2}:{second/2}Z"
+  ]
   PreloadFonts = [
     "ETBembo-RomanOSF.otf",
     "ETBembo-DisplayItalic.otf",
@@ -185,6 +193,8 @@ type
     roundNumber: int
     status: string
     divisionName: string
+    startedAt: string
+    completedAt: string
     games: seq[Game]
 
   StrategyDocs = object
@@ -217,6 +227,10 @@ type
 proc fail(message: string) =
   ## Raises a tournament report error with a clear message.
   raise newException(TournamentError, message)
+
+proc loadRoundTimezones() =
+  ## Loads the timezone data needed for round time display.
+  loadTzData(RoundTimeZoneData)
 
 proc rootDir(): string =
   ## Returns the Notsus player root for this tool.
@@ -920,6 +934,8 @@ proc roundCacheJson(config: ToolConfig, round: CachedRound): JsonNode =
   result["round_number"] = %round.roundNumber
   result["status"] = %round.status
   result["division_name"] = %round.divisionName
+  result["started_at"] = %round.startedAt
+  result["completed_at"] = %round.completedAt
   var rows = newJArray()
   for game in round.games:
     rows.add game.gameJson()
@@ -939,7 +955,9 @@ proc toCachedRound(round: RoundInfo): CachedRound =
     roundId: round.id,
     roundNumber: round.number,
     status: round.status,
-    divisionName: round.divisionName
+    divisionName: round.divisionName,
+    startedAt: round.startedAt,
+    completedAt: round.completedAt
   )
 
 proc shouldRefreshRound(
@@ -1069,6 +1087,8 @@ proc readRoundCache(config: ToolConfig, path: string): CachedRound =
   result.roundNumber = node.intField("round_number", -1)
   result.status = node.strField("status")
   result.divisionName = node.strField("division_name")
+  result.startedAt = node.strField("started_at")
+  result.completedAt = node.strField("completed_at")
   let games = node.field("games")
   if games.kind != JArray:
     return
@@ -1126,6 +1146,29 @@ proc roundTable(rounds: openArray[CachedRound]): Table[string, CachedRound] =
   for round in rounds:
     if round.roundId.len > 0:
       result[round.roundId] = round
+
+proc roundTableByNumber(
+  rounds: openArray[CachedRound]
+): Table[int, CachedRound] =
+  ## Returns cached rounds keyed by round number.
+  for round in rounds:
+    if round.isReportRound():
+      result[round.roundNumber] = round
+
+proc mergeCachedRounds(
+  cached,
+  fresh: openArray[CachedRound]
+): seq[CachedRound] =
+  ## Merges cached rounds while replacing refreshed round metadata.
+  var byId: OrderedTable[string, CachedRound]
+  for round in cached:
+    if round.roundId.len > 0 and round.isReportRound():
+      byId[round.roundId] = round
+  for round in fresh:
+    if round.roundId.len > 0 and round.isReportRound():
+      byId[round.roundId] = round
+  for round in byId.values:
+    result.add round
 
 proc mergeGamesReplacingRounds(
   cached,
@@ -1285,15 +1328,15 @@ proc winRate(stats: PolicyStats): float =
     return 0.0
   stats.wins.float / stats.games.float * 100.0
 
-proc winRateX(rate: float): int =
+proc winRateX(rate, axisMax: float): int =
   ## Returns one win-rate x coordinate.
   var clamped = rate
   if clamped < 0.0:
     clamped = 0.0
-  if clamped > 100.0:
-    clamped = 100.0
+  if clamped > axisMax:
+    clamped = axisMax
   WinRateLeftPadding + int(
-    clamped / 100.0 * WinRatePlotWidth.float + 0.5
+    clamped / axisMax * WinRatePlotWidth.float + 0.5
   )
 
 proc winRateSlotX(slot: int): int =
@@ -1302,6 +1345,7 @@ proc winRateSlotX(slot: int): int =
 
 proc winRateLabelPosition(
   rate: float,
+  axisMax: float,
   slot,
   level: int
 ): tuple[
@@ -1315,23 +1359,23 @@ proc winRateLabelPosition(
     slotX = slot.winRateSlotX().float
     levelOffset = WinRateBaseStem.float +
       level.float * WinRateLevelStep.float
-  result.x = rate.winRateX().float
+  result.x = rate.winRateX(axisMax).float
   result.elbowY = -levelOffset - (result.x - slotX)
   result.labelX = result.x + WinRateStemDiagonal.float
   result.labelY = result.elbowY - WinRateStemDiagonal.float
 
-proc closestWinRateSlot(rate: float): int =
+proc closestWinRateSlot(rate, axisMax: float): int =
   ## Returns the rightmost fixed slot under one anchor point.
-  let x = rate.winRateX()
+  let x = rate.winRateX(axisMax)
   result = (x - WinRateLeftPadding) div WinRateSlotStep
   if result < WinRateMinSlot:
     result = WinRateMinSlot
   elif result > WinRateMaxSlot:
     result = WinRateMaxSlot
 
-proc minWinRateSlot(rate: float): int =
+proc minWinRateSlot(rate, axisMax: float): int =
   ## Returns the leftmost slot still under one anchor point.
-  let x = rate.winRateX()
+  let x = rate.winRateX(axisMax)
   result = (x - WinRateLeftPadding - WinRateSlotReach) div
     WinRateSlotStep
   if result < WinRateMinSlot:
@@ -1391,13 +1435,23 @@ proc winRatePoints(
       else:
         cmp(a.id, b.id)
 
-proc assignWinRateLevels(points: var seq[WinRatePoint]) =
+proc winRateAxisMax(points: openArray[WinRatePoint]): int =
+  ## Returns the visible win-rate ceiling rounded up to ten percent.
+  result = 10
+  for point in points:
+    while result < 100 and result.float < point.rate - ScoreEpsilon:
+      result += 10
+
+proc assignWinRateLevels(
+  points: var seq[WinRatePoint],
+  axisMax: float
+) =
   ## Assigns fixed 45-degree slots from right to left.
   var occupied: seq[int]
   for i in 0 ..< points.len:
     let
-      startSlot = points[i].rate.closestWinRateSlot()
-      minSlot = points[i].rate.minWinRateSlot()
+      startSlot = points[i].rate.closestWinRateSlot(axisMax)
+      minSlot = points[i].rate.minWinRateSlot(axisMax)
       chosen = occupied.chooseWinRateSlot(startSlot, minSlot)
     points[i].slot = chosen
     points[i].level = 0
@@ -1409,12 +1463,16 @@ proc maxWinRateLevel(points: openArray[WinRatePoint]): int =
     if point.level > result:
       result = point.level
 
-proc minWinRateLabelY(points: openArray[WinRatePoint]): int =
+proc minWinRateLabelY(
+  points: openArray[WinRatePoint],
+  axisMax: float
+): int =
   ## Returns the highest relative y coordinate used by win-rate labels.
   for point in points:
     let
       position = winRateLabelPosition(
         point.rate,
+        axisMax,
         point.slot,
         point.level
       )
@@ -1436,10 +1494,11 @@ proc renderWinRateChart(
   var points = winRatePoints(policies, stats)
   if points.len == 0:
     return "<p>No completed win rates yet.</p>\n"
-  points.assignWinRateLevels()
+  let axisMax = points.winRateAxisMax()
+  points.assignWinRateLevels(axisMax.float)
   let
     maxLevel = points.maxWinRateLevel()
-    minLabelY = points.minWinRateLabelY()
+    minLabelY = points.minWinRateLabelY(axisMax.float)
     plotEnd = WinRateLeftPadding + WinRatePlotWidth
     axisY = max(
       WinRateTopPadding + WinRateBaseStem +
@@ -1456,13 +1515,13 @@ proc renderWinRateChart(
   result.add "<path class=\"winrate-axis\" d=\"M "
   result.add $WinRateLeftPadding & " " & $axisY
   result.add " H " & $plotEnd
-  for tick in countup(0, 100, 10):
-    let x = tick.float.winRateX()
+  for tick in countup(0, axisMax, 10):
+    let x = tick.float.winRateX(axisMax.float)
     result.add " M " & $x & " " & $axisY
     result.add " v " & $WinRateTickHeight
   result.add "\" />\n"
-  for tick in countup(0, 100, 10):
-    let x = tick.float.winRateX()
+  for tick in countup(0, axisMax, 10):
+    let x = tick.float.winRateX(axisMax.float)
     result.add "<text class=\"winrate-tick\" x=\"" & $x
     result.add "\" y=\"" & $(axisY + 28)
     result.add "\" text-anchor=\"middle\">"
@@ -1472,6 +1531,7 @@ proc renderWinRateChart(
     let
       position = winRateLabelPosition(
         point.rate,
+        axisMax.float,
         point.slot,
         point.level
       )
@@ -3137,6 +3197,32 @@ proc completionRateCell(
     return text.numCell()
   classHtmlCell(markHtml(text), "num")
 
+proc roundTimeSource(round: CachedRound, games: openArray[Game]): string =
+  ## Returns the best timestamp available for a round.
+  if round.startedAt.len > 0:
+    return round.startedAt
+  for game in games:
+    if game.createdAt.len == 0:
+      continue
+    if result.len == 0 or game.createdAt < result:
+      result = game.createdAt
+  if result.len == 0:
+    result = round.completedAt
+
+proc roundTimeText(iso: string): string =
+  ## Formats an ISO timestamp as a compact am/pm time.
+  if iso.len == 0:
+    return "-"
+  for timestampFormat in RoundTimestampFormats:
+    try:
+      return parseTs(timestampFormat, iso).format(
+        RoundTimeFormat,
+        tzName = RoundTimeZone
+      )
+    except ValueError:
+      discard
+  "-"
+
 proc uniquePolicyCount(games: openArray[Game]): int =
   ## Returns the number of unique policies in a game list.
   var seen: HashSet[string]
@@ -3157,23 +3243,31 @@ proc averageScore(games: openArray[Game]): float =
     return 0.0
   result / count.float
 
-proc renderRoundIndexTable(games: openArray[Game]): string =
+proc renderRoundIndexTable(
+  games: openArray[Game],
+  rounds: openArray[CachedRound]
+): string =
   ## Renders the top-level round index table.
-  let byRound = games.roundGamesByNumber()
+  let
+    byRound = games.roundGamesByNumber()
+    byRoundNumber = rounds.roundTableByNumber()
   if byRound.len == 0:
     return "<p>No rounds yet.</p>\n"
   var latestRound = -1
   for roundNumber in byRound.keys:
     latestRound = max(latestRound, roundNumber)
   result.add "<table class=\"report-table wide\">\n"
-  result.add "<thead><tr><th>Round</th><th>Status</th>"
-  result.add "<th>Division</th><th>Games</th><th>Completed</th>"
+  result.add "<thead><tr><th>Round</th><th>Time</th><th>Status</th>"
+  result.add "<th>Games</th><th>Completed</th>"
   result.add "<th>Bots</th><th>Completion %</th></tr></thead>\n<tbody>\n"
   for roundNumber, roundGames in byRound:
+    let
+      round = byRoundNumber.getOrDefault(roundNumber)
+      time = round.roundTimeSource(roundGames).roundTimeText()
     result.add "<tr>"
     result.add htmlCell(linkHtml(roundNumber.roundPage(), $roundNumber))
+    result.add time.classCell("name")
     result.add roundGames.roundStatusText().classCell("name")
-    result.add roundGames.roundDivisionText().classCell("name")
     result.add ($roundGames.len).numCell()
     result.add ($roundGames.completedGameCount()).numCell()
     result.add ($roundGames.uniquePolicyCount()).numCell()
@@ -3367,6 +3461,7 @@ proc renderIndex(
   policies: Table[string, PolicyRef],
   stats: Table[string, PolicyStats],
   games: openArray[Game],
+  rounds: openArray[CachedRound],
   strategyDocs: StrategyDocs
 ) =
   ## Writes the top-level tournament index page.
@@ -3391,7 +3486,7 @@ proc renderIndex(
   )
   html.add "<section>\n"
   html.add "<h2>Rounds</h2>\n"
-  html.add renderRoundIndexTable(games)
+  html.add renderRoundIndexTable(games, rounds)
   html.add "</section>\n"
   html.add renderIndexGroup(
     "All Bots (All rounds)",
@@ -3584,7 +3679,8 @@ proc writeReport(
   config: ToolConfig,
   policies: Table[string, PolicyRef],
   games,
-  freshGames: openArray[Game]
+  freshGames: openArray[Game],
+  rounds: openArray[CachedRound]
 ) =
   ## Writes all tournament report artifacts.
   createDir(config.outDir)
@@ -3601,7 +3697,7 @@ proc writeReport(
   echo "Rendering round pages..."
   renderRoundPages(config, policies, games)
   echo "Rendering index page..."
-  renderIndex(config, policies, stats, games, strategyDocs)
+  renderIndex(config, policies, stats, games, rounds, strategyDocs)
   echo "Rendering bot pages..."
   cleanHtmlFiles(config.outDir / "bots")
   for policy in sortedPolicies(policies):
@@ -3735,6 +3831,7 @@ proc runReport(config: ToolConfig) =
     fetchMaxRound,
     cachedRoundTable
   )
+  let reportRounds = mergeCachedRounds(cachedRounds, freshRounds)
   let freshGames = freshRounds.cachedGames()
   echo "Found ", freshGames.len, " downloaded non-qualifier games."
   let games =
@@ -3750,7 +3847,7 @@ proc runReport(config: ToolConfig) =
     echo "Merged report has ", games.len, " games."
   let policies = expandPolicies(policyMetadata, games)
   echo "Report includes ", policies.len, " policies."
-  writeReport(config, policies, games, freshGames)
+  writeReport(config, policies, games, freshGames, reportRounds)
   echo ""
   echo "Report: ", config.outDir / "index.html"
   syncReport(config)
@@ -3789,6 +3886,7 @@ proc runAutoReport(config: ToolConfig) =
 
 proc main() =
   ## Builds the official tournament report.
+  loadRoundTimezones()
   let config = parseConfig()
   if config.autoMinutes == 0:
     runReport(config)

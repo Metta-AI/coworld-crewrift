@@ -1,21 +1,17 @@
 import
-  std/algorithm
+  std/[algorithm, strutils]
 
 const
-  ReportScoreMin* = -10
-  ReportScoreMax* = 150
-  ReportScoreTickStep* = 20
+  ReportScoreMin* = -10.0
+  ReportScoreMax* = 150.0
+  ReportScoreTickStep* = 20.0
   ScorePlotWidth = 720
   ScorePlotLeftLabelWidth = 270
   ScorePlotRightPadding = 28
-  ScorePlotAxisMin = ReportScoreMin
-  ScorePlotAxisMax = ReportScoreMax
-  ScorePlotTickStep = ReportScoreTickStep
+  ScorePlotTickEpsilon = 0.000001
   ScorePlotTopHeight = 58
   ScorePlotRowHeight = 56
-  ScorePlotHistogramStep = 4
-  ScorePlotHistogramCount =
-    (ScorePlotAxisMax - ScorePlotAxisMin) div ScorePlotHistogramStep + 1
+  ScorePlotHistogramStep = 4.0
   ScorePlotHistogramHeight = ScorePlotRowHeight div 2 - 5
   ScorePlotSmoothPasses = 2
   ScorePlotShowTieHistogram = false
@@ -29,6 +25,12 @@ const
   )
 
 type
+  ScoreChartScale* = object
+    minScore*: float
+    maxScore*: float
+    tickStep*: float
+    histogramStep*: float
+
   ScoreChartOutcome* = enum
     ScoreLoss,
     ScoreTie,
@@ -61,6 +63,16 @@ proc htmlEscape(text: string): string =
       result.add "&#39;"
     else:
       result.add ch
+
+proc scoreText(score: float): string =
+  ## Formats one chart score without unnecessary trailing zeros.
+  result = score.formatFloat(ffDecimal, 4)
+  while result.len > 0 and result[^1] == '0':
+    result.setLen(result.len - 1)
+  if result.len > 0 and result[^1] == '.':
+    result.setLen(result.len - 1)
+  if result.len == 0 or result == "-0":
+    result = "0"
 
 proc scoreChartCss*(): string =
   ## Returns CSS shared by score charts.
@@ -102,36 +114,51 @@ proc scoreX(score, minScore, maxScore: float): int =
   else:
     scaled
 
-proc scoreBin(score: float): int =
+proc defaultScoreChartScale(): ScoreChartScale =
+  ## Returns the default tournament score chart scale.
+  ScoreChartScale(
+    minScore: ReportScoreMin,
+    maxScore: ReportScoreMax,
+    tickStep: ReportScoreTickStep,
+    histogramStep: ScorePlotHistogramStep
+  )
+
+proc histogramCount(scale: ScoreChartScale): int =
+  ## Returns the number of histogram buckets for one chart scale.
+  int((scale.maxScore - scale.minScore) / scale.histogramStep + 1.5)
+
+proc scoreBin(score: float, scale: ScoreChartScale): int =
   ## Returns the full-range histogram bin for one score.
   var clamped = score
-  if clamped < ScorePlotAxisMin.float:
-    clamped = ScorePlotAxisMin.float
-  if clamped > ScorePlotAxisMax.float:
-    clamped = ScorePlotAxisMax.float
+  if clamped < scale.minScore:
+    clamped = scale.minScore
+  if clamped > scale.maxScore:
+    clamped = scale.maxScore
   result = int(
-    (clamped - ScorePlotAxisMin.float) /
-      ScorePlotHistogramStep.float + 0.5
+    (clamped - scale.minScore) /
+      scale.histogramStep + 0.5
   )
   if result < 0:
     result = 0
-  elif result >= ScorePlotHistogramCount:
-    result = ScorePlotHistogramCount - 1
+  let count = scale.histogramCount()
+  if result >= count:
+    result = count - 1
 
-proc histogramX(plotX, index: int): int =
+proc histogramX(plotX, index, count: int): int =
   ## Returns the x coordinate for one histogram sample.
-  let scaled = index.float / (ScorePlotHistogramCount - 1).float
+  let scaled = index.float / max(1, count - 1).float
   plotX + int(scaled * ScorePlotWidth.float + 0.5)
 
 proc histogramFor(
   points: openArray[ScoreChartPoint],
-  outcome: ScoreChartOutcome
+  outcome: ScoreChartOutcome,
+  scale: ScoreChartScale
 ): seq[float] =
   ## Returns full-range histogram counts for one outcome.
-  result = newSeq[float](ScorePlotHistogramCount)
+  result = newSeq[float](scale.histogramCount())
   for point in points:
     if point.outcome == outcome:
-      result[point.score.scoreBin()] += 1.0
+      result[point.score.scoreBin(scale)] += 1.0
 
 proc outcomeCount(
   points: openArray[ScoreChartPoint],
@@ -196,7 +223,7 @@ proc histogramLinePath(
   result = "M " & $plotX & " " & $baseline
   for i, value in values:
     let
-      x = histogramX(plotX, i)
+      x = histogramX(plotX, i, values.len)
       y = baseline + direction * histogramHeight(value, maxValue)
     result.add " L " & $x & " " & $y
   result.add " L " & $plotEnd & " " & $baseline
@@ -212,7 +239,7 @@ proc histogramAreaPath(
   result = "M " & $plotX & " " & $baseline
   for i, value in values:
     let
-      x = histogramX(plotX, i)
+      x = histogramX(plotX, i, values.len)
       y = baseline - histogramHeight(value, maxValue)
     result.add " L " & $x & " " & $y
   result.add " L " & $plotEnd & " " & $baseline
@@ -281,7 +308,8 @@ proc pointSortKey(point: ScoreChartPoint): string =
 
 proc addScoreChartStart(
   html: var string,
-  rowsLen: int
+  rowsLen: int,
+  scale: ScoreChartScale
 ): tuple[plotX, plotEnd: int] =
   ## Adds the shared score chart header and axis.
   let
@@ -295,33 +323,29 @@ proc addScoreChartStart(
   html.add "\" height=\"" & $height & "\" viewBox=\"0 0 "
   html.add $width & " " & $height
   html.add "\" role=\"img\" aria-label=\"Score plot\">\n"
-  for tick in countup(
-    ScorePlotAxisMin,
-    ScorePlotAxisMax,
-    ScorePlotTickStep
-  ):
+  var tick = scale.minScore
+  while tick <= scale.maxScore + ScorePlotTickEpsilon:
     let x = plotX + scoreX(
-      tick.float,
-      ScorePlotAxisMin.float,
-      ScorePlotAxisMax.float
+      tick,
+      scale.minScore,
+      scale.maxScore
     )
     html.add "<text class=\"score-label\" x=\"" & $x
     html.add "\" y=\"22\" text-anchor=\"middle\">"
-    html.add ($tick).htmlEscape()
+    html.add tick.scoreText().htmlEscape()
     html.add "</text>\n"
+    tick += scale.tickStep
   html.add "<path class=\"score-axis\" d=\"M " & $plotX & " " & $axisY
   html.add " H " & $plotEnd
-  for tick in countup(
-    ScorePlotAxisMin,
-    ScorePlotAxisMax,
-    ScorePlotTickStep
-  ):
+  tick = scale.minScore
+  while tick <= scale.maxScore + ScorePlotTickEpsilon:
     let x = plotX + scoreX(
-      tick.float,
-      ScorePlotAxisMin.float,
-      ScorePlotAxisMax.float
+      tick,
+      scale.minScore,
+      scale.maxScore
     )
     html.add " M " & $x & " " & $axisY & " v 12"
+    tick += scale.tickStep
   html.add "\" />\n"
   (plotX, plotEnd)
 
@@ -364,13 +388,14 @@ proc rowScorePoints(
 proc renderScoreHistogramChart*(
   rows: openArray[ScoreChartRow],
   points: openArray[ScoreChartPoint],
-  emptyMessage = "No completed scores yet."
+  emptyMessage: string,
+  scale: ScoreChartScale
 ): string =
   ## Renders a compact score histogram chart.
   if points.len == 0 or rows.len == 0:
     return "<p>" & emptyMessage.htmlEscape() & "</p>\n"
   let
-    frame = result.addScoreChartStart(rows.len)
+    frame = result.addScoreChartStart(rows.len, scale)
     plotX = frame.plotX
     plotEnd = frame.plotEnd
   for i, row in rows:
@@ -380,13 +405,13 @@ proc renderScoreHistogramChart*(
     if rowPoints.len == 0:
       continue
     let
-      wins = rowPoints.histogramFor(ScoreWin).smoothHistogram()
-      losses = rowPoints.histogramFor(ScoreLoss).smoothHistogram()
+      wins = rowPoints.histogramFor(ScoreWin, scale).smoothHistogram()
+      losses = rowPoints.histogramFor(ScoreLoss, scale).smoothHistogram()
       winCount = rowPoints.outcomeCount(ScoreWin)
       lossCount = rowPoints.outcomeCount(ScoreLoss)
-    var ties = newSeq[float](ScorePlotHistogramCount)
+    var ties = newSeq[float](scale.histogramCount())
     when ScorePlotShowTieHistogram:
-      ties = rowPoints.histogramFor(ScoreTie).smoothHistogram()
+      ties = rowPoints.histogramFor(ScoreTie, scale).smoothHistogram()
     let maxValue = maxHistogramValue(wins, losses, ties)
     if maxValue > 0.0 and winCount > 0:
       result.add "<path class=\"score-win-area\" d=\""
@@ -424,16 +449,30 @@ proc renderScoreHistogramChart*(
       result.add "</title></path>\n"
   result.add "</svg>\n</div>\n"
 
-proc renderScoreDotChart*(
+proc renderScoreHistogramChart*(
   rows: openArray[ScoreChartRow],
   points: openArray[ScoreChartPoint],
   emptyMessage = "No completed scores yet."
+): string =
+  ## Renders a compact score histogram chart.
+  renderScoreHistogramChart(
+    rows,
+    points,
+    emptyMessage,
+    defaultScoreChartScale()
+  )
+
+proc renderScoreDotChart*(
+  rows: openArray[ScoreChartRow],
+  points: openArray[ScoreChartPoint],
+  emptyMessage: string,
+  scale: ScoreChartScale
 ): string =
   ## Renders the previous compact score dot chart.
   if points.len == 0 or rows.len == 0:
     return "<p>" & emptyMessage.htmlEscape() & "</p>\n"
   let
-    frame = result.addScoreChartStart(rows.len)
+    frame = result.addScoreChartStart(rows.len, scale)
     plotX = frame.plotX
     plotEnd = frame.plotEnd
   for i, row in rows:
@@ -451,8 +490,8 @@ proc renderScoreDotChart*(
       let
         x = plotX + scoreX(
           point.score,
-          ScorePlotAxisMin.float,
-          ScorePlotAxisMax.float
+          scale.minScore,
+          scale.maxScore
         )
         offset = scoreOffset(x, placed)
         pointY = y + offset
@@ -467,10 +506,37 @@ proc renderScoreDotChart*(
       result.add "</title></circle>\n"
   result.add "</svg>\n</div>\n"
 
+proc renderScoreDotChart*(
+  rows: openArray[ScoreChartRow],
+  points: openArray[ScoreChartPoint],
+  emptyMessage = "No completed scores yet."
+): string =
+  ## Renders the previous compact score dot chart.
+  renderScoreDotChart(
+    rows,
+    points,
+    emptyMessage,
+    defaultScoreChartScale()
+  )
+
+proc renderScoreChart*(
+  rows: openArray[ScoreChartRow],
+  points: openArray[ScoreChartPoint],
+  emptyMessage: string,
+  scale: ScoreChartScale
+): string =
+  ## Renders the default shared score chart.
+  renderScoreHistogramChart(rows, points, emptyMessage, scale)
+
 proc renderScoreChart*(
   rows: openArray[ScoreChartRow],
   points: openArray[ScoreChartPoint],
   emptyMessage = "No completed scores yet."
 ): string =
   ## Renders the default shared score chart.
-  renderScoreHistogramChart(rows, points, emptyMessage)
+  renderScoreHistogramChart(
+    rows,
+    points,
+    emptyMessage,
+    defaultScoreChartScale()
+  )
