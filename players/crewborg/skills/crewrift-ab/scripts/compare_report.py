@@ -3,7 +3,7 @@
 
 This is a strong DEFAULT, not the only shape — a direct comparison invites visuals (a delta-bar
 plot, a role grid, a heat map). Adapt or extend the HTML to fit what *this* comparison shows
-(see ../../docs/reference/report-style.md); the agent has creative control over the presentation.
+(see ../../../docs/reference/report-style.md); the agent has creative control over the presentation.
 
 Input: the JSON written by `compare.py --json`:
   {baseline, candidate, target, deltas:[{metric, role, base, cand, n_base, n_cand, p, effect, verdict}]}

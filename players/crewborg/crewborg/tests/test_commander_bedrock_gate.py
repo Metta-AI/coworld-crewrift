@@ -3,7 +3,7 @@
 With the flag on but no backend signal the factory must return a disabled client
 with the no-backend reason, so the agent plays its deterministic rule-based line
 rather than silently attempting an LLM call. See
-docs/issues/2026-06-26-bedrock-disabled-crewrift-prime-xp.md.
+docs/reference/coworld-platform.md (Bedrock section).
 """
 
 from __future__ import annotations
