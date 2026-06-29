@@ -126,7 +126,7 @@ SKILL_PRESENTATION: dict[str, dict[str, str]] = {
 # this verbatim — the web app holds NO game-specific copy. Recorded on every
 # decision (in the open evidence metadata) so the explainer reflects exactly how
 # THIS commissioner gates and scores. ``flow_steps`` is the Submit → Qualifier xp
-# request → Replay evaluated → Competition spine (event-driven; no qualifier
+# request → results-JSON evaluated → Competition spine (event-driven; no qualifier
 # division); ``gate_rule`` is the combiner; ``scoring_blurb`` describes the
 # Competition pool. A different game's commissioner authors its own.
 SKILL_GATE_EXPLAINER: dict[str, Any] = {
@@ -134,7 +134,7 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
         "Every new submission is evaluated on its own, the moment it is submitted "
         "— there is no Qualifiers pool to wait in. The commissioner runs one "
         "self-play qualifier game for the policy via an experience request, reads "
-        "the resulting replay, AND interviews the policy with an LLM about Crewrift "
+        "its per-slot results JSON, AND interviews the policy with an LLM about Crewrift "
         "voting strategy. A policy that clears all three skills AND passes the "
         "interview is promoted straight into the Competition pool. A policy that "
         "does not clear the gate is re-evaluated on its next submission."
@@ -145,7 +145,7 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
             "title": "Qualifier game",
             "body": (
                 "The commissioner runs ONE 8-seat self-play game for the policy via an "
-                "experience request and parses its replay. Strict AND: every skill must "
+                "experience request and reads its per-slot results JSON. Strict AND: every skill must "
                 "pass (a policy whose game never completes is disqualified)."
             ),
         },
@@ -172,18 +172,18 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
     ],
     "gate_rule": "AND \u2014 every skill and the interview must pass",
     "skills_note": (
-        "The voting/hunting/tasks skills are read from the single qualifier game's parsed "
-        "replay; the interview is a separate out-of-band LLM Q&A. All gate on the live "
+        "The voting/hunting/tasks skills are read from the single qualifier game's per-slot "
+        "results JSON; the interview is a separate out-of-band LLM Q&A. All gate on the live "
         "thresholds shown above. Each submission's per-skill result, interview score, and "
         "overall verdict appear in the Qualifier Skill Gate panel."
     ),
     "scoring_blurb": (
-        "Once promoted, the Competition leaderboard ranks policies by an OpenSkill "
-        "(Plackett\u2013Luce) skill rating: each round is one match decided by winning "
-        "players (one point per seat that won as imposter or crew), and a policy's MMR "
-        "is the conservative ordinal mu \u2212 3\u03c3 of that rating. A newly promoted policy "
-        "is rated but unranked (\u201cin placement\u201d) until it has played a few rated "
-        "rounds, so a single lucky win can\u2019t rocket it to the top."
+        "Once promoted, the Competition leaderboard ranks policies by WIN RATE. "
+        "Each round scores one point per episode the entrant won (capped at 1 per "
+        "episode, role-agnostic \u2014 winning as imposter or crew counts the same, and "
+        "filler seats never count); a round's score is the number of episodes the "
+        "entrant won that round. The leaderboard divides the entrant's all-time episodes "
+        "won by all-time episodes played and ranks entrants by that win rate (0 to 1)."
     ),
 }
 
@@ -660,7 +660,7 @@ def evaluate_combined_game_with_interview(
     """Strict-AND gate over the three skills PLUS the LLM interview.
 
     A policy passes only if it clears the skill gate (voting/hunting/tasks from
-    the parsed replay) AND passes the interview (score >= INTERVIEW_MIN_SCORE).
+    the per-slot results JSON) AND passes the interview (score >= INTERVIEW_MIN_SCORE).
     The interview is appended as a fourth verdict so the Observatory renders it
     uniformly. The interview's I/O is done by the caller; this stays pure.
     """
@@ -673,51 +673,62 @@ def evaluate_combined_game_with_interview(
 
 
 # ============================================================================
-# Competition division scoring (2026-06-25): "1 point per winning PLAYER, by role".
+# Competition division scoring (2026-06-28): "1 point per WON EPISODE".
 #
-# In the Competition division the score counts EVERY winning seat the entrant
-# occupies: 1 point for each player (seat) that won as imposter, plus 1 point for
-# each player (seat) that won as crew. The score is the sum of both
-# (``imposter_wins + crew_wins``). A seat scores if its per-slot ``win`` boolean
-# is True; the role of that winning seat (imposter vs crew) comes from the
-# per-slot ``imposter``/``crew`` arrays. Unlike a per-episode tally, an entrant
-# that occupies multiple winning seats in one game scores once PER winning seat.
-# The cumulative leaderboard sums these per-round point totals.
+# In the Competition division an entrant scores ONE point for each episode it
+# wins and zero for an episode it does not win — the maximum any player can earn
+# in a single episode is 1, regardless of how many seats it held. An episode is
+# WON if any of the entrant's (non-filler) seats has its per-slot ``win`` boolean
+# True. The role of each winning seat (imposter vs crew) is still tracked from the
+# per-slot ``imposter``/``crew`` arrays for observability, but it does NOT inflate
+# the score past 1 per episode. The round score is the count of won episodes; the
+# leaderboard ranks by WIN RATE (all-time episodes won / all-time episodes played).
 # ============================================================================
 
 
 @dataclass
 class CompetitionWinRecord:
-    """One entrant's winning-player points across a Competition round.
+    """One entrant's win-points across a Competition round.
 
-    ``imposter_wins``/``crew_wins`` count individual winning SEATS (players), and
-    the score is their sum (1 point per winning player, by role).
+    Scoring is WIN-ONLY and capped at 1 point per episode: an entrant scores 1
+    for each episode in which at least one of its (non-filler) seats won, and 0
+    for an episode it did not win. ``episode_wins`` is that capped count and is
+    the round score (the leaderboard aggregates these per-round totals into a
+    win rate: all-time episodes won / all-time episodes played).
+
+    ``imposter_wins``/``crew_wins`` remain as OBSERVABILITY counts of the
+    individual winning seats by role (a single episode can contribute to at most
+    one of them per seat); they explain HOW an episode was won but do NOT inflate
+    the score beyond 1 per episode.
     """
 
     imposter_wins: int
     crew_wins: int
+    episode_wins: int
     episodes_counted: int
 
     @property
     def wins(self) -> int:
-        """Total winning players (seats) across both roles = the score."""
-        return self.imposter_wins + self.crew_wins
+        """Episodes won (capped 1 per episode) = the score."""
+        return self.episode_wins
 
     @property
     def score(self) -> float:
-        return float(self.wins)
+        return float(self.episode_wins)
 
     @property
     def reason(self) -> str:
         return (
-            f"{self.wins} winning player(s) in {self.episodes_counted} game(s) "
-            f"({self.imposter_wins} as imposter, {self.crew_wins} as crew)"
+            f"{self.episode_wins} winning episode(s) in {self.episodes_counted} game(s) "
+            f"({self.imposter_wins} winning seat(s) as imposter, "
+            f"{self.crew_wins} as crew)"
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "score": self.score,
             "wins": self.wins,
+            "episode_wins": self.episode_wins,
             "imposter_wins": self.imposter_wins,
             "crew_wins": self.crew_wins,
             "episodes_counted": self.episodes_counted,
@@ -732,30 +743,36 @@ def _seat_flag(arr: Any, seat: int) -> bool:
 def count_competition_wins(
     episodes_with_seats: list[tuple[dict[str, Any], list[int]]],
 ) -> CompetitionWinRecord:
-    """Winning-player points for an entrant: 1 per winning seat, split by role.
+    """Win-points for an entrant: 1 per WON EPISODE (capped), split tracked by role.
 
     ``episodes_with_seats`` pairs each episode's ``game_results`` with the seat
     indices that belong to the entrant in that episode (in Competition seating an
-    entrant occupies a subset of seats; in self-play it occupies all 8). EACH of
-    the entrant's seats that has ``win`` True scores one point: an imposter point
-    if that winning seat is an imposter seat, a crew point if it is a crew seat.
-    An entrant occupying several winning seats in one game scores once per seat.
+    entrant occupies a subset of seats; in self-play it occupies all 8). An
+    entrant WINS an episode if ANY of its seats has ``win`` True — and that scores
+    exactly ONE point for the episode regardless of how many of its seats won.
+    The role split (imposter/crew) counts the individual winning seats for
+    observability only; it never increases the score past 1 per episode.
     """
-    imposter_wins = crew_wins = 0
+    imposter_wins = crew_wins = episode_wins = 0
     for game_results, seats in episodes_with_seats:
         win = game_results.get("win")
         imposter = game_results.get("imposter")
         crew = game_results.get("crew")
+        episode_won = False
         for seat in seats:
             if not _seat_flag(win, seat):
                 continue
+            episode_won = True
             if _seat_flag(imposter, seat):
                 imposter_wins += 1
             if _seat_flag(crew, seat):
                 crew_wins += 1
+        if episode_won:
+            episode_wins += 1
     return CompetitionWinRecord(
         imposter_wins=imposter_wins,
         crew_wins=crew_wins,
+        episode_wins=episode_wins,
         episodes_counted=len(episodes_with_seats),
     )
 
@@ -960,7 +977,7 @@ def build_qualifier_report(
     ]
     rule_description = (
         "Each new submission plays one 8-seat self-play qualifier game (run via an "
-        "experience request, evaluated from its parsed replay) AND is interviewed by the "
+        "experience request, evaluated from its per-slot results JSON) AND is interviewed by the "
         "commissioner's LLM about Crewrift voting strategy. A strict AND gate over the "
         "skills below — including the interview — decides promotion: pass every skill and "
         "the interview to advance to Competition, otherwise the submission does not qualify "
@@ -1010,8 +1027,9 @@ def build_competition_report(
         )
     entrants.sort(key=lambda e: -float(e.get("score") or 0))
     rule_description = (
-        "Competition scores by WINS: one point per winning seat the entrant occupied this round, "
-        "role-agnostic. The leaderboard accumulates these per-round win totals all-time."
+        "Competition scores by WINS: one point per episode the entrant won this round "
+        "(capped at 1 per episode, role-agnostic; filler seats never count). The "
+        "leaderboard ranks by win rate (all-time episodes won / all-time episodes played)."
     )
     return {
         "rule_id": "competition_wins",

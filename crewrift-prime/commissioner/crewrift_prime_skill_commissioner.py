@@ -74,7 +74,11 @@ from uuid import UUID
 from commissioners.common.protocol import (
     CommissionerRoundReport,
     DivisionLeaderboard as CommissionerDivisionLeaderboard,
+    DivisionLeaderboardAxis as CommissionerDivisionLeaderboardAxis,
+    DivisionLeaderboardColumn as CommissionerDivisionLeaderboardColumn,
     DivisionLeaderboardEntry as CommissionerDivisionLeaderboardEntry,
+    DivisionLeaderboardRow as CommissionerDivisionLeaderboardRow,
+    DivisionLeaderboardView as CommissionerDivisionLeaderboardView,
     DivisionRanking as CommissionerDivisionRanking,
     EpisodeFailed as CommissionerProtocolEpisodeFailed,
     EpisodeRequest as CommissionerProtocolEpisodeRequest,
@@ -83,7 +87,6 @@ from commissioners.common.protocol import (
     RoundComplete as CommissionerRoundComplete,
     RoundStart as CommissionerRoundStart,
     ScheduleEpisodes as CommissionerScheduleEpisodes,
-    division_leaderboard_from_entries,
 )
 from commissioners.common.commissioners import register_commissioner
 from commissioners.common.models import (
@@ -107,7 +110,6 @@ from commissioners.common.utils import (
 )
 
 from game_results_loader import coerce_results_schema, has_results_schema_arrays
-from mmr import MMR_PLACEMENT_MIN_GAMES, RatedRoundResult, rank_by_mmr
 from decision import (
     DECISION_LOG_TAG,
     SKILL_GATE_EVIDENCE_TYPE,
@@ -134,13 +136,14 @@ COMPETITION_VARIANT = "default"
 _COMPETITION_DIVISION_TYPE = "competition"
 # result_metadata score kind tag for Competition win-count rounds.
 _COMPETITION_SCORE_KIND = "competition_wins"
-# commissioner-state key holding the append-only per-round MMR inputs (one entry
-# per scored policy per round) so ``_complete_competition_round`` can replay the
-# full division history through ``rank_by_mmr`` and publish the SAME OpenSkill board
-# ``rank_division`` computes. Without this, the platform's RoundComplete compat shim
-# fabricates a win-count board from this round's results and that board ping-pongs
-# against the MMR board the scheduling tick writes — the leaderboard-flip bug.
-_MMR_HISTORY_STATE_KEY = "crewrift_prime_mmr_history"
+# commissioner-state key holding the append-only per-round win history (one entry
+# per scored policy per round) so ``_complete_competition_round`` can aggregate the
+# full division history and publish the SAME win-rate board ``rank_division``
+# computes. Without this, the platform's RoundComplete compat shim fabricates its
+# own board from this round's results and that board ping-pongs against the board
+# the scheduling tick writes — the leaderboard-flip bug. (The state key string is
+# kept for backward compatibility with already-persisted commissioner state.)
+_WIN_HISTORY_STATE_KEY = "crewrift_prime_mmr_history"
 # Episode-request tag names recording how the closed-roster 8-seat game was topped
 # up. ``filler_seats`` is the comma-separated 0-based seat indices that are NOT a
 # real, uniquely-seated entrant; ``filler_policy_version_ids`` is the comma-
@@ -826,13 +829,14 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         episode_results: list[CommissionerProtocolEpisodeResult],
         scheduled_episodes: list[CommissionerProtocolEpisodeRequest] | None = None,
     ) -> CommissionerRoundComplete:
-        """Score a Competition round by WINNING PLAYERS: 1 point per winning seat.
+        """Score a Competition round by WON EPISODES: 1 point per episode won.
 
-        The score is ``imposter_wins + crew_wins`` — one point for each player
-        (seat) the entrant occupies that won as imposter, plus one for each that
-        won as crew. The imposter/crew split is surfaced in the decision log,
-        result_metadata, and round_display. The per-round score and finishing
-        rank feed the OpenSkill MMR leaderboard (see ``rank_division``).
+        A player scores one point for each episode in which at least one of its
+        (non-filler) seats won, capped at 1 per episode regardless of how many of
+        its seats won. The imposter/crew split of the winning seats is surfaced in
+        the decision log, result_metadata, and round_display for observability. The
+        per-round score (the count of won episodes) feeds the win-rate
+        leaderboard (see ``rank_division``).
 
         FILLER/duplicate seats (the top-up seats this round scheduled to fill a
         closed-roster 8-seat game when fewer than ``NUM_SEATS`` real entrants are
@@ -930,6 +934,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                         RANKED_SCORE_COUNT_METADATA_KEY: max(rec.episodes_counted, 1),
                         "score_kind": _COMPETITION_SCORE_KIND,
                         "wins": rec.wins,
+                        "episode_wins": rec.episode_wins,
                         "imposter_wins": rec.imposter_wins,
                         "crew_wins": rec.crew_wins,
                     },
@@ -966,7 +971,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             if filler_ids_sorted
             else "No filler policies were used this round."
         )
-        leaderboards, next_state = self._competition_mmr_leaderboards(
+        leaderboards, next_state = self._competition_win_leaderboards(
             incoming_state=round_start.state,
             division_id=view.current_division.id,
             round_id=round_start.round_id,
@@ -974,14 +979,14 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         )
         return CommissionerRoundComplete(
             results=[CommissionerDivisionRanking(division_id=view.current_division.id, rankings=rankings)],
-            # Publish the OpenSkill MMR board the platform should persist. Without an
+            # Publish the win-rate board the platform should persist. Without an
             # explicit leaderboards payload the platform's RoundComplete shim fabricates
-            # a win-count board from ``results`` that overwrites (and ping-pongs against)
-            # the MMR board the scheduling tick writes via rank_division.
+            # its own board from ``results`` that overwrites (and ping-pongs against)
+            # the board the scheduling tick writes via rank_division.
             leaderboards=leaderboards,
             state=next_state,
             round_display={
-                "phases": [{"label": "Competition — winning players (1 pt/player, by role)", "episodes": len(games)}],
+                "phases": [{"label": "Competition — win rate (won episodes ÷ played episodes)", "episodes": len(games)}],
                 "competition_wins": breakdown,
                 # Explicitly mark which policies were fillers so any consumer labels
                 # them "filler policy <id>" and never treats them as a real entrant.
@@ -995,7 +1000,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             ),
         )
 
-    def _competition_mmr_leaderboards(
+    def _competition_win_leaderboards(
         self,
         *,
         incoming_state: Any,
@@ -1003,65 +1008,80 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         round_id: UUID,
         rankings: list[CommissionerRankingEntry],
     ) -> tuple[list[CommissionerDivisionLeaderboard], dict[str, Any]]:
-        """Replay the division's full MMR history (incl. this round) and publish the board.
+        """Accumulate the division's per-round win history and publish the board.
 
         We keep an append-only list of ``(round_id, policy_version_id, player_id,
-        rank, score)`` in commissioner state and replay it through the SAME
-        ``rank_by_mmr`` ``rank_division`` uses, then collapse it with the SAME
-        helper. So both writers emit byte-identical MMR scores and ordering — the
-        board can no longer flip between the MMR and win-count schemes.
+        rank, score, episodes_played)`` in commissioner state and collapse it with
+        the SAME ``_win_total_board`` helper ``rank_division`` uses, so both
+        platform writers (the scheduling tick's ``rank_division`` and this
+        round-complete) emit the SAME all-time WIN-RATE board — the board can't
+        flip between schemes.
 
         Player names are intentionally not stored here (round-start memberships
         don't carry them); the platform's leaderboard read path resolves names live
         from the players table, so the published board's null names render correctly.
         """
         state: dict[str, Any] = dict(incoming_state) if isinstance(incoming_state, dict) else {}
-        history: list[dict[str, Any]] = list(state.get(_MMR_HISTORY_STATE_KEY, []))
+        history: list[dict[str, Any]] = list(state.get(_WIN_HISTORY_STATE_KEY, []))
         round_id_str = str(round_id)
         # Idempotency: a round is appended exactly once. A retried round-complete
-        # must not double-count its results into the rating replay.
+        # must not double-count its results into the cumulative total.
         already_recorded = any(row.get("round_id") == round_id_str for row in history)
         if not already_recorded:
             for entry in rankings:
-                # Skip tainted/unranked entries, mirroring rank_division's gate.
-                if int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0:
-                    continue
+                tainted = (
+                    int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0
+                )
                 history.append(
                     {
                         "round_id": round_id_str,
                         "policy_version_id": str(entry.policy_version_id),
                         "player_id": entry.player_id,
                         "rank": entry.rank,
-                        "score": entry.score,
+                        # Tainted/unranked entries are kept so the participant stays
+                        # visible, but contribute 0 wins / 0 played episodes and are
+                        # excluded from the win-rate numerator/denominator below.
+                        "score": 0.0 if tainted else entry.score,
+                        # Episodes the player PLAYED this round — the win-rate
+                        # denominator. Persisted so the replayed board matches
+                        # what rank_division computes from result_metadata.
+                        "episodes_played": 0
+                        if tainted
+                        else int(entry.result_metadata.get(COMPLETED_EPISODE_COUNT_METADATA_KEY, 0)),
+                        "tainted": tainted,
                     }
                 )
-        state[_MMR_HISTORY_STATE_KEY] = history
+        state[_WIN_HISTORY_STATE_KEY] = history
 
-        # Replay oldest-first. History is appended in round order, so the order of
-        # first appearance of each round_id is chronological.
-        round_order: list[UUID] = []
-        seen_rounds: set[str] = set()
-        rated_results: list[RatedRoundResult] = []
+        # Best per-round win score per player + the player's policy versions, then
+        # collapse to the all-time win-rate board with the shared helper. Every
+        # player in the history is a participant (tainted rows included) so nobody
+        # is dropped; tainted rows just don't feed the win rate.
+        round_score: dict[tuple[Any, Any], float] = {}
+        round_episodes: dict[tuple[Any, Any], int] = {}
+        pvids_by_player: dict[Any, set] = {}
+        participants: set = set()
         for row in history:
-            rid = row["round_id"]
-            if rid not in seen_rounds:
-                seen_rounds.add(rid)
-                round_order.append(UUID(rid))
-            rated_results.append(
-                RatedRoundResult(
-                    round_id=UUID(rid),
-                    policy_version_id=UUID(row["policy_version_id"]),
-                    player_id=row["player_id"],
-                    rank=int(row["rank"]),
-                    score=float(row["score"]),
-                )
-            )
+            player_id = row["player_id"]
+            participants.add(player_id)
+            pvids_by_player.setdefault(player_id, set()).add(UUID(row["policy_version_id"]))
+            if row.get("tainted"):
+                continue
+            key = (player_id, row["round_id"])
+            prior = round_score.get(key)
+            score = float(row["score"])
+            if prior is None or score > prior:
+                round_score[key] = score
+                round_episodes[key] = int(row.get("episodes_played", 0))
 
-        ranking = rank_by_mmr(
-            completed_round_ids_oldest_first=round_order,
-            round_results=rated_results,
+        snapshots = self._win_total_board(
+            round_score,
+            name_by_player={},
+            pvids_by_player=pvids_by_player,
+            recent=lambda _pid: None,
+            round_episodes=round_episodes,
+            participants=participants,
         )
-        snapshots = self._mmr_board_from_ranking(ranking, name_by_player={}, recent=lambda _pid: None)
         entries = [
             CommissionerDivisionLeaderboardEntry(
                 player_id=str(snapshot.player_id),
@@ -1074,44 +1094,43 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             for snapshot in snapshots
             if snapshot.player_id is not None
         ]
-        leaderboards = [division_leaderboard_from_entries(division_id=division_id, entries=entries)]
+        leaderboards = [_win_rate_leaderboard(division_id=division_id, entries=entries)]
         return leaderboards, state
 
     def describe_division(self, ctx: DivisionDescriptionContext) -> DivisionCommissionerDescriptionPublic:
         """Inherit the base description, but state the REAL Competition scoring
-        (OpenSkill MMR), since the stock text describes a mean-score EWMA the
+        (win rate), since the stock text describes a mean-score EWMA the
         commissioner no longer uses."""
         description = super().describe_division(ctx)
         if str(getattr(ctx.division, "type", "")) == _COMPETITION_DIVISION_TYPE:
             description.leaderboard_rules = (
-                "Players are ranked by skill rating (MMR), not raw score. A player's row is "
-                "their best policy version's rating."
+                "Players are ranked by their all-time WIN RATE across all rounds — the "
+                "fraction of episodes they won (0 to 1). A player's row aggregates their "
+                "policy versions' won and played episodes."
             )
             description.scoring_mechanics = (
-                "Each completed Competition round is one OpenSkill (Plackett\u2013Luce) match, with "
-                "entrants ordered by winning players (one point per seat that won as imposter or "
-                "crew). A policy's MMR is the conservative ordinal mu \u2212 3\u03c3 of its rating; a newly "
-                "promoted policy is rated but unranked (\u201cin placement\u201d) until it has played a few "
-                "rated rounds, so a single lucky win can't rocket it to the top. The commissioner "
+                "Each Competition round, a player wins at most 1 point per EPISODE they "
+                "won (role-agnostic; filler seats never count). The leaderboard score is "
+                "the player's WIN RATE = total episodes won / total episodes played, "
+                "accumulated all-time and always between 0 and 1. The commissioner "
                 "computes the ranking and the platform serves it."
             )
         return description
 
     def rank_division(self, ctx: DivisionLeaderboardContext) -> list[DivisionLeaderboardSnapshot]:
-        """Competition leaderboard = per-policy OpenSkill MMR, collapsed to player.
+        """Competition leaderboard = all-time WIN RATE, collapsed to player.
 
-        Each completed Competition round is replayed (oldest-first) as ONE
-        Plackett-Luce match, the entrants fed by the finishing rank the round
-        already computed from winning-player points (see
-        ``_complete_competition_round``). That yields a conservative-ordinal
-        ``mu - 3*sigma`` MMR per policy version, a 5-game placement gate, and a
-        player-prior init for new versions (faithful to PR Metta-AI/metta#16527).
+        Each player's score is the fraction of episodes they won across the
+        division's completed rounds: total episodes won / total episodes played
+        (one point per won episode, capped per episode, fillers excluded — see
+        ``_complete_competition_round``). The score is always in ``[0, 1]``.
+        Players are ranked by descending win rate; ``rounds_played`` is the number
+        of completed rounds the player participated in.
 
-        The Crewrift Prime board is PLAYER-keyed, so each player's row is their
-        BEST out-of-placement policy version (falling back to their best
-        in-placement policy when none has cleared placement). A player ranks only
-        once all their policies are still in placement -> the player is shown "in
-        placement" with no numeric rank, exactly like the per-policy gate.
+        The board is PLAYER-keyed: a player's policy versions are aggregated into
+        one row (their wins summed). Matching/seeding is out of scope here — the
+        scheduler round-robins all real entrants — so this method only produces the
+        displayed standings.
 
         Other divisions defer to the stock ewma-blended ranking.
         """
@@ -1121,42 +1140,41 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             return []
 
         completed_ids = {round_row.id for round_row in ctx.completed_rounds}
-        # ``completed_rounds`` is newest-first (platform contract); the rater needs
-        # oldest-first so each rating update only depends on earlier rounds.
-        oldest_first = [
-            round_row.id
-            for round_row in sorted(
-                ctx.completed_rounds,
-                key=lambda r: (r.completed_at or r.created_at, r.round_number),
-            )
-        ]
-        # Map policy_version_id -> player_id/name and skip tainted/unranked rows
-        # (RANKED_SCORE_COUNT <= 0 marks a -100 lobby-taint or no-real-seat round).
-        player_by_policy: dict[Any, Any] = {}
         name_by_player: dict[Any, str | None] = {}
-        rated_results: list[RatedRoundResult] = []
+        # Every player that appears in a completed round's results — INCLUDING rows
+        # gated out below as tainted/unranked. A player who participated but has no
+        # surviving ranked round must still be shown (zero win rate), so the board
+        # never silently drops an active player (the "6 active players, 5 rows" bug).
+        participant_pvids: dict[Any, set] = {}
+        # (player_id, round_id) -> best win score for that player in that round, so
+        # a multi-episode round contributes one per-round total per player and the
+        # win-rate aggregation is over ROUNDS, not raw result rows.
+        round_score: dict[tuple[Any, Any], float] = {}
+        # Parallel map of episodes the player PLAYED in that round, used as the
+        # win-rate denominator (one entry per (player, round), matching the row
+        # whose win score we keep).
+        round_episodes: dict[tuple[Any, Any], int] = {}
+        pvids_by_player: dict[Any, set] = {}
         for result in ctx.round_results:
             if result.round_id not in completed_ids:
                 continue
+            # Record the participant even for tainted rows so they remain visible.
+            name_by_player[result.player_id] = result.player_name
+            participant_pvids.setdefault(result.player_id, set()).add(result.policy_version_id)
+            # Skip tainted/unranked rows (RANKED_SCORE_COUNT <= 0 marks a -100
+            # lobby-taint or a no-real-seat round) for SCORING only.
             if int(result.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0:
                 continue
-            player_by_policy[result.policy_version_id] = result.player_id
-            name_by_player[result.player_id] = result.player_name
-            rated_results.append(
-                RatedRoundResult(
-                    round_id=result.round_id,
-                    policy_version_id=result.policy_version_id,
-                    player_id=result.player_id,
-                    rank=result.rank,
-                    score=result.score,
+            pvids_by_player.setdefault(result.player_id, set()).add(result.policy_version_id)
+            key = (result.player_id, result.round_id)
+            prior = round_score.get(key)
+            if prior is None or result.score > prior:
+                round_score[key] = result.score
+                round_episodes[key] = int(
+                    result.result_metadata.get(COMPLETED_EPISODE_COUNT_METADATA_KEY, 0)
                 )
-            )
 
-        ranking = rank_by_mmr(
-            completed_round_ids_oldest_first=oldest_first,
-            round_results=rated_results,
-        )
-        if not ranking.by_policy:
+        if not participant_pvids:
             return []
 
         ranks_by, scores_by = self._mmr_recent_round_lookup(ctx, completed_ids)
@@ -1177,100 +1195,110 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 for round_row in ctx.recent_rounds
             ]
 
-        return self._mmr_board_from_ranking(ranking, name_by_player, recent)
+        # Ensure every participant carries their policy versions, even those with
+        # only tainted rounds (so a zero-row player still shows their policies).
+        for player_id, pvids in participant_pvids.items():
+            pvids_by_player.setdefault(player_id, set()).update(pvids)
 
-    def _mmr_board_from_ranking(
+        return self._win_total_board(
+            round_score,
+            name_by_player,
+            pvids_by_player,
+            recent,
+            round_episodes,
+            participants=set(participant_pvids),
+        )
+
+    def _win_total_board(
         self,
-        ranking,
+        round_score: dict[tuple[Any, Any], float],
         name_by_player: dict[Any, str | None],
+        pvids_by_player: dict[Any, set],
         recent,
+        round_episodes: dict[tuple[Any, Any], int] | None = None,
+        participants: set | None = None,
     ) -> list[DivisionLeaderboardSnapshot]:
-        """Collapse the per-policy MMR ranking to the player-keyed Competition board.
+        """Collapse per-(player, round) win scores into the all-time WIN-RATE board.
 
         Single source of truth for the board shape so ``rank_division`` (full
         history, with recent-round strips) and ``_complete_competition_round``
         (replayed history, ``recent`` returns None) emit IDENTICAL standings —
-        which is what stops the leaderboard from flip-flopping between the MMR
-        board and the win-count round results.
+        which is what keeps both platform writers persisting the SAME board (no
+        flip). ``round_score`` maps (player_id, round_id) -> the episodes that
+        player WON in the round; ``round_episodes`` maps the same key -> episodes
+        the player PLAYED in the round.
 
-        A player's row is their best out-of-placement policy version (falling back
-        to their best in-placement policy when none has cleared placement).
+        ``participants`` lists every player who took part in a completed round,
+        including those whose only rounds were tainted/unranked. Such players are
+        shown with a 0 win rate (and 0 rounds played) rather than being dropped, so
+        the board never hides an active player.
+
+        The displayed ``score`` is the player's all-time WIN RATE — total episodes
+        won divided by total episodes played — always a number in ``[0, 1]``. A
+        player with no played episodes scores 0. ``rounds_played`` is still the
+        number of rounds the player appears in.
         """
-        best_by_player: dict[Any, Any] = {}
-        agg_by_player: dict[Any, dict] = {}
-        for policy in ranking.by_policy:
-            player_id = policy.player_id
-            agg = agg_by_player.setdefault(
-                player_id,
-                {
-                    "wins": 0,
-                    "losses": 0,
-                    "games_played": 0,
-                    "pvids": set(),
-                    "name": name_by_player.get(player_id),
-                },
+        round_episodes = round_episodes or {}
+        wins_total: dict[Any, float] = {}
+        episodes_total: dict[Any, int] = {}
+        rounds_played: dict[Any, int] = {}
+        # Seed every known participant at zero so a player who took part but earned
+        # no ranked round still gets a row (win rate 0, 0 rounds played).
+        for player_id in participants or set():
+            wins_total.setdefault(player_id, 0.0)
+            episodes_total.setdefault(player_id, 0)
+            rounds_played.setdefault(player_id, 0)
+        for (player_id, round_id), score in round_score.items():
+            wins_total[player_id] = wins_total.get(player_id, 0.0) + score
+            episodes_total[player_id] = episodes_total.get(player_id, 0) + int(
+                round_episodes.get((player_id, round_id), 0)
             )
-            agg["wins"] += policy.wins
-            agg["losses"] += policy.losses
-            agg["games_played"] += policy.games_played
-            agg["pvids"].add(policy.policy_version_id)
+            rounds_played[player_id] = rounds_played.get(player_id, 0) + 1
 
-            current = best_by_player.get(player_id)
-            # Prefer an out-of-placement policy; among same placement state, prefer
-            # higher MMR. ``rank_by_mmr`` already sorted by (-mmr, in_placement),
-            # so the first policy seen per (player, placement-state) is its best.
-            if current is None:
-                best_by_player[player_id] = policy
-            elif current.in_placement and not policy.in_placement:
-                best_by_player[player_id] = policy
-            elif current.in_placement == policy.in_placement and policy.mmr > current.mmr:
-                best_by_player[player_id] = policy
+        def _win_rate(player_id: Any) -> float:
+            played = episodes_total.get(player_id, 0)
+            if played <= 0:
+                return 0.0
+            # Clamp to [0, 1]: wins are capped at 1 per played episode upstream,
+            # so this only guards against malformed data.
+            return max(0.0, min(1.0, wins_total.get(player_id, 0.0) / played))
 
-        # Player MMR = their representative policy's MMR. Out-of-placement players
-        # (the representative policy cleared placement) sort first by descending
-        # MMR; in-placement players sort after, unranked.
-        def sort_key(item):
-            player_id, policy = item
-            return (policy.in_placement, -policy.mmr, name_by_player.get(player_id) or "", str(player_id))
-
-        ordered = sorted(best_by_player.items(), key=sort_key)
+        # Rank by descending FULL-PRECISION win rate (the same number shown in the
+        # WIN% column), with a single deterministic tiebreak that is IDENTICAL in
+        # both publishing paths. ``rank_division`` has player names but the
+        # round-complete path (``_competition_win_leaderboards``) intentionally does
+        # not store them (the platform resolves names live), so a name-based
+        # tiebreak would order tied players differently between the two writers and
+        # flip the board. We therefore tiebreak ONLY on the stable player id, which
+        # both paths share — keeping the scheduling tick and RoundComplete in lockstep
+        # and the rank order exactly descending by the displayed win rate.
+        ordered = sorted(
+            wins_total,
+            key=lambda pid: (-_win_rate(pid), str(pid)),
+        )
         snapshots: list[DivisionLeaderboardSnapshot] = []
-        next_rank = 1
-        for player_id, policy in ordered:
-            agg = agg_by_player[player_id]
-            ranked = not policy.in_placement
-            display_rank = next_rank if ranked else None
-            if ranked:
-                next_rank += 1
+        for rank, player_id in enumerate(ordered, start=1):
+            win_rate = _win_rate(player_id)
             _emit_decision_log(
                 {
                     "division": "Competition",
-                    "decision": "MMR_RANK",
+                    "decision": "WIN_RATE_RANK",
                     "player_id": str(player_id) if player_id is not None else None,
-                    "representative_policy_version_id": str(policy.policy_version_id),
-                    "rank": display_rank,
-                    "mmr": round(policy.mmr, 4),
-                    "mu": round(policy.mu, 4),
-                    "sigma": round(policy.sigma, 4),
-                    "wins": agg["wins"],
-                    "losses": agg["losses"],
-                    "games_played": agg["games_played"],
-                    "in_placement": not ranked,
-                    "placement_min_games": MMR_PLACEMENT_MIN_GAMES,
+                    "rank": rank,
+                    "win_rate": win_rate,
+                    "wins": wins_total.get(player_id, 0.0),
+                    "episodes_played": episodes_total.get(player_id, 0),
+                    "rounds_played": rounds_played.get(player_id, 0),
                 }
             )
             snapshots.append(
                 DivisionLeaderboardSnapshot(
                     player_id=player_id,
-                    player_name=agg["name"],
-                    # DivisionLeaderboardSnapshot.rank is non-optional; in-placement
-                    # players sort last and are tagged in recent_rounds/score. Use 0
-                    # as the sentinel "unranked" rank (UI reads in_placement via the
-                    # MMR score + games; rank 0 never collides with 1-based ranks).
-                    rank=display_rank if display_rank is not None else 0,
-                    score=policy.mmr,
-                    rounds_played=agg["games_played"],
-                    policy_version_ids=agg["pvids"],
+                    player_name=name_by_player.get(player_id),
+                    rank=rank,
+                    score=win_rate,
+                    rounds_played=rounds_played.get(player_id, 0),
+                    policy_version_ids=set(pvids_by_player.get(player_id, set())),
                     recent_rounds=recent(player_id),
                 )
             )
@@ -1281,9 +1309,9 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     ) -> tuple[dict, dict]:
         """Per-(round, player) rank/score for the recent-rounds strip.
 
-        Uses the round's own recorded finishing rank/score (the winning-player
+        Uses the round's own recorded finishing rank/score (the won-episode
         points) so the recent strip mirrors what happened each round, independent
-        of the cumulative MMR ordering.
+        of the all-time win-rate ordering.
         """
         best: dict[tuple, Any] = {}
         for result in ctx.round_results:
@@ -1296,6 +1324,53 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         ranks_by = {key: r.rank for key, r in best.items()}
         scores_by = {key: r.score for key, r in best.items()}
         return ranks_by, scores_by
+
+
+def _win_rate_leaderboard(
+    *,
+    division_id: UUID,
+    entries: list[CommissionerDivisionLeaderboardEntry],
+) -> CommissionerDivisionLeaderboard:
+    """Build the published Competition board with a WIN-RATE-labeled score column.
+
+    Mirrors the vendored ``division_leaderboard_from_entries`` shape (so the
+    platform persists it verbatim instead of re-synthesizing it), but labels the
+    score column/view "Win %" since the Competition ``score`` is a win rate, not a
+    raw point total. The underlying ``score`` value is unchanged (a fraction in
+    ``[0, 1]``); only the displayed header differs.
+    """
+    view = CommissionerDivisionLeaderboardView(
+        key="score",
+        title="Win %",
+        axis_values={"metric": "score", "timeframe": "legacy"},
+        columns=[
+            CommissionerDivisionLeaderboardColumn(key="rank", label="Rank", value_type="integer", sort="asc"),
+            CommissionerDivisionLeaderboardColumn(key="score", label="Win %", value_type="number", sort="desc"),
+            CommissionerDivisionLeaderboardColumn(
+                key="rounds_played", label="Rounds Played", value_type="integer"
+            ),
+        ],
+        rows=[
+            CommissionerDivisionLeaderboardRow(
+                subject_type="player",
+                subject_id=entry.player_id,
+                subject_name=entry.player_name,
+                values={"rank": entry.rank, "score": entry.score, "rounds_played": entry.rounds_played},
+                policy_version_ids=entry.policy_version_ids,
+                recent_rounds=entry.recent_rounds,
+            )
+            for entry in entries
+        ],
+    )
+    return CommissionerDivisionLeaderboard(
+        division_id=division_id,
+        default_view_key="score",
+        axes=[
+            CommissionerDivisionLeaderboardAxis(key="metric", label="Metric"),
+            CommissionerDivisionLeaderboardAxis(key="timeframe", label="Timeframe"),
+        ],
+        views=[view],
+    )
 
 
 def _competition_division_id(round_start: CommissionerRoundStart) -> UUID | None:
