@@ -72,7 +72,9 @@ const
   ViewerWalk = rgbx(46, 61, 75, 255)
   ViewerWall = rgbx(86, 50, 56, 255)
   ViewerUnknown = rgbx(22, 26, 36, 255)
-  BotReceiveTimeoutMs = 1000
+  BotReceiveTimeoutMs = 250
+  PacketWaitLogAfterMs = 1000
+  PacketWaitLogEveryMs = 1000
   RadarTaskColor = 8'u8
   RadarPeripheryMargin = 1
   RadarMatchTolerance = 2
@@ -472,6 +474,11 @@ type
     framesDropped: int
     skippedFrames: int
     lastDropLogTick: int
+    waitingForPacket: bool
+    packetWaitStart: MonoTime
+    packetWaitMs: int
+    packetWaitTimeouts: int
+    packetWaitLogMs: int
     lastLoggedRoom: string
     visibleRoomNames: array[PlayerColorCount, string]
     bedrockConfigLogged: bool
@@ -4107,6 +4114,68 @@ proc logBlock(bot: Bot, title, text: string) =
       bot.logEvent(title & " | " & line)
   bot.logEvent(title & " end")
 
+proc packetWaitText(bot: Bot): string =
+  ## Returns one human-readable packet wait state.
+  if not bot.waitingForPacket:
+    return "receiving packets"
+  "waiting for packet, no frame for " & $bot.packetWaitMs &
+    "ms, timeouts=" & $bot.packetWaitTimeouts
+
+proc clearPacketWait(bot: var Bot) =
+  ## Clears packet wait state after a frame arrives.
+  if bot.waitingForPacket and bot.packetWaitMs >= PacketWaitLogAfterMs:
+    bot.logEvent(
+      "notsus packet stream resumed: no frame for " &
+        $bot.packetWaitMs & "ms timeouts=" & $bot.packetWaitTimeouts
+    )
+  bot.waitingForPacket = false
+  bot.packetWaitMs = 0
+  bot.packetWaitTimeouts = 0
+  bot.packetWaitLogMs = -1
+
+proc notePacketTimeout(bot: var Bot) =
+  ## Records one receive timeout while waiting for the next frame packet.
+  let now = getMonoTime()
+  if not bot.waitingForPacket:
+    bot.waitingForPacket = true
+    bot.packetWaitStart = now
+    bot.packetWaitTimeouts = 0
+    bot.packetWaitLogMs = -1
+  inc bot.packetWaitTimeouts
+  bot.packetWaitMs =
+    max(0, int((now - bot.packetWaitStart).inMilliseconds))
+  bot.intent = bot.packetWaitText()
+  bot.thought(bot.intent)
+  if bot.packetWaitMs < PacketWaitLogAfterMs:
+    return
+  if bot.packetWaitLogMs >= 0 and
+      bot.packetWaitMs - bot.packetWaitLogMs < PacketWaitLogEveryMs:
+    return
+  bot.packetWaitLogMs = bot.packetWaitMs
+  let expectedPackets =
+    max(1, (bot.packetWaitMs * sim.TargetFps) div 1000)
+  bot.logEvent(
+    "notsus waiting for packet: no frame for " &
+      $bot.packetWaitMs & "ms expectedPackets=" & $expectedPackets &
+      " timeouts=" & $bot.packetWaitTimeouts &
+      " frameTick=" & $bot.frameTick &
+      " serverTick=" & $bot.serverTick &
+      " role=" & bot.role.roleName() &
+      " voting=" & $bot.voting &
+      " interstitial=" & $bot.interstitial &
+      " text=" & (
+        if bot.interstitialText.len > 0:
+          bot.interstitialText
+        elif bot.protocolInterstitialText.len > 0:
+          bot.protocolInterstitialText
+        else:
+          "none"
+      ) &
+      " lastMask=" & inputMaskSummary(bot.lastMask) &
+      " framesDropped=" & $bot.framesDropped &
+      " skipped=" & $bot.skippedFrames
+  )
+
 proc roomLabelAt(bot: Bot, x, y: int): string =
   ## Returns a readable room label for one world point.
   let room = bot.roomAt(x, y)
@@ -7348,6 +7417,7 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.resetTaskerTracking()
   result.lastTaskRadarResetTick = -TaskRadarResetTicks
   result.lastDropLogTick = -1_000_000
+  result.packetWaitLogMs = -1
   when not defined(botHeadless):
     result.buildPatchEntries()
   result.cameraX = result.sim.buttonCameraX()
@@ -7956,6 +8026,7 @@ when not defined(italkalotLibrary) and not defined(botHeadless):
       "frames buffered: " & $bot.frameBufferLen &
         " dropped=" & $bot.framesDropped &
         " total=" & $bot.skippedFrames & "\n" &
+      "packet: " & bot.packetWaitText() & "\n" &
       "interstitial text: " &
         (if bot.interstitialText.len > 0: bot.interstitialText else: "none") &
         "\n" &
@@ -8155,6 +8226,10 @@ when not defined(italkalotLibrary):
         bot.resetProtocolMap()
         bot.frameBufferLen = 0
         bot.framesDropped = 0
+        bot.waitingForPacket = false
+        bot.packetWaitMs = 0
+        bot.packetWaitTimeouts = 0
+        bot.packetWaitLogMs = -1
         connected = true
         everConnected = true
 
@@ -8183,6 +8258,7 @@ when not defined(italkalotLibrary):
                 receiveTimeout()
               )
           if not receivedFrame:
+            bot.notePacketTimeout()
             continue
           bot.frameTick += client.frameAdvance
           bot.frameBufferLen = client.frameBufferLen
@@ -8202,6 +8278,7 @@ when not defined(italkalotLibrary):
           else:
             profileBlock "update protocol detections":
               bot.updateProtocolDetections(client)
+          bot.clearPacketWait()
           var nextMask = 0'u8
           if gui:
             nextMask = bot.decideNextMask()

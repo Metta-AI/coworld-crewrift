@@ -28,10 +28,9 @@ const
   VersionChartRight = 16
   VersionChartTop = 22
   VersionChartBottom = 44
-  VersionChartScoreMin = ReportScoreMin
-  VersionChartScoreMax = ReportScoreMax
-  VersionChartScoreStep = ReportScoreTickStep
-  VersionChartDefaultMaxVersion = 50
+  VersionChartScoreMin = 0.0
+  VersionChartScoreMax = 1.0
+  VersionChartScoreStep = 0.1
   PreloadFonts = [
     "ETBembo-RomanOSF.otf",
     "ETBembo-DisplayItalic.otf",
@@ -1019,6 +1018,18 @@ proc numberText(value: float, decimals = 2): string =
     result.setLen(result.len - 1)
   if result.len == 0 or result == "-0":
     result = "0"
+
+proc fixedNumberText(value: float, decimals: int): string =
+  ## Formats one floating-point value with fixed decimal digits.
+  result = value.formatFloat(ffDecimal, decimals)
+  if result.len > 0 and result[0] == '-':
+    var isZero = true
+    for i in 1 ..< result.len:
+      if result[i] != '0' and result[i] != '.':
+        isZero = false
+        break
+    if isZero:
+      result = result[1 .. ^1]
 
 proc durationText(seconds: float): string =
   ## Formats a wall-clock duration for run summaries.
@@ -2629,12 +2640,13 @@ proc averageScore(average: VersionAverage): float =
     return 0.0
   average.totalScore / average.games.float
 
-proc versionChartX(version, maxVersion: int): int =
+proc versionChartX(version, minVersion, maxVersion: int): int =
   ## Returns the SVG x coordinate for one Notsus version.
   let
     plotWidth = VersionChartWidth - VersionChartLeft - VersionChartRight
-    range = max(1, maxVersion - 1)
-    scaled = ((version - 1).float / range.float) * plotWidth.float
+    range = max(1, maxVersion - minVersion)
+    scaled =
+      ((version - minVersion).float / range.float) * plotWidth.float
   VersionChartLeft + int(scaled + 0.5)
 
 proc versionChartY(score: float): int =
@@ -2656,7 +2668,8 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
   ## Renders average Notsus score progression by version.
   var
     averages: seq[VersionAverage]
-    maxVersion = VersionChartDefaultMaxVersion
+    minVersion = high(int)
+    maxVersion = low(int)
   for meta in metas:
     let
       focus = meta.focusSummaryFor()
@@ -2666,6 +2679,8 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
     if version <= 0 or games <= 0:
       continue
     averages.addVersionAverage(version, score, games)
+    if version < minVersion:
+      minVersion = version
     if version > maxVersion:
       maxVersion = version
   if averages.len == 0:
@@ -2682,27 +2697,26 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
   result.add "\" viewBox=\"0 0 " & $VersionChartWidth & " "
   result.add $VersionChartHeight
   result.add "\" role=\"img\" aria-label=\"Notsus average score by version\">\n"
-  for score in countup(
-    VersionChartScoreMin,
-    VersionChartScoreMax,
-    VersionChartScoreStep
-  ):
-    let y = versionChartY(score.float)
+  var score = VersionChartScoreMin
+  while score <= VersionChartScoreMax + 0.000001:
+    let y = versionChartY(score)
     result.add "<line class=\"version-chart-grid\" x1=\""
     result.add $VersionChartLeft & "\" y1=\"" & $y & "\" x2=\""
     result.add $plotRight & "\" y2=\"" & $y & "\"></line>\n"
     result.add "<text x=\"" & $(VersionChartLeft - 10) & "\" y=\""
     result.add $(y + 4) & "\" text-anchor=\"end\">"
-    result.add ($score).htmlEscape() & "</text>\n"
+    result.add numberText(score, 4).htmlEscape() & "</text>\n"
+    score += VersionChartScoreStep
   result.add "<path class=\"version-chart-axis\" d=\"M "
   result.add $VersionChartLeft & " " & $VersionChartTop
   result.add " V " & $plotBottom & " H " & $plotRight & "\"></path>\n"
-  for version in 1 .. maxVersion:
-    let x = versionChartX(version, maxVersion)
+  for version in minVersion .. maxVersion:
+    let x = versionChartX(version, minVersion, maxVersion)
     result.add "<line class=\"version-chart-axis\" x1=\"" & $x
     result.add "\" y1=\"" & $plotBottom & "\" x2=\"" & $x
     result.add "\" y2=\"" & $(plotBottom + 4) & "\"></line>\n"
-    if version == 1 or version mod 5 == 0 or version == maxVersion:
+    if version == minVersion or version mod 5 == 0 or
+      version == maxVersion:
       result.add "<text x=\"" & $x & "\" y=\""
       result.add $(plotBottom + 24) & "\" text-anchor=\"middle\">v"
       result.add ($version).htmlEscape() & "</text>\n"
@@ -2714,7 +2728,7 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
   for average in averages:
     let
       score = average.averageScore()
-      x = versionChartX(average.version, maxVersion)
+      x = versionChartX(average.version, minVersion, maxVersion)
     if path.len == 0:
       bestScore = score
       bestY = versionChartY(score)
@@ -2730,7 +2744,7 @@ proc renderVersionProgressChart(metas: openArray[JsonNode]): string =
   for average in averages:
     let
       score = average.averageScore()
-      x = versionChartX(average.version, maxVersion)
+      x = versionChartX(average.version, minVersion, maxVersion)
       y = versionChartY(score)
       title = "notsus:v" & $average.version & " avg " &
         numberText(score, 2) & " over " & $average.games & " games"
@@ -2943,10 +2957,17 @@ proc runScoreChart(
     return ""
   result.add "<section>\n"
   result.add "<h2>Scores by version</h2>\n"
+  let scoreScale = ScoreChartScale(
+    minScore: 0.0,
+    maxScore: 1.0,
+    tickStep: 0.1,
+    histogramStep: 0.01
+  )
   result.add renderScoreChart(
     rows,
     points,
-    "No completed run scores yet."
+    "No completed run scores yet.",
+    scoreScale
   )
   result.add "</section>\n"
 
@@ -2978,8 +2999,8 @@ proc writeMainIndex(config: ToolConfig) =
       playerB = focus.opponentLabel
       avgA = focus.avg
       avgB = focus.opponentAvg
-      scoreA = numberText(avgA, 2)
-      scoreB = numberText(avgB, 2)
+      scoreA = fixedNumberText(avgA, 4)
+      scoreB = fixedNumberText(avgB, 4)
       wonA = avgA > avgB + ScoreEpsilon
       wins = focus.wins
       scored = focus.scored

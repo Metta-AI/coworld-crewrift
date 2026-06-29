@@ -1328,15 +1328,15 @@ proc winRate(stats: PolicyStats): float =
     return 0.0
   stats.wins.float / stats.games.float * 100.0
 
-proc winRateX(rate: float): int =
+proc winRateX(rate, axisMax: float): int =
   ## Returns one win-rate x coordinate.
   var clamped = rate
   if clamped < 0.0:
     clamped = 0.0
-  if clamped > 100.0:
-    clamped = 100.0
+  if clamped > axisMax:
+    clamped = axisMax
   WinRateLeftPadding + int(
-    clamped / 100.0 * WinRatePlotWidth.float + 0.5
+    clamped / axisMax * WinRatePlotWidth.float + 0.5
   )
 
 proc winRateSlotX(slot: int): int =
@@ -1345,6 +1345,7 @@ proc winRateSlotX(slot: int): int =
 
 proc winRateLabelPosition(
   rate: float,
+  axisMax: float,
   slot,
   level: int
 ): tuple[
@@ -1358,23 +1359,23 @@ proc winRateLabelPosition(
     slotX = slot.winRateSlotX().float
     levelOffset = WinRateBaseStem.float +
       level.float * WinRateLevelStep.float
-  result.x = rate.winRateX().float
+  result.x = rate.winRateX(axisMax).float
   result.elbowY = -levelOffset - (result.x - slotX)
   result.labelX = result.x + WinRateStemDiagonal.float
   result.labelY = result.elbowY - WinRateStemDiagonal.float
 
-proc closestWinRateSlot(rate: float): int =
+proc closestWinRateSlot(rate, axisMax: float): int =
   ## Returns the rightmost fixed slot under one anchor point.
-  let x = rate.winRateX()
+  let x = rate.winRateX(axisMax)
   result = (x - WinRateLeftPadding) div WinRateSlotStep
   if result < WinRateMinSlot:
     result = WinRateMinSlot
   elif result > WinRateMaxSlot:
     result = WinRateMaxSlot
 
-proc minWinRateSlot(rate: float): int =
+proc minWinRateSlot(rate, axisMax: float): int =
   ## Returns the leftmost slot still under one anchor point.
-  let x = rate.winRateX()
+  let x = rate.winRateX(axisMax)
   result = (x - WinRateLeftPadding - WinRateSlotReach) div
     WinRateSlotStep
   if result < WinRateMinSlot:
@@ -1434,13 +1435,23 @@ proc winRatePoints(
       else:
         cmp(a.id, b.id)
 
-proc assignWinRateLevels(points: var seq[WinRatePoint]) =
+proc winRateAxisMax(points: openArray[WinRatePoint]): int =
+  ## Returns the visible win-rate ceiling rounded up to ten percent.
+  result = 10
+  for point in points:
+    while result < 100 and result.float < point.rate - ScoreEpsilon:
+      result += 10
+
+proc assignWinRateLevels(
+  points: var seq[WinRatePoint],
+  axisMax: float
+) =
   ## Assigns fixed 45-degree slots from right to left.
   var occupied: seq[int]
   for i in 0 ..< points.len:
     let
-      startSlot = points[i].rate.closestWinRateSlot()
-      minSlot = points[i].rate.minWinRateSlot()
+      startSlot = points[i].rate.closestWinRateSlot(axisMax)
+      minSlot = points[i].rate.minWinRateSlot(axisMax)
       chosen = occupied.chooseWinRateSlot(startSlot, minSlot)
     points[i].slot = chosen
     points[i].level = 0
@@ -1452,12 +1463,16 @@ proc maxWinRateLevel(points: openArray[WinRatePoint]): int =
     if point.level > result:
       result = point.level
 
-proc minWinRateLabelY(points: openArray[WinRatePoint]): int =
+proc minWinRateLabelY(
+  points: openArray[WinRatePoint],
+  axisMax: float
+): int =
   ## Returns the highest relative y coordinate used by win-rate labels.
   for point in points:
     let
       position = winRateLabelPosition(
         point.rate,
+        axisMax,
         point.slot,
         point.level
       )
@@ -1479,10 +1494,11 @@ proc renderWinRateChart(
   var points = winRatePoints(policies, stats)
   if points.len == 0:
     return "<p>No completed win rates yet.</p>\n"
-  points.assignWinRateLevels()
+  let axisMax = points.winRateAxisMax()
+  points.assignWinRateLevels(axisMax.float)
   let
     maxLevel = points.maxWinRateLevel()
-    minLabelY = points.minWinRateLabelY()
+    minLabelY = points.minWinRateLabelY(axisMax.float)
     plotEnd = WinRateLeftPadding + WinRatePlotWidth
     axisY = max(
       WinRateTopPadding + WinRateBaseStem +
@@ -1499,13 +1515,13 @@ proc renderWinRateChart(
   result.add "<path class=\"winrate-axis\" d=\"M "
   result.add $WinRateLeftPadding & " " & $axisY
   result.add " H " & $plotEnd
-  for tick in countup(0, 100, 10):
-    let x = tick.float.winRateX()
+  for tick in countup(0, axisMax, 10):
+    let x = tick.float.winRateX(axisMax.float)
     result.add " M " & $x & " " & $axisY
     result.add " v " & $WinRateTickHeight
   result.add "\" />\n"
-  for tick in countup(0, 100, 10):
-    let x = tick.float.winRateX()
+  for tick in countup(0, axisMax, 10):
+    let x = tick.float.winRateX(axisMax.float)
     result.add "<text class=\"winrate-tick\" x=\"" & $x
     result.add "\" y=\"" & $(axisY + 28)
     result.add "\" text-anchor=\"middle\">"
@@ -1515,6 +1531,7 @@ proc renderWinRateChart(
     let
       position = winRateLabelPosition(
         point.rate,
+        axisMax.float,
         point.slot,
         point.level
       )
