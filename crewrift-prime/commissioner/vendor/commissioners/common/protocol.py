@@ -176,6 +176,10 @@ class DivisionLeaderboardEntry(BaseModel):
     rounds_played: int
     policy_version_ids: set[UUID] = Field(default_factory=set)
     recent_rounds: list[dict[str, Any]] | None = None
+    # All-time episode win/played totals (see DivisionLeaderboardSnapshot). These
+    # are surfaced onto the published row's `values` so they survive to the API.
+    episode_wins: float | None = None
+    episodes_played: int | None = None
 
 
 LeaderboardValue = str | int | float | bool | None

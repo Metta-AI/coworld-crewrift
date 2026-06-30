@@ -392,6 +392,14 @@ class DivisionLeaderboardSnapshot(BaseModel):
     rounds_played: int
     policy_version_ids: set[UUID] = Field(default_factory=set)
     recent_rounds: list[LeaderboardRecentRoundPublic] | None = None
+    # All-time episode win/played totals across ALL of the player's completed
+    # rounds (NOT just the recent-rounds strip). The Competition Win % is
+    # ``episode_wins / episodes_played`` over these totals, so a player who won
+    # episodes only in rounds older than the recent-rounds window still shows a
+    # nonzero win rate. ``None`` for non-Competition boards that do not track
+    # episode counts.
+    episode_wins: float | None = None
+    episodes_played: int | None = None
 
 
 class _LeaderboardAgg(BaseModel):
