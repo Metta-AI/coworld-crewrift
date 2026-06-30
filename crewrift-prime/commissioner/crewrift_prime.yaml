@@ -39,8 +39,8 @@ defaults:
   min_entries_to_start: 1
   stage:
     label: Round
-    episodes: 12
-    min_episodes_per_entrant: 12
+    episodes: 50
+    min_episodes_per_entrant: 50
 
 divisions:
   competition:
