@@ -159,16 +159,16 @@ def create_app(commissioner: Commissioner) -> FastAPI:
                 )
             ]
             round_complete_sent = True
+            ordered_completion = await asyncio.to_thread(
+                complete_round_for_round_start,
+                commissioner,
+                round_start,
+                ordered_results,
+                schedule.episodes,
+                list(failed_by_request_id.values()),
+            )
             async with send_lock:
-                await websocket.send_json(
-                    complete_round_for_round_start(
-                        commissioner,
-                        round_start,
-                        ordered_results,
-                        schedule.episodes,
-                        list(failed_by_request_id.values()),
-                    ).to_json()
-                )
+                await websocket.send_json(ordered_completion.to_json())
 
         async def send_episode_after_delay(episode: EpisodeRequest, delay_seconds: float) -> None:
             if delay_seconds > 0:
@@ -229,7 +229,7 @@ def create_app(commissioner: Commissioner) -> FastAPI:
                     round_start = RoundStart.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    schedule = schedule_episodes_for_round_start(commissioner, round_start)
+                    schedule = await asyncio.to_thread(schedule_episodes_for_round_start, commissioner, round_start)
                     expected_request_ids = {episode.request_id for episode in schedule.episodes}
                     variants_by_id = {variant.id: variant for variant in round_start.variants}
                     if throttle_enabled():
@@ -242,58 +242,69 @@ def create_app(commissioner: Commissioner) -> FastAPI:
                             schedule_episode_timeout(episode)
                     if not expected_request_ids:
                         round_complete_sent = True
+                        empty_completion = await asyncio.to_thread(
+                            complete_round_for_round_start,
+                            commissioner,
+                            round_start,
+                            [],
+                            schedule.episodes,
+                            [],
+                        )
                         async with send_lock:
-                            await websocket.send_json(
-                                complete_round_for_round_start(
-                                    commissioner,
-                                    round_start,
-                                    [],
-                                    schedule.episodes,
-                                    [],
-                                ).to_json()
-                            )
+                            await websocket.send_json(empty_completion.to_json())
                     continue
 
                 if msg_type == "schedule_rounds_request":
                     request = ScheduleRoundsRequest.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    await websocket.send_json(schedule_rounds_for_request(commissioner, request).to_json())
+                    response = await asyncio.to_thread(schedule_rounds_for_request, commissioner, request)
+                    await websocket.send_json(response.to_json())
                     continue
 
                 if msg_type == "league_migration_config_request":
                     request = LeagueMigrationConfigRequest.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    await websocket.send_json(league_migration_config_for_request(commissioner, request).to_json())
+                    response = await asyncio.to_thread(league_migration_config_for_request, commissioner, request)
+                    await websocket.send_json(response.to_json())
                     continue
 
                 if msg_type == "league_migration_request":
+                    # migrate_league runs the per-submission qualifier, which makes blocking
+                    # network calls + time.sleep polls lasting minutes. Running it inline would
+                    # starve this event loop so the WS ping/pong keepalive stops and the client
+                    # drops the socket mid-qualifier. Offload to a worker thread so the receive
+                    # coroutine keeps yielding and answering pings while the qualifier runs.
                     request = LeagueMigrationRequest.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    await websocket.send_json(migrate_league_for_request(commissioner, request).to_json())
+                    response = await asyncio.to_thread(migrate_league_for_request, commissioner, request)
+                    await websocket.send_json(response.to_json())
                     continue
 
                 if msg_type == "rank_division_request":
                     request = RankDivisionRequest.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    await websocket.send_json(rank_division_for_request(commissioner, request).to_json())
+                    response = await asyncio.to_thread(rank_division_for_request, commissioner, request)
+                    await websocket.send_json(response.to_json())
                     continue
 
                 if msg_type == "describe_division_request":
                     request = DescribeDivisionRequest.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    await websocket.send_json(describe_division_for_request(commissioner, request).to_json())
+                    response = await asyncio.to_thread(describe_division_for_request, commissioner, request)
+                    await websocket.send_json(response.to_json())
                     continue
 
                 if msg_type == "round_completed_request":
                     request = RoundCompletedRequest.model_validate(
                         {key: value for key, value in data.items() if key != "type"}
                     )
-                    await websocket.send_json(round_completed_for_request(commissioner, request).to_json())
+                    response = await asyncio.to_thread(round_completed_for_request, commissioner, request)
+                    await websocket.send_json(response.to_json())
                     continue
 
                 if msg_type == "episode_result":

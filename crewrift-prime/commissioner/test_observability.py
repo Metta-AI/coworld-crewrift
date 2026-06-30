@@ -9,12 +9,13 @@ Covers (event-driven rework):
     failure holds (no DQ),
   - ``migrate_league`` qualifies every submitted/qualifying membership and leaves
     competing memberships untouched,
-  - the Competition division scores by WINNING PLAYERS (1 pt per winning seat, by
-    role) and ranks cumulatively.
+  - the Competition division scores by WON EPISODES (1 pt per episode won, capped
+    at 1 per episode, role-agnostic) and ranks by all-time WIN RATE.
 
-The xp-request client and the replay parser are MOCKED — no network calls and no
-Nim engine are used. We inject a fake :class:`XpRequestClient` and monkeypatch the
-module's ``parse_replay_metrics`` so the gate is exercised end to end in-process.
+The xp-request client is MOCKED — no network calls. We inject a fake
+:class:`XpRequestClient` whose ``get_episode_results`` returns a scripted per-slot
+results JSON, so the gate is exercised end to end in-process WITHOUT any replay
+download or Nim engine.
 """
 
 from __future__ import annotations
@@ -47,7 +48,6 @@ from commissioners.common.protocol import (
 from commissioners.common.ruleset_strategy.config import load_ruleset_strategy_config_file
 
 from decision import DECISION_LOG_TAG
-import crewrift_prime_skill_commissioner as commissioner_module
 from crewrift_prime_skill_commissioner import (
     NUM_SEATS,
     CrewriftPrimeSkillCommissioner,
@@ -55,7 +55,6 @@ from crewrift_prime_skill_commissioner import (
     _looks_like_dispatch_failure,
 )
 from xp_request_client import EpisodeRow, XpRequestInfraError, XpRequestRun
-from replay_parser import ReplayParseError
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "crewrift_prime.yaml"
 _COMPETITION_DIV = UUID("ac000000-0000-0000-0000-000000000002")
@@ -103,21 +102,24 @@ class _FakeXpClient:
     """A stand-in for XpRequestClient that returns scripted runs (no network).
 
     Configure either ``run`` (an XpRequestRun to return) or ``run_error`` (an
-    exception to raise from ``run_qualifier``). ``download_replay`` returns the
-    configured bytes (used only as an opaque token; the parser is mocked).
+    exception to raise from ``run_qualifier``). ``get_episode_results`` returns the
+    configured per-slot results JSON (the ``results_schema`` payload the qualifier
+    reads from ``/jobs/{job_id}/artifacts/results``) or raises ``results_error`` to
+    exercise the infra-hold path.
     """
 
     def __init__(self, *, run: XpRequestRun | None = None, run_error: Exception | None = None,
-                 replay_bytes: bytes = b"replay", download_error: Exception | None = None,
+                 results: dict | None = None, results_error: Exception | None = None,
                  filler_ids: list[str] | None = None, filler_error: Exception | None = None) -> None:
         self._run = run
         self._run_error = run_error
-        self._replay_bytes = replay_bytes
-        self._download_error = download_error
+        self._results = results
+        self._results_error = results_error
         self._filler_ids = filler_ids or []
         self._filler_error = filler_error
         self.created: list[tuple[str, str]] = []
         self.filler_lookups: list[str] = []
+        self.results_lookups: list[str] = []
 
     def run_qualifier(self, *, division_id: str, policy_version_id: str, **_kw) -> XpRequestRun:
         self.created.append((division_id, policy_version_id))
@@ -132,10 +134,12 @@ class _FakeXpClient:
             raise self._filler_error
         return list(self._filler_ids)
 
-    def download_replay(self, replay_url: str, *, timeout=None) -> bytes:
-        if self._download_error is not None:
-            raise self._download_error
-        return self._replay_bytes
+    def get_episode_results(self, job_id: str) -> dict:
+        self.results_lookups.append(str(job_id))
+        if self._results_error is not None:
+            raise self._results_error
+        assert self._results is not None
+        return self._results
 
 
 class _FakeInterviewTransport:
@@ -187,11 +191,11 @@ def _wire_interview(commissioner, *, score: float = 0.9, answer: str = "Vote out
     commissioner._interview_llm = llm if llm is not None else _FakeInterviewLLM(score=score)
 
 
-def _completed_run(*, replay_url: str = "https://example.test/replay.z") -> XpRequestRun:
+def _completed_run(*, job_id: str = "job-1", replay_url: str = "https://example.test/replay.z") -> XpRequestRun:
     return XpRequestRun(
         xreq_id="xreq_test",
         status="completed",
-        episodes=[EpisodeRow(id="ereq_1", status="completed", episode_id="ep1", replay_url=replay_url)],
+        episodes=[EpisodeRow(id="ereq_1", status="completed", episode_id="ep1", replay_url=replay_url, job_id=job_id)],
     )
 
 
@@ -221,13 +225,10 @@ class QualifySubmissionTest(unittest.TestCase):
     """The core event-driven loop: xp request -> parse replay -> evaluate -> event."""
 
     def _run_qualify(self, commissioner, membership, monkey_game) -> object:
-        # Mock the replay parser so no Nim engine / network is touched.
-        original = commissioner_module.parse_replay_metrics
-        commissioner_module.parse_replay_metrics = lambda _bytes, num_seats=NUM_SEATS: monkey_game
-        try:
-            return commissioner.qualify_submission(membership, _COMPETITION_DIV)
-        finally:
-            commissioner_module.parse_replay_metrics = original
+        # Feed the scripted results JSON through the fake client's
+        # get_episode_results — no replay download or Nim engine is touched.
+        commissioner._xp_client._results = monkey_game
+        return commissioner.qualify_submission(membership, _COMPETITION_DIV)
 
     def test_passing_replay_promotes_to_competition(self) -> None:
         commissioner = _commissioner()
@@ -334,20 +335,41 @@ class QualifySubmissionTest(unittest.TestCase):
         self.assertNotEqual(str(event.status), "disqualified")
         self.assertEqual(event.evidence[0].type, "crewrift_prime_dispatch_failure")
 
-    def test_replay_parse_failure_holds_not_dq(self) -> None:
+    def test_results_fetch_failure_holds_not_dq(self) -> None:
         commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
+        # A completed episode whose results JSON can't be fetched -> infra hold.
+        commissioner._xp_client = _FakeXpClient(
+            run=_completed_run(),
+            results_error=XpRequestInfraError("artifact 503"),
+        )
         membership = _membership("submitted")
-        original = commissioner_module.parse_replay_metrics
+        event = commissioner.qualify_submission(membership, _COMPETITION_DIV)
+        self.assertEqual(str(event.status), "qualifying")
+        self.assertNotEqual(str(event.status), "disqualified")
 
-        def _boom(_bytes, num_seats=NUM_SEATS):
-            raise ReplayParseError("expander unavailable")
+    def test_results_missing_per_slot_arrays_holds_not_dq(self) -> None:
+        commissioner = _commissioner()
+        # A completed episode whose results JSON lacks the per-slot skill arrays
+        # (e.g. only scores) -> infra hold, never DQ.
+        commissioner._xp_client = _FakeXpClient(
+            run=_completed_run(),
+            results={"scores": [1.0] * NUM_SEATS},
+        )
+        membership = _membership("submitted")
+        event = commissioner.qualify_submission(membership, _COMPETITION_DIV)
+        self.assertEqual(str(event.status), "qualifying")
+        self.assertNotEqual(str(event.status), "disqualified")
 
-        commissioner_module.parse_replay_metrics = _boom
-        try:
-            event = commissioner.qualify_submission(membership, _COMPETITION_DIV)
-        finally:
-            commissioner_module.parse_replay_metrics = original
+    def test_completed_episode_without_job_id_holds_not_dq(self) -> None:
+        commissioner = _commissioner()
+        run = XpRequestRun(
+            xreq_id="xreq_test",
+            status="completed",
+            episodes=[EpisodeRow(id="ereq_1", status="completed", episode_id="ep1", replay_url=None, job_id=None)],
+        )
+        commissioner._xp_client = _FakeXpClient(run=run, results=_good_combined_game())
+        membership = _membership("submitted")
+        event = commissioner.qualify_submission(membership, _COMPETITION_DIV)
         self.assertEqual(str(event.status), "qualifying")
         self.assertNotEqual(str(event.status), "disqualified")
 
@@ -365,7 +387,7 @@ class QualifySubmissionTest(unittest.TestCase):
 class MigrateLeagueQualificationTest(unittest.TestCase):
     def test_migrate_league_qualifies_submitted_only(self) -> None:
         commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run())
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
         _wire_interview(commissioner)
         league_id = uuid4()
         submitted = _membership("submitted")
@@ -380,12 +402,7 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
             divisions=_division_snapshots(league_id),
             memberships=[submitted, qualifying, competing],
         )
-        original = commissioner_module.parse_replay_metrics
-        commissioner_module.parse_replay_metrics = lambda _b, num_seats=NUM_SEATS: _good_combined_game()
-        try:
-            result = commissioner.migrate_league(ctx)
-        finally:
-            commissioner_module.parse_replay_metrics = original
+        result = commissioner.migrate_league(ctx)
         qualified_ids = {e.league_policy_membership_id for e in result.policy_membership_events}
         self.assertIn(submitted.id, qualified_ids)
         self.assertIn(qualifying.id, qualified_ids)
@@ -473,7 +490,11 @@ class CompetitionWinScoringTest(unittest.TestCase):
                 request_id=request_id,
                 variant_id="default",
                 policy_version_ids=[real] + [filler] * 7,
-                tags={"competition": "1", "filler_seats": "1,2,3,4,5,6,7"},
+                tags={
+                    "competition": "1",
+                    "filler_seats": "1,2,3,4,5,6,7",
+                    "filler_policy_version_ids": str(filler),
+                },
             )
         ]
         # Every seat wins as crew, but only seat 0 (the real entrant) should count.
@@ -498,6 +519,73 @@ class CompetitionWinScoringTest(unittest.TestCase):
         self.assertEqual(by_policy[str(real)].score, 1.0)
         self.assertEqual(by_policy[str(real)].result_metadata["crew_wins"], 1)
         self.assertEqual(by_policy[str(real)].result_metadata["imposter_wins"], 0)
+        # The filler is NEVER represented as a real entrant...
+        self.assertNotIn(str(filler), by_policy)
+        # ...and is explicitly labeled as a filler in the round display.
+        self.assertEqual(
+            complete.round_display.get("filler_policy_version_ids"), [str(filler)]
+        )
+
+    def test_filler_policy_excluded_even_when_seat_not_tagged(self) -> None:
+        # Defense-in-depth: a CONFIGURED filler policy must never score, even if the
+        # per-seat ``filler_seats`` tag failed to mark its seat. Here the filler is
+        # at seat 7 but ``filler_seats`` omits seat 7; the policy-id tag still drops
+        # it (and it is never ranked as a real entrant).
+        commissioner = _commissioner()
+        real = uuid4()
+        filler = uuid4()
+        rs = RoundStart(
+            round_id=uuid4(),
+            round_number=11,
+            league=LeagueInfo(id=uuid4(), commissioner_key="container"),
+            divisions=_divisions(),
+            memberships=[
+                MembershipInfo(
+                    id=uuid4(), league_id=uuid4(), division_id=_COMPETITION_DIV,
+                    policy_version_id=real, player_id="ply_real", status="competing",
+                    substatus="champion", is_champion=True,
+                )
+            ],
+            recent_results=[],
+            variants=[VariantInfo(id="default", name="Default", game_config={})],
+            state={"round_config": {"current_division_id": str(_COMPETITION_DIV)}},
+        )
+        request_id = "competition:r11:0"
+        scheduled = [
+            EpisodeRequest(
+                request_id=request_id,
+                variant_id="default",
+                policy_version_ids=[real] + [filler] * 7,
+                # Seat 7 is intentionally NOT in filler_seats, but the policy id tag
+                # marks the filler so it is still excluded by policy.
+                tags={
+                    "competition": "1",
+                    "filler_seats": "1,2,3,4,5,6",
+                    "filler_policy_version_ids": str(filler),
+                },
+            )
+        ]
+        result = EpisodeResult(
+            request_id=request_id,
+            scores=[EpisodeScore(policy_version_id=real, score=0.0)]
+            + [EpisodeScore(policy_version_id=filler, score=0.0) for _ in range(7)],
+            game_results={
+                "win": [True] * 8,
+                "imposter": [0, 0, 0, 0, 0, 0, 0, 0],
+                "crew": [1, 1, 1, 1, 1, 1, 1, 1],
+            },
+        )
+        complete = commissioner.complete_round_for_round_start(
+            rs, episode_results=[result], scheduled_episodes=scheduled, failed_episodes=[]
+        )
+        by_policy = {str(r.policy_version_id): r for r in complete.results[0].rankings}
+        # The filler never appears even though seat 7 was untagged, and the real
+        # entrant still only scores its single legitimate seat.
+        self.assertEqual(set(by_policy), {str(real)})
+        self.assertEqual(by_policy[str(real)].score, 1.0)
+        self.assertEqual(
+            complete.round_display.get("filler_policy_version_ids"), [str(filler)]
+        )
 
 
 class CompetitionSchedulingTest(unittest.TestCase):
@@ -570,6 +658,9 @@ class CompetitionSchedulingTest(unittest.TestCase):
             self.assertEqual(len(ep.policy_version_ids), NUM_SEATS)
             self.assertEqual(ep.tags["filler_seats"], "1,2,3,4,5,6,7")
             self.assertEqual(ep.policy_version_ids[0], entrant)
+            # No CONFIGURED fillers: the top-up duplicates the real entrant, so the
+            # filler-policy tag is empty (a duplicated real policy is not a filler).
+            self.assertEqual(ep.tags["filler_policy_version_ids"], "")
 
     def test_real_policies_equal_seats_no_filler_no_duplication(self) -> None:
         # When real entrants == NUM_SEATS, every seat is a distinct real policy and
@@ -581,6 +672,7 @@ class CompetitionSchedulingTest(unittest.TestCase):
         self.assertTrue(schedule.episodes)
         for ep in schedule.episodes:
             self.assertEqual(ep.tags["filler_seats"], "", "no filler when real >= seats")
+            self.assertEqual(ep.tags["filler_policy_version_ids"], "")
             self.assertEqual(
                 sorted(ep.policy_version_ids), sorted(entrants),
                 "each real policy occupies exactly one seat",
@@ -612,6 +704,12 @@ class CompetitionSchedulingTest(unittest.TestCase):
                 self.assertTrue(set(real_seats) <= set(entrants))
                 filler_seats = ep.policy_version_ids[3:]
                 self.assertTrue(set(filler_seats) <= {filler_a, filler_b})
+                # Configured fillers are recorded by policy id so scoring can drop
+                # them explicitly and label them as fillers.
+                tagged_filler_ids = {
+                    s for s in ep.tags["filler_policy_version_ids"].split(",") if s
+                }
+                self.assertEqual(tagged_filler_ids, {str(p) for p in filler_seats})
         finally:
             if prev is None:
                 os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
@@ -659,7 +757,7 @@ class XpRequestPayloadTest(unittest.TestCase):
         client = XpRequestClient(base="https://example.test/observatory", token="tok-abc")
         with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
             xreq_id = client.create_experience_request(
-                division_id="div-1",
+                division_id="acbde92a-df21-4489-859c-4510bd4445f2",
                 policy_version_id="pv-candidate",
                 seat_count=seat_count,
                 num_episodes=num_episodes,
@@ -675,8 +773,11 @@ class XpRequestPayloadTest(unittest.TestCase):
 
         body = captured["body"]
         assert isinstance(body, dict)
-        # Target is still {division_id: ...}.
-        self.assertEqual(body["target"], {"division_id": "div-1"})
+        # Target is {division_id: ...}, normalized to the platform's prefixed
+        # ``div_<uuid>`` form (a bare UUID is rejected by the DivisionId type, 422).
+        self.assertEqual(
+            body["target"], {"division_id": "div_acbde92a-df21-4489-859c-4510bd4445f2"}
+        )
         # num_episodes / execution_backend live at the top level.
         self.assertEqual(body["num_episodes"], 1)
         self.assertEqual(body["execution_backend"], "k8s")
@@ -706,6 +807,22 @@ class XpRequestPayloadTest(unittest.TestCase):
         assert isinstance(headers, dict)
         # urllib title-cases header keys; X-Auth-Token -> X-auth-token.
         self.assertEqual(headers.get("X-auth-token"), "tok-abc")
+
+    def test_prefixed_division_id_is_idempotent(self) -> None:
+        from xp_request_client import _prefixed_division_id, _prefixed_league_id
+
+        bare = "acbde92a-df21-4489-859c-4510bd4445f2"
+        prefixed = f"div_{bare}"
+        # A bare UUID gains the div_ prefix; an already-prefixed id is unchanged.
+        self.assertEqual(_prefixed_division_id(bare), prefixed)
+        self.assertEqual(_prefixed_division_id(prefixed), prefixed)
+        # Surrounding whitespace is trimmed before the check.
+        self.assertEqual(_prefixed_division_id(f"  {bare} "), prefixed)
+
+        # Same contract for league ids (filler-policy lookup path param).
+        league_prefixed = f"league_{bare}"
+        self.assertEqual(_prefixed_league_id(bare), league_prefixed)
+        self.assertEqual(_prefixed_league_id(league_prefixed), league_prefixed)
 
 
 class ObservabilityHelpersTest(unittest.TestCase):

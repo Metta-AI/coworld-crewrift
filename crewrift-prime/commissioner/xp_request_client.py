@@ -7,7 +7,13 @@ new policy is submitted to the league, the commissioner uses this client to:
      (``POST /v2/experience-requests``),
   2. POLL it until its child episodes complete (or it fails / times out),
   3. FETCH the child episode rows (``GET .../{xreq}/episodes``), and
-  4. DOWNLOAD + zlib-decompress each episode's ``.bitreplay``.
+  4. READ each completed episode's per-slot results JSON artifact
+     (``GET /jobs/{job_id}/artifacts/results``).
+
+The qualifier scores from the game's own end-of-episode ``results`` artifact (the
+seat-indexed ``results_schema`` the platform stores per job), so it no longer
+downloads or re-expands the ``.bitreplay``. ``download_replay`` is retained for
+ad-hoc tooling but is not on the qualifier path.
 
 It is stdlib-only (``urllib``) on purpose — the commissioner image installs only
 the vendored ``commissioners`` package (fastapi/pydantic/uvicorn/pyyaml) and we do
@@ -52,6 +58,35 @@ _USER_AGENT = "crewrift-prime-commissioner/1.0 (+https://softmax.com)"
 # ``len(roster) == player_count`` and derives ``player_count`` from the roster
 # length, so the roster MUST carry exactly this many participants.
 DEFAULT_SEAT_COUNT = 8
+
+# The platform's ``V2ExperienceRequestTarget.division_id`` is a prefixed
+# ``DivisionId`` (``^div_<uuid>$``); a bare UUID is rejected with HTTP 422. The
+# commissioner carries division ids as bare ``UUID`` (``MembershipSnapshot.division_id``),
+# so the target must be normalized to the prefixed form before dispatch.
+_DIVISION_ID_PREFIX = "div_"
+
+
+def _prefixed_division_id(division_id: str) -> str:
+    """Return a platform ``div_<uuid>`` division id (idempotent on already-prefixed)."""
+    value = str(division_id).strip()
+    if value.startswith(_DIVISION_ID_PREFIX):
+        return value
+    return f"{_DIVISION_ID_PREFIX}{value}"
+
+
+# League ids carried by the commissioner are bare ``UUID`` too, but the
+# league-config routes (e.g. ``GET /v2/leagues/{league_id}/filler-policies``)
+# type the path param as a prefixed ``LeagueId`` (``^league_<uuid>$``) and reject
+# a bare UUID with HTTP 422.
+_LEAGUE_ID_PREFIX = "league_"
+
+
+def _prefixed_league_id(league_id: str) -> str:
+    """Return a platform ``league_<uuid>`` id (idempotent on already-prefixed)."""
+    value = str(league_id).strip()
+    if value.startswith(_LEAGUE_ID_PREFIX):
+        return value
+    return f"{_LEAGUE_ID_PREFIX}{value}"
 
 # Run statuses that mean "stop polling": a terminal outcome.
 _TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "error"})
@@ -172,6 +207,7 @@ class EpisodeRow:
     status: str | None
     episode_id: str | None
     replay_url: str | None
+    job_id: str | None = None
     participants: list[dict[str, Any]] = field(default_factory=list)
     scores: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -186,11 +222,13 @@ class EpisodeRow:
 
     @classmethod
     def from_json(cls, row: dict[str, Any]) -> "EpisodeRow":
+        job_id = row.get("job_id")
         return cls(
             id=str(row.get("id") or ""),
             status=row.get("status"),
             episode_id=row.get("episode_id"),
             replay_url=row.get("replay_url"),
+            job_id=str(job_id) if job_id else None,
             participants=row.get("participants") or [],
             scores=row.get("scores") or [],
             raw=row,
@@ -301,13 +339,17 @@ class XpRequestClient:
         ``policy_version`` UUID). ``slot=-1`` (the schema default) round-robins
         through the open seats, which for a full self-play roster simply assigns one
         participant per seat.
+
+        ``division_id`` is normalized to the platform's prefixed ``div_<uuid>``
+        form (:func:`_prefixed_division_id`); the commissioner carries bare ``UUID``
+        division ids, which the strict ``DivisionId`` target type rejects (HTTP 422).
         """
         roster = [
             {"player": {"policy_ref": policy_version_id}, "slot": -1}
             for _ in range(seat_count)
         ]
         payload: dict[str, Any] = {
-            "target": {"division_id": division_id},
+            "target": {"division_id": _prefixed_division_id(division_id)},
             "roster": roster,
             "num_episodes": num_episodes,
             "notes": notes or "crewrift-prime qualifier",
@@ -327,8 +369,12 @@ class XpRequestClient:
         client's authenticated transport, so any HTTP/auth/network failure is
         normalized to :class:`XpRequestInfraError` (the caller falls back rather
         than crashing a round). An absent/empty list returns ``[]``.
+
+        ``league_id`` is normalized to the platform's prefixed ``league_<uuid>``
+        form (:func:`_prefixed_league_id`); the commissioner carries bare ``UUID``
+        league ids, which the strict ``LeagueId`` path param rejects (HTTP 422).
         """
-        path = f"/v2/leagues/{urllib.parse.quote(str(league_id))}/filler-policies"
+        path = f"/v2/leagues/{urllib.parse.quote(_prefixed_league_id(league_id))}/filler-policies"
         payload = self._get(path)
         if not isinstance(payload, dict):
             raise XpRequestInfraError(f"filler policies for {league_id}: unexpected shape {type(payload)}")
@@ -352,6 +398,31 @@ class XpRequestClient:
         if not isinstance(rows, list):
             raise XpRequestInfraError(f"episodes for {xreq_id}: unexpected shape {type(rows)}")
         return [EpisodeRow.from_json(row) for row in rows if isinstance(row, dict)]
+
+    def get_episode_results(self, job_id: str) -> dict[str, Any]:
+        """Fetch a completed episode's per-slot results JSON (the game's artifact).
+
+        The crewrift game writes a ``results`` artifact at the end of each episode
+        — the seat-indexed ``results_schema`` payload (``scores``/``win``/``tasks``
+        /``kills``/``imposter``/``crew``/``vote_players``/``vote_skip``
+        /``vote_timeout``/...). The platform stores it on the episode's JOB and
+        serves it at ``GET /jobs/{job_id}/artifacts/results`` (the same endpoint the
+        ``coworld episode-results`` CLI reads). This is the authoritative, already
+        re-simulated source the decision gate needs, so the qualifier consumes it
+        directly instead of downloading + re-expanding the ``.bitreplay``.
+
+        Any HTTP/network/parse failure is normalized to :class:`XpRequestInfraError`
+        so a completed episode whose results artifact is momentarily unavailable
+        HOLDS for retry rather than disqualifying the policy.
+        """
+        if not job_id:
+            raise XpRequestInfraError("episode results: empty job_id")
+        payload = self._get(f"/jobs/{urllib.parse.quote(str(job_id))}/artifacts/results")
+        if not isinstance(payload, dict):
+            raise XpRequestInfraError(
+                f"episode results for job {job_id}: unexpected shape {type(payload)}"
+            )
+        return payload
 
     def poll_until_complete(
         self,
