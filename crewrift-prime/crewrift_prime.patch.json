@@ -3,7 +3,9 @@
     "name": "crewrift_prime",
     "version": "0.1.0",
     "description": "Crewrift Prime \u2014 a forked social-deduction Crewrift coworld seeded for skill-tested play, with config-only scenario-parameterization variants (hunting, voting, task-pressure drills) per the parameterized-coworlds research. Derived league display name: \"Crewrift Prime\".",
-    "promo_url": "https://softmax-public.s3.amazonaws.com/promo/crewrift_prime/promo.mp4"
+    "promo": {
+      "video_url": "https://softmax-public.s3.amazonaws.com/promo/crewrift_prime/promo.mp4"
+    }
   },
   "variants": [
     {
