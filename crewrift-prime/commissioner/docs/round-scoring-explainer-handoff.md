@@ -37,7 +37,10 @@ holds no Crewrift-specific copy.**
   won / total episodes played, a fraction in `[0, 1]`), NOT by a raw sum of round
   scores and NOT by OpenSkill MMR (`mmr.py` is dead code). Tied win rates break
   deterministically by player id so the scheduling tick and round-complete writers
-  publish the same order.
+  publish the same order. **The published board now carries the per-player
+  `win_rate`/`wins`/`episodes_played` columns the UI must render as `WIN %` — see
+  ["Leaderboard `WIN %` column"](#leaderboard-win--column) below. Do NOT derive
+  `WIN %` from `score` (that produces a share that sums to 100%).**
 
 ## What the commissioner now emits
 
@@ -172,3 +175,91 @@ rounds. When that happens:
   with no further change. (Same artifact the qualifier path already re-derives by
   re-simulating the `.bitreplay`; for Competition rounds the platform should
   forward it directly from the game results.)
+
+## Leaderboard `WIN %` column
+
+> **TL;DR for the Observatory app:** render each row's `WIN %` from the published
+> per-player `win_rate` column (equivalently `wins / episodes_played`). **Stop**
+> computing it as a share of total wins (`row.score / Σ score`, or any
+> `wins / total_wins`). A share normalizes to 100% across players and is wrong.
+
+### The bug this fixes
+
+The live leaderboard showed `WIN %` values of `30%, 20%, 20%, 10%, 10%, 5%, 5%`
+for 7 players — they sum to exactly **100%**. That is a normalized **share of
+total wins**, not a win rate. It happened because the commissioner previously
+published only `rank` / `score` / `rounds_played`, where `score` is the
+**cumulative count of won episodes** (an absolute total, not a rate). With only a
+count to work from, the UI's only way to make a "percentage" was to divide each
+player's count by the sum of all players' counts — which always sums to 100% and
+has nothing to do with how often a player actually wins.
+
+`WIN %` is supposed to be each player's **own** rate, independent of everyone
+else's:
+
+```
+WIN % = episodes_won / episodes_played      (per player, clamped to [0, 1])
+```
+
+Two strong players can both be at 80% — these rates do **not** sum to 100%.
+
+### What the commissioner now publishes (use these — no derivation needed)
+
+The Competition board (`RoundComplete.leaderboards[0]`, built by
+`_win_rate_leaderboard` in `crewrift_prime_skill_commissioner.py`) now declares
+these columns and per-row `values`:
+
+| Column key | `value_type` | Meaning | Use for `WIN %`? |
+|---|---|---|---|
+| `rank` | integer | Standings position (1 = best win rate). | — |
+| `win_rate` | number | **`episodes_won / episodes_played`, clamped `[0, 1]`. THE per-player rate.** | **YES — render this as `WIN %` (× 100).** |
+| `wins` | number | All-time episodes the player won (capped 1/episode). | (derivation source) |
+| `episodes_played` | integer | All-time episodes the player played (win-rate denominator). | (derivation source) |
+| `score` | number | DISPLAY-ONLY cumulative won-episode **count**, floored at 0. **Not a rate.** | **NO — never `score / Σ score`.** |
+| `rounds_played` | integer | Rounds the player appears in. | — |
+
+Render `WIN %` as `win_rate * 100` (it is already `[0, 1]`). If you prefer to
+recompute, use `wins / episodes_played` per row (guard `episodes_played == 0` ⇒
+`0`). **Never** divide by a grand total across players.
+
+### Worked example (values do NOT sum to 100%)
+
+Three players over 4 completed rounds; seats 0 and 1 are crew and win every round
+together (a crew win credits **every** crew seat the same episode), seat 2 always
+loses:
+
+| Player | `wins` | `episodes_played` | `win_rate` | Rendered `WIN %` |
+|---|---|---|---|---|
+| ply_a | 4 | 4 | `4/4 = 1.0` | **100%** |
+| ply_b | 4 | 4 | `4/4 = 1.0` | **100%** |
+| ply_c | 0 | 4 | `0/4 = 0.0` | **0%** |
+
+Sum of the `win_rate` column = `1.0 + 1.0 + 0.0 = 2.0` (i.e. 200%), **not** 1.0.
+The old share-based UI would have shown `50% / 50% / 0%` for the same data — both
+true winners diluted to 50% and forced to sum to 100%. The rate is the correct,
+unambiguous number. (This exact case is asserted by
+`PublishedBoardExposesTrueWinRateTest.test_win_rate_column_is_per_player_rate_not_a_share`
+in `test_leaderboard_flip.py`.)
+
+### Observatory app change (the remaining external work)
+
+The commissioner side is done — the payload now carries `win_rate` (and the
+`wins` / `episodes_played` it derives from) on every Competition leaderboard row.
+The web app in the separate repo
+(`web/softmax.com/src/app/(observatory)/observatory/v2/`) must:
+
+1. **Read `win_rate`** (or `wins` / `episodes_played`) from each leaderboard row's
+   `values` and render it as the `WIN %` column (`win_rate * 100`, one decimal as
+   desired).
+2. **Delete the share/normalization** path — any code that computes a row's
+   percentage as `row.score / Σ rows.score`, `wins / total_wins`, `/ sum(...)`,
+   or otherwise divides by a grand total across players. That is the source of the
+   "sums to 100%" bug.
+3. **Keep `score` labeled `Score`** (it is the cumulative won-episode count, a
+   display total) — do not relabel it `WIN %`.
+4. **Ranking is unchanged:** rows already arrive sorted by descending `win_rate`
+   (`rank` ascending). Render in `rank` order; do not re-sort by `score`.
+
+If the board predates this change (older persisted rounds without the `win_rate`
+column), fall back to `wins / episodes_played` when both are present, else hide
+the column rather than showing a share.

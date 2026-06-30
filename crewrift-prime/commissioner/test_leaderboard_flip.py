@@ -497,5 +497,93 @@ class WinRateIsEpisodesWonOverPlayedTest(unittest.TestCase):
         self.assertEqual(rec_loser.score, 0.0)
 
 
+class PublishedBoardExposesTrueWinRateTest(unittest.TestCase):
+    """The published board must expose the TRUE per-player WIN % so the UI never
+    has to derive it as a normalized share.
+
+    Regression guard for the live "WIN % sums to 100%" bug: the Observatory was
+    showing each player's SHARE of total wins (``score / sum(score)``) because the
+    commissioner only published ``rank``/``score``/``rounds_played`` and the UI had
+    nothing else to compute a percentage from. The published board now carries an
+    explicit ``win_rate`` column (= ``episodes_won / episodes_played`` per player,
+    clamped ``[0, 1]``) plus the ``wins`` and ``episodes_played`` it derives from,
+    so the UI renders the per-player rate directly. Those rates are INDEPENDENT and
+    do NOT sum to 1.0.
+    """
+
+    def test_win_rate_column_is_per_player_rate_not_a_share(self) -> None:
+        """WIN % = wins/played per player; the column does NOT sum to 100%.
+
+        Two crew players win the SAME episodes together (a crew win credits every
+        crew seat), so BOTH have a HIGH win rate. Their rates therefore sum to well
+        over 100% — exactly the case a normalized "share of total wins" would get
+        wrong (a share always sums to 100%). The third player (a sole loser) has a
+        0 rate.
+        """
+        commissioner = _commissioner()
+        policy_a, policy_b, policy_c = uuid4(), uuid4(), uuid4()
+        memberships = _memberships([(policy_a, "ply_a"), (policy_b, "ply_b"), (policy_c, "ply_c")])
+
+        # 3 seats; seats 0 and 1 are crew and WIN together every round (a crew win
+        # sets win[seat] True for every crew seat — see sim.nim / _two_seat_episode
+        # which marks all seats crew). We rotate the single winner_seat among the
+        # crew seats; either way both crew seats are credited the same episode.
+        # ply_a and ply_b each win all 4 episodes they play (rate 1.0); ply_c never
+        # wins (rate 0.0). Win rates: 1.0 + 1.0 + 0.0 = 2.0 != 1.0 (NOT a share).
+        rounds = 4
+        seats = [policy_a, policy_b, policy_c]
+        state: Any = {"round_config": {"current_division_id": str(_COMPETITION_DIV)}}
+        last_complete = None
+        for round_number in range(1, rounds + 1):
+            rs = _round_start(memberships, round_number, state)
+            # winner_seat is one crew seat, but _two_seat_episode marks ALL seats
+            # crew, so win[] is True only for winner_seat here. To credit BOTH crew
+            # seats on the same episode (the real team-win semantics), build the
+            # win array directly: seats 0,1 win, seat 2 loses.
+            episode = EpisodeResult(
+                request_id=str(uuid4()),
+                scores=[EpisodeScore(policy_version_id=pid, score=0.0) for pid in seats],
+                game_results={"win": [1, 1, 0], "imposter": [0, 0, 0], "crew": [1, 1, 1]},
+            )
+            last_complete = commissioner.complete_round_for_round_start(
+                rs, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
+            )
+            state = last_complete.state
+
+        view = last_complete.leaderboards[0].views[0]
+        # The board now declares the explicit WIN % / wins / episodes_played columns.
+        column_keys = {col.key for col in view.columns}
+        self.assertIn("win_rate", column_keys)
+        self.assertIn("wins", column_keys)
+        self.assertIn("episodes_played", column_keys)
+
+        by_player = {row.subject_id: row for row in view.rows}
+        # WIN % is exactly wins/played per player (clamped [0, 1]).
+        for pid in ("ply_a", "ply_b", "ply_c"):
+            row = by_player[pid]
+            played = row.values["episodes_played"]
+            wins = row.values["wins"]
+            expected = (wins / played) if played else 0.0
+            self.assertAlmostEqual(float(row.values["win_rate"]), expected, places=9)
+
+        # Both winning crew players have the SAME high rate (1.0), proving WIN % is
+        # NOT a share (a share would split the wins between them, e.g. 0.5/0.5).
+        self.assertAlmostEqual(float(by_player["ply_a"].values["win_rate"]), 1.0, places=9)
+        self.assertAlmostEqual(float(by_player["ply_b"].values["win_rate"]), 1.0, places=9)
+        self.assertAlmostEqual(float(by_player["ply_c"].values["win_rate"]), 0.0, places=9)
+
+        # The crux: the WIN % column does NOT sum to 100% — these are independent
+        # per-player rates, not a normalized distribution.
+        win_rate_total = sum(float(row.values["win_rate"]) for row in view.rows)
+        self.assertAlmostEqual(win_rate_total, 2.0, places=9)
+        self.assertNotAlmostEqual(win_rate_total, 1.0, places=9)
+
+        # Sanity: wins/played match the team-win semantics (both crew win all 4).
+        self.assertEqual(by_player["ply_a"].values["wins"], 4.0)
+        self.assertEqual(by_player["ply_a"].values["episodes_played"], 4)
+        self.assertEqual(by_player["ply_b"].values["wins"], 4.0)
+        self.assertEqual(by_player["ply_c"].values["wins"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

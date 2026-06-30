@@ -1094,7 +1094,13 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             for snapshot in snapshots
             if snapshot.player_id is not None
         ]
-        leaderboards = [_win_rate_leaderboard(division_id=division_id, entries=entries)]
+        leaderboards = [
+            _win_rate_leaderboard(
+                division_id=division_id,
+                entries=entries,
+                win_metrics=_win_metrics_by_player(round_score, round_episodes, participants),
+            )
+        ]
         return leaderboards, state
 
     def describe_division(self, ctx: DivisionDescriptionContext) -> DivisionCommissionerDescriptionPublic:
@@ -1247,29 +1253,14 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         rounds the player appears in.
         """
         round_episodes = round_episodes or {}
-        wins_total: dict[Any, float] = {}
-        episodes_total: dict[Any, int] = {}
-        rounds_played: dict[Any, int] = {}
-        # Seed every known participant at zero so a player who took part but earned
-        # no ranked round still gets a row (win rate 0, 0 rounds played).
-        for player_id in participants or set():
-            wins_total.setdefault(player_id, 0.0)
-            episodes_total.setdefault(player_id, 0)
-            rounds_played.setdefault(player_id, 0)
-        for (player_id, round_id), score in round_score.items():
-            wins_total[player_id] = wins_total.get(player_id, 0.0) + score
-            episodes_total[player_id] = episodes_total.get(player_id, 0) + int(
-                round_episodes.get((player_id, round_id), 0)
-            )
-            rounds_played[player_id] = rounds_played.get(player_id, 0) + 1
+        wins_total, episodes_total, rounds_played = _aggregate_win_metrics(
+            round_score, round_episodes, participants
+        )
 
         def _win_rate(player_id: Any) -> float:
-            played = episodes_total.get(player_id, 0)
-            if played <= 0:
-                return 0.0
-            # Clamp to [0, 1]: wins are capped at 1 per played episode upstream,
-            # so this only guards against malformed data.
-            return max(0.0, min(1.0, wins_total.get(player_id, 0.0) / played))
+            return _clamped_win_rate(
+                wins_total.get(player_id, 0.0), episodes_total.get(player_id, 0)
+            )
 
         # Rank by descending FULL-PRECISION win rate (the same number shown in the
         # WIN% column), with a single deterministic tiebreak that is IDENTICAL in
@@ -1341,28 +1332,116 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         return ranks_by, scores_by
 
 
+def _clamped_win_rate(wins: float, episodes_played: int) -> float:
+    """True per-player WIN % = episodes won / episodes played, clamped to [0, 1].
+
+    This is the PER-PLAYER rate the UI must show, NOT a normalized share of total
+    wins across players. Each player's value is independent of every other
+    player's, so the column does NOT sum to 1.0 (100%) across the board. Wins are
+    capped at 1 per played episode upstream, so the clamp only guards against
+    malformed data.
+    """
+    if episodes_played <= 0:
+        return 0.0
+    return max(0.0, min(1.0, wins / episodes_played))
+
+
+def _aggregate_win_metrics(
+    round_score: dict[tuple[Any, Any], float],
+    round_episodes: dict[tuple[Any, Any], int],
+    participants: set | None,
+) -> tuple[dict[Any, float], dict[Any, int], dict[Any, int]]:
+    """Collapse per-(player, round) wins/played into all-time per-player totals.
+
+    Returns ``(wins_total, episodes_total, rounds_played)`` keyed by player id.
+    Every known participant is seeded at zero so a player who took part but earned
+    no ranked round still appears (win rate 0, 0 rounds played).
+    """
+    wins_total: dict[Any, float] = {}
+    episodes_total: dict[Any, int] = {}
+    rounds_played: dict[Any, int] = {}
+    for player_id in participants or set():
+        wins_total.setdefault(player_id, 0.0)
+        episodes_total.setdefault(player_id, 0)
+        rounds_played.setdefault(player_id, 0)
+    for (player_id, round_id), score in round_score.items():
+        wins_total[player_id] = wins_total.get(player_id, 0.0) + score
+        episodes_total[player_id] = episodes_total.get(player_id, 0) + int(
+            round_episodes.get((player_id, round_id), 0)
+        )
+        rounds_played[player_id] = rounds_played.get(player_id, 0) + 1
+    return wins_total, episodes_total, rounds_played
+
+
+def _win_metrics_by_player(
+    round_score: dict[tuple[Any, Any], float],
+    round_episodes: dict[tuple[Any, Any], int],
+    participants: set | None,
+) -> dict[str, tuple[float, int, float]]:
+    """``str(player_id) -> (wins, episodes_played, win_rate)`` for the published board.
+
+    Uses the SAME aggregation as ``_win_total_board`` so the WIN %/wins/played the
+    UI renders are exactly the values the board is ranked by.
+    """
+    wins_total, episodes_total, _ = _aggregate_win_metrics(
+        round_score, round_episodes, participants
+    )
+    return {
+        str(player_id): (
+            wins_total.get(player_id, 0.0),
+            episodes_total.get(player_id, 0),
+            _clamped_win_rate(wins_total.get(player_id, 0.0), episodes_total.get(player_id, 0)),
+        )
+        for player_id in wins_total
+    }
+
+
 def _win_rate_leaderboard(
     *,
     division_id: UUID,
     entries: list[CommissionerDivisionLeaderboardEntry],
+    win_metrics: dict[str, tuple[float, int, float]] | None = None,
 ) -> CommissionerDivisionLeaderboard:
     """Build the published Competition board.
 
     Mirrors the vendored ``division_leaderboard_from_entries`` shape (so the
     platform persists it verbatim instead of re-synthesizing it). The board is
     RANKED by all-time win rate (see ``_win_total_board``), but the ``score``
-    column now carries the DISPLAY-ONLY absolute cumulative sum of each player's
+    column carries the DISPLAY-ONLY absolute cumulative sum of each player's
     per-round scores (floored at 0), not the win rate — so the column is labeled
-    "Score" accordingly. The win-rate metric the UI shows is derived separately
-    from each row's recent-round strip.
+    "Score" accordingly.
+
+    ``win_metrics`` maps ``player_id -> (wins, episodes_played, win_rate)`` and is
+    surfaced as explicit ``win_rate``/``wins``/``episodes_played`` columns so the
+    Observatory UI can render the TRUE PER-PLAYER WIN % (``episodes_won /
+    episodes_played``, clamped to ``[0, 1]``) directly from the payload. The UI
+    MUST NOT derive WIN % from ``score`` (e.g. ``score / sum(score)`` across
+    players) — that produces a normalized SHARE that sums to 100% and is wrong.
+    Each player's ``win_rate`` here is independent and the column does NOT sum to
+    1.0 across the board.
     """
+    win_metrics = win_metrics or {}
+
+    def _metrics(player_id: str) -> tuple[float, int, float]:
+        return win_metrics.get(player_id, (0.0, 0, 0.0))
+
     view = CommissionerDivisionLeaderboardView(
         key="score",
         title="Score",
         axis_values={"metric": "score", "timeframe": "legacy"},
         columns=[
             CommissionerDivisionLeaderboardColumn(key="rank", label="Rank", value_type="integer", sort="asc"),
+            # True per-player WIN % = episodes_won / episodes_played, clamped to
+            # [0, 1]. NOT a share of total wins (which would sum to 100%); the UI
+            # renders this column verbatim as the WIN % rate.
+            CommissionerDivisionLeaderboardColumn(
+                key="win_rate", label="Win %", value_type="number", sort="desc"
+            ),
             CommissionerDivisionLeaderboardColumn(key="score", label="Score", value_type="number", sort="desc"),
+            CommissionerDivisionLeaderboardColumn(key="wins", label="Wins", value_type="number"),
+            CommissionerDivisionLeaderboardColumn(
+                key="episodes_played", label="Episodes Played", value_type="integer"
+            ),
             CommissionerDivisionLeaderboardColumn(
                 key="rounds_played", label="Rounds Played", value_type="integer"
             ),
@@ -1372,7 +1451,14 @@ def _win_rate_leaderboard(
                 subject_type="player",
                 subject_id=entry.player_id,
                 subject_name=entry.player_name,
-                values={"rank": entry.rank, "score": entry.score, "rounds_played": entry.rounds_played},
+                values={
+                    "rank": entry.rank,
+                    "win_rate": _metrics(entry.player_id)[2],
+                    "score": entry.score,
+                    "wins": _metrics(entry.player_id)[0],
+                    "episodes_played": _metrics(entry.player_id)[1],
+                    "rounds_played": entry.rounds_played,
+                },
                 policy_version_ids=entry.policy_version_ids,
                 recent_rounds=entry.recent_rounds,
             )

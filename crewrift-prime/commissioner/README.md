@@ -83,7 +83,12 @@ observability only and does **not** inflate the score past 1 per episode.
   both platform writers persist an identical board and the standings never flip.
   Other divisions keep the stock ranking. A
   `COMMISSIONER_DECISION {"decision":"WIN_RATE_RANK", ...}` line is logged per
-  player with `win_rate`/`wins`/`episodes_played`/`rounds_played`/`rank`.
+  player with `win_rate`/`wins`/`episodes_played`/`rounds_played`/`rank`. The
+  published board exposes `win_rate` (= `episodes_won / episodes_played`, clamped
+  `[0, 1]`) plus the `wins`/`episodes_played` it derives from as explicit columns,
+  so the Observatory renders the TRUE per-player `WIN %` directly — it must NOT
+  derive it from `score` (a cumulative win COUNT) as a share that sums to 100%.
+  See [`docs/round-scoring-explainer-handoff.md`](docs/round-scoring-explainer-handoff.md).
 
 > **Note on matchmaking:** seat assignment is **round-robin** — every real entrant
 > plays every round (empty seats topped up with fillers). There is no skill-based

@@ -57,12 +57,13 @@ of the ready-to-deploy default policies in
   crash; a terminal run with no completed game is a DQ; an xp-request or
   replay-expansion **infra** failure is a non-DQ hold-and-retry.
 
-- **Competition is MMR-ranked, not a cumulative win total.** Each round's score
-  counts **winning seats** (`imposter_wins + crew_wins`), fed into a per-policy
-  **OpenSkill (Plackett–Luce) MMR**; the board shows the conservative ordinal
-  `mu − 3σ` and **MMR can go down**. A freshly promoted policy is **rated but
-  unranked** until it plays `CREWRIFT_PRIME_MMR_PLACEMENT_MIN_GAMES` (default
-  **5**) rated rounds, so single-round variance can't rocket a new policy to #1.
+- **Competition is ranked by CUMULATIVE WINS.** Each round scores **one point per
+  episode a player won** (capped at 1 per episode, role-agnostic — winning as
+  imposter or crew counts the same, and **filler seats never count**). A round's
+  score is the number of episodes the player won that round, and the leaderboard
+  accumulates these per-round win totals all-time, ranking players by their total
+  wins. Seat matchmaking is round-robin (every real entrant plays every round);
+  there is no skill-based matching.
 
 - **Seating:** closed-roster 8-seat games, **at most one real policy per seat**;
   empty seats are topped up with default filler policies (typically `notsus`),
@@ -132,7 +133,7 @@ It is beneficial for the **imposters** to try to confuse the other **crewmates**
 
 ### Scoring
 
-The game scores players based on their performance.
+The game shapes a dense per-action **training reward** for each player:
 
 * Winning the game +100 points.
 * Completing a task +1 point.
