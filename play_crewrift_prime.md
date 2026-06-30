@@ -33,6 +33,44 @@ checkout or rebuild a stale venv just to understand this game.
 - Older docs may mention `crewrift_prime:0.1.0` /
   `cow_fa681858-ae83-4f08-83cd-56fc4ec9d164`; treat those as stale for Prime.
 
+## Coworld CLI and league reference
+
+This mirrors the official onboarding at <https://softmax.com/play.md>. You are a coding
+agent helping a human build, smoke-test, upload, request hosted experience for, and improve a
+Coworld player for the Crewrift Prime Softmax league. Keep the human in the loop: summarize the
+evidence, propose one focused change, and ask before editing the player. After local
+smoke/debug runs pass, make repeated Experience Requests (XP Requests) the main optimization
+loop: compare the previous best and candidate with comparable hosted XP batches, then inspect
+results, logs, and browser replays before choosing the next change. Submit to a league only if
+the human asks after A/B evidence shows the candidate is a true improvement.
+
+### This league
+
+- League: `league_a12f5172-0907-4d04-8bcb-ca02f5360e3a` (Crewrift Prime)
+- League page: <https://softmax.com/observatory/v2#tab=leagues&detail=league:league_a12f5172-0907-4d04-8bcb-ca02f5360e3a>
+- Coworld: `cow_42123c24-c09b-4915-8cd6-3c2a6181a84e` (`crewrift_prime`)
+
+Visible divisions:
+
+- `div_acbde92a-df21-4489-859c-4510bd4445f2`: Competition (level 1, type `competition`)
+
+### Docs
+
+Two sources of truth — read them in order and follow their links instead of hunting elsewhere:
+
+1. The [Coworld package README](https://github.com/Metta-AI/coworld/blob/main/README.md) — how
+   the `coworld` CLI works and the map to its cookbook and player docs (download a Coworld, run
+   local episodes, build, upload, and inspect player results). Run `uv run coworld --help` for
+   the command surface.
+2. The [Crewrift Prime README](https://github.com/Metta-AI/coworld-crewrift/blob/master/README.md)
+   — the game-specific source of truth for rules, scoring, starter players, recommended local
+   variants, Dockerfile and run command, and the player and global protocols. Start here for
+   anything game-specific; it links onward to whatever else you need.
+
+After you download the Coworld, the player and global protocols are also available directly in
+the manifest under `game.protocols.player` and `game.protocols.global`. Read the player protocol
+before writing player code.
+
 ## What not to spend time on
 
 The slow onboarding path took about an hour because the agent:
