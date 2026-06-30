@@ -434,6 +434,7 @@ type
     lastLobbyPlayersLogged*: int
     lastLobbyNeededLogged*: int
     lastLobbySecondsLogged*: int
+    liveConnectedSlots*: seq[int]
 
   PlayerView* = object
     cameraX*, cameraY*: int
@@ -2271,6 +2272,13 @@ proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
       if cursor > skipIndex:
         cursor = skipIndex
 
+proc lowestOpenSlot(sim: SimServer): int =
+  ## Returns the lowest unoccupied slot index within the roster, or -1.
+  for slotIndex in 0 ..< sim.config.playerSlotLimit():
+    if not sim.slotOccupied(slotIndex):
+      return slotIndex
+  -1
+
 proc addPlayer*(
   sim: var SimServer,
   address: string,
@@ -2292,12 +2300,11 @@ proc addPlayer*(
         sim.resolveTrustedPlayerSlot(address, requestedSlot)
       else:
         sim.resolvePlayerSlot(address, token, requestedSlot)
-    nextSlot = sim.nextPlayerSlot()
-  if not trusted and order != nextSlot:
+  if not trusted and requestedSlot < 0 and order != sim.lowestOpenSlot():
     raise newException(
       CrewriftError,
       "Player slot " & $order & " cannot join before slot " &
-        $nextSlot & "."
+        $sim.lowestOpenSlot() & "."
     )
   let
     slot = sim.config.slotConfig(order)
@@ -4329,11 +4336,21 @@ proc resetToLobby*(sim: var SimServer) =
     account.won = false
     account.abandoned = false
 
+proc setLiveConnectedSlots*(sim: var SimServer, slots: openArray[int]) =
+  ## Records the slots with a live/accepted /player socket on this tick.
+  ##
+  ## The server loop publishes these before each step so a seat that has an
+  ## accepted socket is never declared connect_timeout, even when the socket
+  ## has not yet been promoted into sim.players on that exact tick.
+  sim.liveConnectedSlots = @slots
+
 proc connectTimeoutSlots(sim: SimServer): seq[int] =
   ## Returns closed-roster slots that missed the initial connect deadline.
   if not sim.config.closedRoster:
     return
   for slotIndex in 0 ..< sim.config.slots.len:
+    if slotIndex in sim.liveConnectedSlots:
+      continue
     let playerIndex = sim.playerIndexForSlot(slotIndex)
     if playerIndex < 0 or not sim.players[playerIndex].connected:
       result.add(slotIndex)
