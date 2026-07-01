@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from crewborg.map.types import MapData, MapPoint, MapRect, Room, TaskStation, Vent
-from crewborg.strategy.event_log import update_event_log
-from crewborg.types import Belief, PlayerRecord
+from crewborg.strategy.event_log import EVENT_MERGE_GRACE_TICKS, update_event_log
+from crewborg.types import Belief, BodyEntry, PlayerRecord
 
 
 def _map() -> MapData:
@@ -38,12 +38,48 @@ def test_task_dwell_accumulates_one_interval_while_visible() -> None:
     assert events[0].duration_ticks == 3 and (events[0].start_tick, events[0].end_tick) == (1, 3)
 
 
+def test_leaving_and_returning_splits_into_two_intervals() -> None:
+    belief = Belief(map=_map())
+    _see(belief, "red", (110, 110), 1)  # in task
+    _see(belief, "red", (300, 300), 2)  # left
+    _see(belief, "red", (110, 110), 3)  # back in task
+    tasks = [e for e in belief.roster["red"].events if e.kind == "task"]
+    assert len(tasks) == 2 and all(e.duration_ticks == 1 for e in tasks)
+
+
+def test_a_brief_unobserved_gap_is_bridged() -> None:
+    belief = Belief(map=_map())
+    _see(belief, "red", (110, 110), 1)
+    # A gap within the grace window (we lost sight, didn't see them elsewhere).
+    _see(belief, "red", (110, 110), 1 + EVENT_MERGE_GRACE_TICKS)
+    tasks = [e for e in belief.roster["red"].events if e.kind == "task"]
+    assert len(tasks) == 1 and tasks[0].end_tick == 1 + EVENT_MERGE_GRACE_TICKS
+
+
+def test_a_long_unobserved_gap_splits_the_interval() -> None:
+    belief = Belief(map=_map())
+    _see(belief, "red", (110, 110), 1)
+    _see(belief, "red", (110, 110), 2 + EVENT_MERGE_GRACE_TICKS)  # gap exceeds grace
+    tasks = [e for e in belief.roster["red"].events if e.kind == "task"]
+    assert len(tasks) == 2
+
+
 def test_room_and_vent_dwell_are_logged() -> None:
     belief = Belief(map=_map())
     _see(belief, "blue", (205, 205), 1)  # inside the vent rect (and not in the room)
     _see(belief, "green", (50, 50), 1)  # inside the Cafeteria room
     assert any(e.kind == "vent" and e.region_index == 0 for e in belief.roster["blue"].events)
     assert any(e.kind == "room" and e.region_index == 0 for e in belief.roster["green"].events)
+
+
+def test_near_body_logs_target_color_and_closest_approach() -> None:
+    belief = Belief(map=_map())
+    belief.bodies[2001] = BodyEntry(object_id=2001, color="yellow", world_x=300, world_y=300, first_seen_tick=1)
+    _see(belief, "orange", (330, 300), 1)  # 30px from the body
+    _see(belief, "orange", (310, 300), 2)  # closes to 10px
+    near = [e for e in belief.roster["orange"].events if e.kind == "near_body"]
+    assert len(near) == 1
+    assert near[0].target_color == "yellow" and near[0].min_dist == 10  # closest approach kept
 
 
 def test_proximity_is_logged_for_both_players() -> None:
@@ -65,6 +101,23 @@ def test_proximity_is_logged_for_both_players() -> None:
     assert len(y) == 1 and y[0].target_color == "orange"
 
 
+def test_following_then_death_is_a_query_over_the_log() -> None:
+    # The compound "orange followed yellow, who then died" is not its own event —
+    # it's a proximity event toward yellow plus yellow's life status.
+    belief = Belief(map=_map())
+    belief.roster["orange"] = PlayerRecord(color="orange", world_x=300, world_y=300, last_seen_tick=1, life_status="alive")
+    belief.roster["yellow"] = PlayerRecord(color="yellow", world_x=308, world_y=300, last_seen_tick=1, life_status="alive")
+    belief.last_tick = 1
+    update_event_log(belief)
+    belief.roster["yellow"].life_status = "dead"
+
+    followed = [
+        e for e in belief.roster["orange"].events
+        if e.kind == "proximity" and e.target_color == "yellow"
+    ]
+    assert followed and belief.roster["yellow"].life_status == "dead"
+
+
 def test_tailing_self_accumulates_while_a_player_shadows_us() -> None:
     belief = Belief(map=_map())
     belief.self_world_x, belief.self_world_y = 300, 300
@@ -74,3 +127,35 @@ def test_tailing_self_accumulates_while_a_player_shadows_us() -> None:
     assert len(tail) == 1
     assert tail[0].target_color is None  # None target = me
     assert tail[0].duration_ticks == 3 and (tail[0].start_tick, tail[0].end_tick) == (1, 3)
+
+
+def test_tailing_self_is_not_logged_for_our_own_sprite() -> None:
+    # Our own sprite sits at our position every tick; without excluding it we'd "tail"
+    # ourselves and suspect/vote ourself.
+    belief = Belief(map=_map())
+    belief.self_color = "red"
+    belief.self_world_x, belief.self_world_y = 300, 300
+    for tick in (1, 2, 3):
+        _see(belief, "red", (300, 300), tick)  # red (= us) right at our spot
+    assert not [e for e in belief.roster["red"].events if e.kind == "tailing_self"]
+
+
+def test_a_distant_player_is_not_tailing_us() -> None:
+    belief = Belief(map=_map())
+    belief.self_world_x, belief.self_world_y = 300, 300
+    _see(belief, "red", (380, 300), 1)  # 80px away — beyond the 64px tail radius
+    assert not [e for e in belief.roster["red"].events if e.kind == "tailing_self"]
+
+
+def test_no_self_position_means_no_tailing_signal() -> None:
+    belief = Belief(map=_map())  # self_world_x/y left unset
+    _see(belief, "red", (10, 10), 1)
+    assert not [e for e in belief.roster["red"].events if e.kind == "tailing_self"]
+
+
+def test_dead_players_are_not_logged() -> None:
+    belief = Belief(map=_map())
+    belief.roster["red"] = PlayerRecord(color="red", world_x=110, world_y=110, last_seen_tick=5, life_status="dead")
+    belief.last_tick = 5
+    update_event_log(belief)
+    assert belief.roster["red"].events == []

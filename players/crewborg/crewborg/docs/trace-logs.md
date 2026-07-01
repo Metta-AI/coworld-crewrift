@@ -114,6 +114,12 @@ vote after the fact. Keys:
 | `would_vote`, `would_vote_p` | The suspect `top_suspect` returns against the vote bar, and its posterior. |
 | `vote_bar` | The `VOTE_PROBABILITY` threshold the meeting compares against. |
 
+**Training capture** (`CREWBORG_TRACE_SUSPICION_FEATURES=1`, off by default): each `ranking[]` entry
+additionally carries `features` — the exact `_fitted_features` vector the model scores — plus
+`seen_ticks`, and each `events[]` entry carries `end_tick`. These are the raw inputs needed to refit
+and parity-check the suspicion model on crewborg's *runtime* features (closing the train→serve gap;
+see [`./suspicion.md`](./suspicion.md) §8).
+
 What the posteriors *mean* and how `top_suspect` / the vote bar work is
 [`./suspicion.md`](./suspicion.md); the meeting flow itself is
 [`./meetings.md`](./meetings.md).
@@ -230,6 +236,7 @@ All read once at construction from the environment.
 | `CREWBORG_TRACE` | Global verbosity. Empty = lean default. `debug` adds `decision_snapshot`, `suspicion_tick`, `kill_state`, `occupancy_snapshot`, commander, and viewer frames, and enables metrics. `viewer` adds the viewer-frame family. |
 | `CREWBORG_TRACE_GROUPS` | Comma/space list of family names to admit *without* full debug volume. Names: `action`, `belief`, `chat`, `commander`, `debug`, `decision`, `framework`, `kill`, `knowledge`, `llm`, `meeting`, `mode`, `occupancy`, `state`, `suspicion`, `task`, `viewer`, `voting`, `all`, and the synthetic `lean`. Defined in `trace.py:TRACE_GROUP_PATTERNS`. |
 | `CREWBORG_TRACE_INCLUDE` | Extra event-name globs to admit. A bare token also matches its `domain.`-prefixed form (`kill_landed` matches `domain.kill_landed`). |
+| `CREWBORG_TRACE_SUSPICION_FEATURES` | Off by default. When set (`1`/`true`), `suspicion_snapshot` additionally emits, per suspect, the exact runtime feature vector (`features`) + raw inputs (`seen_ticks`, per-event `end_tick`) for refitting the suspicion model on runtime features (the train→serve-gap rework). |
 | `CREWBORG_TRACE_EXCLUDE` | Event-name globs to suppress. **Exclude always wins** over any admit. |
 | `CREWBORG_TRACE_DECISION_FIELDS` | Whitelist of `decision_snapshot` top-level fields to keep (e.g. `mode,intent,command`). |
 | `CREWBORG_METRICS` | `1`/`true`/`yes`/`on` enables metric emission independently of `CREWBORG_TRACE` (metrics are also on whenever `CREWBORG_TRACE=debug`). |

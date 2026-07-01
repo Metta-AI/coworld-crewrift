@@ -15,9 +15,7 @@
 # Logs:   suspicion_lab/logs/nightly-<date>.log
 set -uo pipefail
 
-# The player root (players/crewborg) — derived from this script's location, not hardcoded,
-# so the cron loop works wherever the repo is checked out (suspicion_lab/tools/ -> ../..).
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO="/Users/jamesboggs/coding/personal_labs"
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 SUSPICION_LAB="$REPO/suspicion_lab"
@@ -43,6 +41,19 @@ step() {  # step <name> <cmd...>
 }
 
 log "=== nightly refit start ($TAG) ==="
+
+# --- DISABLED 2026-06-30 (James) ------------------------------------------------------
+# Nightly auto-fit+submit is PAUSED pending a thorough rework of the training pipeline.
+# Root cause (docs/crew-voting-investigation.md): the model is fit on the OFFLINE replay
+# reconstruction (suspicion_lab features.py over game.sees()), which has a TRAIN->SERVE
+# gap vs crewborg's LIVE perception + event_log — 94% imposter-precision offline vs ~39%
+# live. Re-fitting on the same offline reconstruction can't close that gap, so the nightly
+# refit churned versions without moving outcomes. The rework fits on crewborg's OWN
+# runtime-traced features instead. Re-enable only once that lands: NIGHTLY_REFIT_ENABLED=1.
+if [[ "${NIGHTLY_REFIT_ENABLED:-0}" != "1" ]]; then
+  log "DISABLED: nightly auto-fit+submit paused pending training-pipeline rework — champion unchanged."
+  exit 0
+fi
 
 # --- prerequisites -------------------------------------------------------------
 command -v uv >/dev/null || abort "uv not on PATH"
@@ -80,16 +91,18 @@ restore() { cp "$WEIGHTS_DST.bak" "$WEIGHTS_DST"; log "weights restored"; }
 
 if ! uv run pytest crewborg/tests -q; then restore; abort "test suite failed on new weights"; fi
 
-step "build" tools/build/build_player.sh
-if ! uv run python skills/coworld-local-run/scripts/smoke.py \
-      --coworld crewrift --image crewborg:dev \
+step "build" tools/build_player.sh crewborg
+if ! uv run python .claude/skills/coworld-local-run/scripts/smoke.py \
+      --coworld crewrift --image players-crewborg:dev \
       --run python --run=-m --run crewborg.coworld.policy_player --timeout 240; then
   restore; abort "Gate-1 smoke failed"
 fi
 
 # --- 4. upload + submit + record ------------------------------------------------------
-UPLOAD_OUT="$(uv run coworld upload-policy crewborg:dev --name crewborg \
+UPLOAD_OUT="$(uv run coworld upload-policy players-crewborg:dev --name crewborg \
   --run python --run=-m --run crewborg.coworld.policy_player \
+  --use-bedrock --bedrock-model us.anthropic.claude-haiku-4-5-20251001-v1:0 \
+  --secret-env CREWBORG_LLM_MEETINGS=1 \
   --secret-env CREWBORG_METRICS=1 \
   --secret-env CREWBORG_TRACE_GROUPS=voting,action,decision \
   --secret-env CREWBORG_TRACE_DECISION_FIELDS=phase,role,mode,intent,command,voting,self \

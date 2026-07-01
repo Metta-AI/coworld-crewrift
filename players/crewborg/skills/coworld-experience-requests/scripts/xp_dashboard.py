@@ -119,11 +119,11 @@ class Poller:
             return  # already fully captured
         if row.get("status") != "completed":
             return
-        # Per-seat identity + role (independent of the deduped inline scores).
+        # Per-seat identity, ordered by seat position. Role is derived later in
+        # snapshot() from the results artifact's imposter/crew flags (game_config.slots
+        # is empty on natural-roles evals).
         parts = row.get("participants") or []
         seats = [seat_label(p) for p in sorted(parts, key=lambda p: p.get("position", 0))]
-        slots = (row.get("game_config") or {}).get("slots") or []
-        roles = [s.get("role") for s in slots]
         results = None
         job = row.get("job_id")
         if job:
@@ -135,7 +135,7 @@ class Poller:
                     results = None
         with self._lock:
             self._episodes[eid] = {
-                "xreq": xreq, "seats": seats, "roles": roles,
+                "xreq": xreq, "seats": seats,
                 "results": results, "ts": time.time(),
             }
 
@@ -172,8 +172,13 @@ class Poller:
             ct = res.get("connect_timeout") or []
             dt = res.get("disconnect_timeout") or []
             seats = e["seats"]
-            roles = e["roles"]
             n_seats = min(len(seats), len(win), len(score))
+            # Per-seat role comes from the results artifact's `imposter`/`crew` flag
+            # arrays — authoritative for BOTH natural-roles and role-pinned evals. The
+            # old source (`game_config.slots[].role`) is EMPTY on natural-roles runs, so
+            # the per-role split never populated. See results.json: imposter=[1,0,...].
+            imp_flags = res.get("imposter") or []
+            crew_flags = res.get("crew") or []
             # Episode-level ops filter: if ANY seat timed out, the whole episode is
             # corrupt (-100 across the board) — skip it for stats.
             if any((ct[i] if i < len(ct) else 0) or (dt[i] if i < len(dt) else 0)
@@ -182,19 +187,15 @@ class Poller:
                 continue
             for i in range(n_seats):
                 lab = seats[i]
-                role = roles[i] if i < len(roles) else None
                 w = bool(win[i])
                 p = P(lab)
                 p["n"] += 1
                 p["wins"] += int(w)
-                # Keep the authoritative win flag with each score sample — a win is
-                # the +100 objective bonus, NOT merely score>0 (a crewmate can score
-                # 8 from tasks and still lose), so the strip must not infer from sign.
                 p["scores"].append([score[i], int(w)])
-                if role == "crew":
-                    p["crew_n"] += 1; p["crew_w"] += int(w)
-                elif role == "imposter":
+                if i < len(imp_flags) and imp_flags[i]:
                     p["imp_n"] += 1; p["imp_w"] += int(w)
+                elif i < len(crew_flags) and crew_flags[i]:
+                    p["crew_n"] += 1; p["crew_w"] += int(w)
 
         def winrate(w: int, n: int) -> float | None:
             return round(100.0 * w / n, 1) if n else None

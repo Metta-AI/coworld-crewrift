@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import urllib.parse
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
@@ -197,7 +198,7 @@ def flag_episode(name: str, episode: dict, r: dict, smap: dict[int, str], n: int
         if r["vote_timeout"][slot]:
             flags.append(f"no_vote_penalty ({pol})")
     return {"episode_dir": name, "id": episode.get("id"),
-            "coworld_id": (episode.get("tags") or {}).get("coworld_id"),
+            "coworld_id": episode.get("coworld_id"),  # top-level field, NOT under tags
             "replay_uri": episode.get("replay_url"), "flags": flags}
 
 
@@ -287,8 +288,15 @@ def render_html(data: dict, title: str, highlight: str | None, reasons: dict[str
     for ep in shown:
         reason = reasons.get(ep["episode_dir"]) or auto_reason(ep["flags"])
         tags = " · ".join(dict.fromkeys(f.split(" (")[0] for f in ep["flags"]))
-        link = (f'<a class="ink-link" href="{ep["viewer_url"]}" target="_blank" rel="noopener">▸ watch replay</a>'
-                if ep.get("viewer_url") else '<span class="dim">replay link not minted</span>')
+        # DURABLE HOSTED viewer link: the Observatory replay UI takes the permanent coworld_id
+        # + the permanent public-S3 replay_url (both from episode.json) — no ephemeral session,
+        # no raw download. This is the link that actually plays in the browser and never rots.
+        if ep.get("coworld_id") and ep.get("replay_uri"):
+            viewer = (f'https://softmax.com/observatory/coworld-replays/{ep["coworld_id"]}'
+                      f'?replay_uri={urllib.parse.quote(ep["replay_uri"], safe="")}')
+            link = f'<a class="ink-link" href="{viewer}" target="_blank" rel="noopener">▸ watch replay</a>'
+        else:
+            link = '<span class="dim">no replay artifact</span>'
         items.append(
             f'<li><p class="reason">{reason}</p>'
             f'<p class="ep"><span class="tag">{tags}</span><code>{ep["episode_dir"]}</code> {link}</p></li>')

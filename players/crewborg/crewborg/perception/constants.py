@@ -1,31 +1,8 @@
 """Sprite-v1 protocol constants for the Crewrift ``/player`` stream.
 
-The authoritative perception contract: message-type bytes, object-id bases/limits,
-sprite labels and label prefixes, the camera/self/collision coordinate offsets, and
-the player palette + phase-text vocabulary. Everything in the perception layer that
-decodes or classifies the scene reads these — they are the single place the wire
-format is pinned.
-
 All values verified against the game source on 2026-05-29
 (``src/crewrift/{sim,global}.nim`` in the ``Metta-AI/coworld-crewrift`` repo). These are
 the perception contract — re-check the source if perception misbehaves.
-
-Collaborators
--------------
-Relies on: nothing — a pure leaf of literals (the import root of the layer).
-Used by:
-  - ``perception.decoder`` — ``MSG_*`` type bytes, the two decoded labels, the
-    world-map object/sprite ids.
-  - ``perception.resolve`` — every object-id base/limit, label, prefix, the
-    self/collision offsets, ``MAX_PLAYERS``, and ``PHASE_TEXTS``.
-  - ``events.py`` / ``types.py`` — ``SCREEN_WIDTH``/``SCREEN_HEIGHT`` and
-    ``PLAYER_OBJECT_BASE`` for on-screen tests.
-Emits / touches: nothing — module-level constants only.
-
-Modifying this file: these mirror the game's Nim source, not crewborg's
-preferences. Change a value only to track a verified source change, and cite the
-``sim.nim``/``global.nim`` line (as the existing comments do). The id ranges are
-assumed disjoint by ``resolve.py``'s range checks — preserve that when editing bases.
 """
 
 from __future__ import annotations

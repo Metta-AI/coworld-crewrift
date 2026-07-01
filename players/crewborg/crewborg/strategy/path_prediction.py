@@ -64,27 +64,6 @@ The knobs (each documented at its definition below):
   eval tool, not here — it defines the *metric*, not the predictor.
 
 Behaviour is pinned qualitatively by `tests/test_path_prediction.py`.
-
-Collaborators
--------------
-Relies on:
-  - ``nav.NavGraph`` + ``nav.plan_route`` — routes from the acquisition point to each
-    candidate destination.
-  - ``map.types.MapData`` — the destination set (task-station centers + room centers).
-  - Caller-supplied per-frame observations (a position when visible, ``None`` when not).
-    No ``Belief``, no transport, no game coupling — so the replay tools drive it directly.
-Used by:
-  - ``modes.search`` — one ``PathPredictor`` per followed crewmate, to keep chasing down
-    the right hallway after the target leaves view.
-  - ``tools/path_prediction_*`` (offline scorer / UI) — the tuning + evaluation harness.
-Emits / touches: nothing external — all state is per-instance (``candidates`` /
-  ``trail`` / ``arc`` / ``log_score``). Read it out via ``ranked`` / ``best``.
-
-Modifying this file: do NOT tune the knobs by eye — edit one, then run
-``tools/path_prediction_eval.py`` and watch path-reward + calibration (see the loop
-above). Keep the module pure and ``Belief``-free so the offline tools stay an exact
-mirror of live behavior. The path-reward *metric* shape lives in the eval tool, not
-here. ``observe`` must be fed exactly what we saw (no interpolation across occlusion).
 """
 
 from __future__ import annotations
@@ -283,10 +262,6 @@ class PathPredictor:
         return (dx / n, dy / n)
 
     def _observe_visible(self, tick: int, point: Point) -> None:
-        """Target visible at ``point``: extend the sighting trail, then either re-acquire
-        (nothing tracked / a far jump / a reversal against all routes), refresh route
-        geometry (moved past ``REFRESH_DIST``, keeping evidence), or neither; snap every
-        candidate's predicted position to the truth and add this frame's heading evidence."""
         # Maintain the bounded sighting trail (used for the sustained heading).
         self.trail.append((tick, point))
         while self.trail and self.trail[0][0] < tick - HEADING_WINDOW_TICKS - MAX_SIGHTING_GAP:
@@ -329,9 +304,6 @@ class PathPredictor:
         return True
 
     def _observe_occluded(self, tick: int) -> None:
-        """Target not visible this frame: gain no evidence, but coast every candidate's
-        predicted position forward along its route by ``CREW_SPEED_PX`` per elapsed tick
-        (clamped at the route end) — which is what following an out-of-view target needs."""
         if self.last_tick is None:
             self.last_tick = tick
             return
@@ -353,9 +325,6 @@ class PathPredictor:
             cand.log_score += ALIGN_GAIN * cos
 
     def _far_from_all(self, point: Point) -> bool:
-        """True when a fresh sighting is beyond ``REACQUIRE_DIST`` from every candidate's
-        predicted position — the tracked set no longer explains where the target is, so
-        ``observe`` triggers a full re-acquire."""
         return all(math.dist(point, c.pred_pos) > REACQUIRE_DIST for c in self.candidates)
 
     def _normalize(self) -> None:
@@ -374,10 +343,8 @@ class PathPredictor:
 
     # --- readouts --------------------------------------------------------------
     def ranked(self) -> list[Candidate]:
-        """Surviving candidates, most-probable destination first."""
         return sorted(self.candidates, key=lambda c: c.prob, reverse=True)
 
     def best(self) -> Candidate | None:
-        """The single most-probable destination candidate, or ``None`` if none survive."""
         ranked = self.ranked()
         return ranked[0] if ranked else None

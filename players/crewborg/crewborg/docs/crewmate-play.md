@@ -47,14 +47,14 @@ belief plus two sticky fields it owns (`_accuse_target`, `_button_call_spent`). 
 
 ## The per-tick crewmate selector
 
-`_select` dispatches on phase first, then role. The crewmate-specific priority order lives
-in the `phase == "Playing"` branch for a live crewmate (`self_role` neither `"dead"` nor
-`"imposter"`).
+`_select` dispatches on phase first, then aliveness, then role. The crewmate-specific
+priority order lives in the `phase == "Playing"` branch for a live crewmate (alive, and
+`self_role` not `"imposter"`).
 
 | Priority | Condition | Mode | Reason string |
 |---|---|---|---|
 | 1 | `phase == "Voting"` (any role) | `attend_meeting` | `meeting open` |
-| 2 | `phase == "Playing"`, ghost (`self_role == "dead"`) | `normal` | `ghost: finish own tasks` |
+| 2 | `phase == "Playing"`, ghost (`not self_alive`) | `normal` | `ghost: finish own tasks` |
 | 3 | `phase == "Playing"`, imposter | (`_select_imposter`) | — |
 | 4 | live crewmate, a body in view | `report_body` | `body in view` |
 | 5 | live crewmate, button reachable + a sticky accuse target | `accuse` | `being tailed: call a meeting` |
@@ -252,7 +252,7 @@ also forbids ever voting our own color (coerced to skip). The exact timing windo
 
 ## Ghost crewmate
 
-A crewmate that has been killed (`self_role == "dead"`) still has a job: finish its own
+A crewmate that has been killed (`not self_alive`) still has a job: finish its own
 tasks (design §7.3). The selector routes a ghost straight to Normal (`ghost: finish own
 tasks`) in the `Playing` phase — it never reaches report-body or accuse (a ghost can't
 report a body or be threatened, and holds no suspicion). It otherwise runs the same Normal

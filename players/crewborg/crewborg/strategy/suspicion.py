@@ -52,9 +52,8 @@ time decay):
   long someone shadowed *us* — needs no death; saturates at a *moderate* P ≈ 0.72, a
   strong reason to call a meeting and accuse but not on its own near-certain).
 
-`believed_imposters` is every alive player with `P ≥ FLEE_PROBABILITY` — the
-near-certain set (crewmate-only; an imposter knows the truth, a ghost has no use for it).
-It is a derived readout — traced and serialized into the meeting LLM context — not a mode gate.
+`believed_imposters` (which gates Flee) is every alive player with `P ≥
+FLEE_PROBABILITY`. Crewmate-only — an imposter knows the truth, a ghost doesn't flee.
 
 **Two scoring paths.** When the vendored fitted weights load
 (``data/suspicion_weights.json``, trained by ``suspicion_lab`` — see
@@ -70,31 +69,6 @@ Legacy-path simplifications (documented for later): naive-Bayes independence bet
 evidence types; positive-evidence-only (the prior is the baseline — no exculpatory
 terms); and a static `K / (P − 1)` prior without redistributing the imposter budget
 as players are caught/die (a proper joint model is a refinement).
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.occupancy`` — ``neighbors_within`` / ``players_in_rect`` / ``rect_visible``
-    for the frame-to-frame witnessed-kill and witnessed-vent transition detectors.
-  - ``strategy.event_log`` (upstream) — the durative ``PlayerRecord.events`` this reads;
-    ``strategy.social_evidence`` (upstream) — the public/social counters the fitted
-    feature vector reads. Both must run *before* ``update_suspicion`` each tick.
-  - ``action.KILL_RANGE_SQ`` (the witnessed-kill neighbour radius); ``types`` (``Belief``,
-    ``PlayerRecord``, ``PerceptionFrame``, ``PlayerEvent``); the vendored fitted weights
-    ``data/suspicion_weights.json`` (optional — falls back to the hand model).
-Used by:
-  - ``strategy.rule_based`` (``active_tail_suspect`` → Accuse) and ``modes.accuse``.
-  - ``modes.attend_meeting`` (``top_suspect`` → the vote) and ``strategy.meeting.*``.
-  - ``events.py`` (tracing: ``witnessed_imposters`` + the suspicion snapshots/gauges).
-Emits / touches: writes ``belief.suspicion`` (per-color posterior) and
-  ``belief.believed_imposters`` every tick, and appends latched ``kill`` / ``vent_use``
-  point events onto perpetrators' ``PlayerRecord.events`` (the witnessed detectors).
-
-Modifying this file: keep code and ``docs/suspicion.md`` in sync — every log-LR
-form/constant change is logged in that doc's provenance table. The fitted and hand
-paths must BOTH treat a witnessed kill/vent as a definitional near-certainty floor (it
-is not a fitted quantity). Never score ``belief.self_color`` or a teammate. Run order
-matters: this is the last knowledge-layer step, after event-log + social-evidence.
 """
 
 from __future__ import annotations
@@ -162,12 +136,12 @@ ACCUSE_THRESHOLD = 0.6
 # extended within this many ticks — robust to a brief occlusion mid-tail.
 ACCUSE_TAIL_RECENCY_TICKS = 6
 
-# The near-certainty bar: a player at or above this P(imposter) enters `believed_imposters`
-# — a real probability, so the bar is interpretable (only near-certainty clears it).
+# Flee a player once P(imposter) reaches this — a real probability, so the bar is
+# interpretable (only near-certainty triggers the reactive Flee).
 FLEE_PROBABILITY = 0.9
 # Vote a player out once P(imposter) reaches this on its own — near-certainty (a
 # witnessed catch, a saturated tail) clears the bar regardless of the field. A touch
-# below the near-certainty bar: a vote is a deliberate, one-shot meeting decision.
+# below the (reactive) flee bar: a vote is a deliberate, one-shot meeting decision.
 VOTE_PROBABILITY = 0.8
 # A vote also fires on a *clear leading suspect* short of near-certainty: the top
 # posterior is over VOTE_LEAD_MIN_P (real evidence — more likely than not an imposter)
@@ -176,6 +150,11 @@ VOTE_PROBABILITY = 0.8
 # an innocent helps the imposters, so a flat or low field skips.
 VOTE_LEAD_MIN_P = 0.5
 VOTE_LEAD_MARGIN = 0.2
+# A softer bar for VOICING a read in a meeting (chat only, never a vote): the top
+# posterior is meaningfully above the ~2/8 prior. Below the vote bar by design —
+# sharing "I'm watching X because…" drives the deduction without ejecting on thin
+# evidence. Used by chat_suspect() for the deterministic meeting voice.
+CHAT_SUSPECT_MIN_P = 0.4
 # Clamp the prior away from 0/1 so its log-odds stays finite.
 PRIOR_MIN, PRIOR_MAX = 1e-3, 0.99
 
@@ -360,7 +339,7 @@ def update_suspicion(belief: Belief) -> None:
     (design §10.4). A ghost holds no suspicion.
     """
 
-    if belief.self_role == "dead":
+    if not belief.self_alive:
         belief.suspicion = {}
         belief.believed_imposters = set()
         return
@@ -373,8 +352,6 @@ def update_suspicion(belief: Belief) -> None:
 
 
 def _imposter_count(belief: Belief) -> int:
-    """Number of imposters `K`: the explicit ``belief.imposter_count`` if known, else the
-    game's auto formula ``(P − 3) // 2`` (0 below 5 players), clamped to ``[0, P − 1]``."""
     if belief.imposter_count is not None:
         return belief.imposter_count
     total = belief.total_player_count
@@ -382,8 +359,6 @@ def _imposter_count(belief: Belief) -> int:
 
 
 def _prior_imposter_p(belief: Belief) -> float:
-    """Each other player's marginal prior P(imposter) = ``K / (P − 1)`` by symmetry,
-    clamped to ``[PRIOR_MIN, PRIOR_MAX]`` so its log-odds stays finite."""
     n_others = max(1, belief.total_player_count - 1)
     return min(max(_imposter_count(belief) / n_others, PRIOR_MIN), PRIOR_MAX)
 
@@ -425,10 +400,6 @@ def _log_witnessed(belief: Belief, color: str, kind: PlayerEventKind, *, target_
 
 
 def _detect_witnessed_kill(belief: Belief) -> None:
-    """Latch a witnessed kill from the last consecutive frame pair: a body present this
-    frame whose owner was alive last frame, with **exactly one** non-teammate inside kill
-    range of that owner a frame ago ⇒ that single neighbour is the unambiguous killer (a
-    ``kill`` event on its log). Ambiguous (0 or >1 neighbours) ⇒ no attribution."""
     pair = _frame_pair(belief)
     if pair is None:
         return
@@ -447,12 +418,6 @@ def _detect_witnessed_kill(belief: Belief) -> None:
 
 
 def _detect_witnessed_vent(belief: Belief) -> None:
-    """Latch a witnessed vent use from the last consecutive frame pair, two ways per vent
-    rect: (a) **emergence** — the vent (+ walk margin) was in line of sight and empty last
-    frame but is occupied now; (b) **submersion** — a player was in the vent last frame, the
-    vent is still in sight, and the player has vanished. Each detected venter gets a
-    ``vent_use`` event on its log. Needs the LOS mask (``rect_visible``) to be sure the
-    absence/presence is real and not just off-screen."""
     pair = _frame_pair(belief)
     if pair is None or belief.map is None:
         return
@@ -534,11 +499,6 @@ def _evidence_log_lr(belief: Belief, record: PlayerRecord) -> float:
 
 
 def _recompute(belief: Belief) -> None:
-    """Rebuild ``belief.suspicion`` and ``belief.believed_imposters`` from the current
-    roster. For each live, non-teammate, non-self player: take the fitted log-odds when
-    weights are loaded (witnessed catches floored to prior + ``WITNESSED_LOG_LR``), else
-    prior + the hand-model evidence sum; ``sigmoid`` to a posterior. ``believed_imposters``
-    is every color at P ≥ ``FLEE_PROBABILITY`` (the near-certain set — a derived readout, not a mode gate)."""
     prior_logit = _logit(_prior_imposter_p(belief))
     suspicion: dict[str, float] = {}
     believed: set[str] = set()
@@ -639,6 +599,23 @@ def top_suspect(belief: Belief) -> str | None:
     if p >= VOTE_LEAD_MIN_P and (p - runner_up) >= VOTE_LEAD_MARGIN:
         return color  # a clear leader over a non-flat field
     return None
+
+
+def chat_suspect(belief: Belief) -> str | None:
+    """The leading suspect worth VOICING a read on in a meeting — the top-posterior
+    non-self player at or above `CHAT_SUSPECT_MIN_P`, or `None` on a flat field.
+
+    Deliberately a softer bar than `top_suspect` (the vote bar) and **never used to
+    vote**: it lets the deterministic meeting voice share an evidence-cited read
+    ("watching X because …") instead of going silent, while vote restraint is unchanged.
+    Like `top_suspect`, never returns our own color.
+    """
+
+    ranked = [(c, p) for c, p in belief.suspicion.items() if c != belief.self_color]
+    if not ranked:
+        return None
+    color, p = max(ranked, key=lambda kv: kv[1])
+    return color if p >= CHAT_SUSPECT_MIN_P else None
 
 
 def _logit(p: float) -> float:

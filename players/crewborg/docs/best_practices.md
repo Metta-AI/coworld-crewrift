@@ -183,3 +183,18 @@ These layer on Part 1; they're the failure modes of *this* game. Add to this par
   `src/crewrift/{sim,global}.nim`, but they are the **game's to change**. If perception misbehaves
   after a game bump, suspect drift and check the Nim source before trusting the decoder (see
   [`../crewborg/docs/perception-and-belief.md`](../crewborg/docs/perception-and-belief.md)).
+
+## Idling is dangerous — every idle needs an escape
+
+- **Standing still is almost always the wrong move**, and it is where crewborg's worst bugs hide. Every
+  multi-thousand-tick freeze we've found was a disguised idle with **no way out**: a WATCH parked at a
+  vantage, a `pick_room` "no task rooms" dead-end, and a RECON that `navigate_to`s a stale last-known
+  crew position it has already reached (navigate-onto-self ⇒ velocity 0 for thousands of ticks).
+- **Rule: any mode that can emit `idle` MUST have a clear escape** — a fallback action, a timeout, or a
+  transition that guarantees motion resumes. A mode that can return `idle` (or `navigate_to` its own
+  current / an unreachable point) with no guaranteed exit is a latent freeze.
+- Idle is legitimate only for a **narrow, deliberate** purpose (a genuine multi-crew vantage stakeout)
+  and the unavoidable startup no-op (no camera/map yet). Everything else should move toward crew /
+  re-search instead. Concretely: RECON with no live target → fall back to SEARCH (never idle); PICK_ROOM
+  → always pick a room. When auditing the FSM, check every `idle` **and** every `navigate_to` that could
+  resolve to the agent's current position.

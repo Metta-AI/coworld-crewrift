@@ -6,66 +6,34 @@ resume; **update it as you learn** (keep it tight — prune anything no longer l
 and reseed it when we pivot** to a whole new direction, keeping only the new objective.
 
 This is *not* a log or archive: finished work lives in git history / the
-[version log](../crewborg/version_log.md); durable disciplines live in
-[`best_practices.md`](best_practices.md); how the agent works lives in the
-[package docs](../crewborg/docs/README.md). This file is the one-screen "where are we."
-
-> **This is a seed.** It was distilled when crewborg was packaged into `coworld-crewrift`; the IDs,
-> warehouses, and exact numbers below are a starting point, not gospel. Re-derive against the live
-> league before relying on any figure, and reseed this file as you work.
 
 ---
 
-## Current state
+## 🎯 Current state (seeded at the 2026-07-01 sync — the v82 code line)
 
-**crewborg is a deterministic-first policy with optional, gated LLM layers** (meeting chat/vote and
-a gameplay commander), both off unless enabled at upload. The deterministic path is the proven
-champion; the LLM layers are built but not a confirmed win in a competitive field.
+**This package now carries the code that is Crewrift Prime CHAMPION as `crewborg:v82`** (2026-07-01):
+- **Imposter idle-freeze fixes** — RECON never idles/stalls (abandons reached-stale targets, falls back
+  to expected-crew seek; recon gated to the pre-kill-ready window); SEARCH is a 5-state FSM
+  (PICK_ROOM/GO_TO_ROOM/SEARCH_ROOM/WATCH/FOLLOW) with a scored, env-tunable PICK_ROOM
+  (`CREWBORG_PICKROOM_W_*`). Measured: idle-while-ready 0.68 → 0.10, freezes ≥1k ticks 23 → 1,
+  kills 1.18 → 1.91/game across the fix line.
+- **Role-latch fix** — role latches from the RoleReveal TEXT (`IMPS`/`CREWMATE`), never from reveal
+  icons (crew reveals also render the 9500+ icon range; the icon latch made crew play as imposters —
+  0 tasks, silent skip-votes, no chat). If you fork this code, do not widen that latch.
+- League telemetry: upload with `CREWBORG_METRICS=1 CREWBORG_TRACE_GROUPS=all` (see
+  user_preferences.md); league artifacts are EPHEMERAL (~one round) — harvest promptly.
 
-- **The deterministic imposter combo is the confirmed shippable gain**: *drop the unwitnessed
-  requirement after the first kill* (Hunt strikes a witnessed victim once a kill is banked) + a
-  post-kill Evade re-approach. Measured vs an older self in natural roles: ~+19pp ≥2-kill, ~+14pp
-  win, +0.32 kills (p≈0.04). See [`../crewborg/docs/imposter-play.md`](../crewborg/docs/imposter-play.md).
-- **The meeting LLM** (`CREWBORG_LLM_MEETINGS=1` + Bedrock) is verified firing in experience-request
-  (k8s) pods, but has historically **fallen back to deterministic in league/dispatch rounds** (the
-  Bedrock sidecar is wired for xreq jobs, not league pods). So an LLM-on build may just add startup
-  weight + silent fallback in league. **Open: confirm whether the meeting LLM fires in league rounds.**
-- **The gameplay commander** (`CREWBORG_LLM_COMMANDER=1`) is built end-to-end and its *control
-  capacity is demonstrated* (a forced run provably steers both roles), but it is **not performance-
-  tuned** — early use will often degrade play. See [`../crewborg/docs/commander.md`](../crewborg/docs/commander.md).
+## ▶ Open threads (2026-07-01)
 
-## 🎯 The headline lever: imposter kill → WIN conversion (not kill count)
-
-In a champion field, crewborg's **kills are competitive** but its **imposter win rate lags** — it
-gets the kills, then loses the game more often than the top imposters do on the *same* kill count.
-The frontier is **converting kills into wins**: surviving the meeting, reaching parity, not getting
-voted out for witnessed kills (the witness-drop's likely ejection backlash against competent crew).
-
-**Open diagnosis (start here):** pull the games where crewborg out-kills but LOSES, and separate
-(a) **ejection** (witnessed-kill backlash → voted out), (b) **failing to reach parity** (kills too
-slow/late), (c) **meeting/survival**. That diagnosis sets the next fix.
-
-## Loose threads
-
-- **Post-kill re-approach (not solved).** After a kill, crewborg drifts away from crew before the
-  next cooldown clears, while top imposters stay glued and snowball. The lever: re-establish contact
-  with the **single nearest ISOLATED victim** (not the densest crowd — crowd-seeking is a confirmed
-  dead end; crowds are witnesses), **sustained across the whole cooldown** (the long random-Search
-  window is a bigger culprit than the short Evade window). Forks: a dedicated re-approach state
-  spanning Evade→Search; or strengthen Recon (longer window, head to a live/predicted single victim).
-- **Crew side.** crewborg is consistently the best *tasker* but crew win rates are low across the
-  field (imposter-dominated). A raised direction: **punish aggressive imposters** (detect relentless
-  proximity/kills) to cut the opponents' imposter win and lift our crew win.
-- **Commander tuning.** If pursued: A/B the imposter commander (LLM on vs off) for kill efficiency
-  and iterate the imposter prompt to emit useful `hunt_room` / `target_player` / `strength`.
-- **Suspicion weights** are refit periodically from scraped league replays (the fitting pipeline is
-  in the optimizer toolkit, not the package). See [`../crewborg/docs/suspicion.md`](../crewborg/docs/suspicion.md).
-
-## Known small debts (from packaging)
-
-- The bridge's reconnect give-up path logs `NoneType` for the cause when every attempt was 0-frame
-  (cosmetic).
-- `FLEE_PROBABILITY` is a legacy constant name (the Flee mode is retired → Accuse); `believed_imposters`
-  is now a traced/serialized readout, not a mode gate.
-- The in-package `crewborg/tools/` (path-prediction analysis) and `crewborg/viewer/` are relocated but
-  not yet refined.
+1. **Crew vote rate is evidence-limited, not gate-limited.** Crew votes only at fitted P≥0.9
+   (`CREWBORG_WEIGHTS_VOTE_P`, `strategy/suspicion.py`); live posteriors cross it in only ~23% of
+   meetings (median max-posterior at meeting ≈ 0.67) since the game's 0.4.28/29 update. Precision is
+   the best in the field (67% vote-hit-imposter) but volume is ~1/3 of top rivals. The lever is
+   warming evidence accumulation, not lowering the threshold (0.8 is the only defensible sweep value).
+2. **`VOTE_TIMER_TICKS = 240` is stale** (`strategy/meeting/context.py`) — the live game uses 1200;
+   crewborg stops listening ~16% into the meeting. Align before meeting-coordination work.
+3. **Slot-4 role-limbo**: a crew seat at slot 4 can miss the CREWMATE reveal text entirely →
+   `self_role=None` forever → frozen, 0 task attempts (~15% of crew games). Needs a bounded
+   fallback-to-crew escape in `types.py` (keep the positive latch as primary).
+4. **Imposter 2nd-kill conversion**: sits kill-ready with a target visible ~43% of ready ticks
+   (4× rivals) yet converts no faster — the long-standing hesitancy lever.

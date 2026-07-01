@@ -18,29 +18,6 @@ Design choices:
   already implies we could see them.
 - **Neutral memory.** Built for every role (an imposter benefits too, for
   deflection/voting); only *acting* on it (suspicion → Flee) is crewmate-gated.
-
-Collaborators
--------------
-Relies on:
-  - ``types.Belief`` — reads ``roster`` (visible ``PlayerRecord``s this tick),
-    ``bodies``, ``map`` (rooms/tasks/vents rects), and our own ``self_world_x/y``;
-    writes the events + ``seen_ticks`` + ``last_event_tick`` onto each ``PlayerRecord``.
-  - ``action.KILL_RANGE_SQ`` — the ``proximity`` (third-party kill-range) threshold.
-Used by:
-  - ``__init__.build_runtime`` runs ``update_event_log`` right after ``update_belief``,
-    before ``update_social_evidence`` / ``update_suspicion``.
-  - ``strategy.suspicion`` and ``strategy.social_evidence`` consume these events
-    downstream (graded log-LRs / fitted features / watched-task dwells).
-Emits / touches: only the per-player ``PlayerRecord.events`` durative log (+ the
-  ``seen_ticks`` exposure counter and ``last_event_tick`` bookkeeping). No perception,
-  no suspicion math, no action — this is pure observation recording.
-
-Modifying this file: log only what we DIRECTLY saw as raw durative intervals; derived
-"who-followed-whom" signals are queries elsewhere, never stored as new kinds here.
-``_mark``'s extend-vs-open rule (``end_tick == prev`` within ``EVENT_MERGE_GRACE_TICKS``)
-is the invariant that keeps a duration an honest "observed for ≥ this long" — preserve
-it, and never log ``tailing_self`` against our own ``self_color`` (we are trivially at
-our own spot).
 """
 
 from __future__ import annotations
@@ -167,8 +144,6 @@ def _mark(
 def _latest_matching(
     record: PlayerRecord, kind: PlayerEventKind, region_index: int | None, target_color: str | None
 ) -> PlayerEvent | None:
-    """The most recent event matching this exact ``(kind, region_index, target_color)`` key
-    — the interval ``_mark`` may extend — or ``None`` if there is none."""
     for event in reversed(record.events):
         if event.kind == kind and event.region_index == region_index and event.target_color == target_color:
             return event

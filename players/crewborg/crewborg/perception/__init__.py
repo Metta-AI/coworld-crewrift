@@ -11,21 +11,6 @@ Two stages (design §3-§4):
 
 This is structured-scene maintenance, not computer vision: the only image decode
 is the ``walkability map`` alpha channel.
-
-Collaborators
--------------
-Relies on: ``.decoder`` (``apply_message`` / ``SpriteProtocolError``) and
-  ``.resolve`` (``resolve_scene``); the entities, tables, and constants are imported
-  directly from their submodules by callers, not re-exported here.
-Used by:
-  - ``coworld.scene.SceneState`` imports ``apply_message`` for the decode path.
-  - ``types.py`` imports ``resolve_scene`` for the resolve path.
-Emits / touches: nothing — this is a re-export surface (``__all__``).
-
-Modifying this file: keep ``__all__`` to the stable layer entry points
-(``apply_message`` / ``resolve_scene`` / ``SpriteProtocolError``). Submodule
-internals (entities, constants, tables) are imported by their full path elsewhere;
-don't widen the public surface without reason.
 """
 
 from crewborg.perception.decoder import SpriteProtocolError, apply_message

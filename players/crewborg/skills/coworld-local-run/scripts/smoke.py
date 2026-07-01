@@ -16,7 +16,7 @@ print the command to watch the replay.
 
 Usage (auth via `softmax login` for first-time `download`; run inside `uv run`):
 
-    uv run python smoke.py --coworld <cow_id|name> --image crewborg:dev
+    uv run python smoke.py --coworld <cow_id|name> --image players-crewborg:dev
     uv run python smoke.py --coworld cow_... --image my:dev --run python --run -m --run my_player
     uv run python smoke.py --coworld cow_... --image my:dev --timeout 180 --out /tmp/smoke
 

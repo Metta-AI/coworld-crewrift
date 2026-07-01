@@ -1,6 +1,6 @@
 ---
 name: coworld-episode-artifacts
-description: "Use to identify and download Coworld episode artifacts — replays, results, and per-agent logs — for completed episodes. Triggers: 'download the replay/logs for episode X', 'pull the last N episodes <player> played', 'fetch artifacts for this experience request / pool / round', 'get the episode data for post-mortem'. Game-agnostic (Crewrift, amongthem, etc.)."
+description: "Use to identify and download Coworld episode artifacts — replays, results, and per-agent logs — for completed episodes, or STREAMED live from a still-running experience request (--watch: each episode downloads as it finishes, no waiting for the batch). Triggers: 'download the replay/logs for episode X', 'pull the last N episodes <player> played', 'fetch artifacts for this experience request / pool / round', 'stream artifacts while the request runs', 'get the episode data for post-mortem'. Game-agnostic (Crewrift, amongthem, etc.)."
 ---
 
 # Coworld Episode Artifacts
@@ -67,6 +67,8 @@ server.
    uv run python "$F" --policy crewborg -n 10 --out /tmp/crewborg_eps
    # All child episodes of one experience request:
    uv run python "$F" --xreq xreq_... --out /tmp/xreq_eps
+   # …or STREAM them while the experience request is still running (exits when drained):
+   uv run python "$F" --xreq xreq_... --watch --out /tmp/xreq_eps
    # Explicit experience-request episodes (repeatable):
    uv run python "$F" --ereq ereq_aaa... --ereq ereq_bbb... --out /tmp/eps
    # Everything in a pool / round / division:
@@ -75,10 +77,12 @@ server.
    uv run python "$F" --episode <uuid> --out /tmp/eps
    ```
 
-   Useful flags: `-n/--num` (cap for policy/xreq/pool/round/division modes),
-   `--version N` (with `--policy`), `--no-replay` / `--no-results` / `--no-logs`
-   (skip a category), `--force` (re-download complete dirs), `--server` (override
-   the API base). Runs are **idempotent** — complete episode dirs are skipped.
+   Useful flags: `-n/--num` (cap for policy/xreq/pool/round/division modes; default
+   10, unlimited under `--watch`), `--version N` (with `--policy`), `--no-replay` /
+   `--no-results` / `--no-logs` (skip a category), `--force` (re-download complete
+   dirs), `--server` (override the API base); watch mode adds `--interval` (poll
+   seconds, default 15) and `--max-attempts` (retry bound, default 3). Runs are
+   **idempotent** — complete episode dirs are skipped.
 
 3. **Use the artifacts.** *How* to read each — the viewer vs the version-matched
    `expand_replay` vs the policy logs, the `.bitreplay` format, the slot↔policy
@@ -91,6 +95,12 @@ server.
 
 ## Notes
 
+- **`--watch`** (with `--xreq` only) polls the request and downloads each
+  episode as it turns terminal instead of requiring the batch to be done —
+  the streaming half of the default eval flow (see
+  `coworld-experience-requests` step 4). Resume-safe: completeness is judged
+  from disk, so a killed watch just picks up where it left off;
+  `watch_state.json` bounds retries (3) for episodes whose artifacts error.
 - For *interactive* one-off inspection of a single experience-request episode, the
   `coworld` CLI (`coworld episodes|replays|episode-logs|episode-results`) is
   fine — see `references/endpoint-map.md`. This script is for discovering across a

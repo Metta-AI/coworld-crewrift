@@ -4,8 +4,8 @@ Crewborg is a Player-SDK agent (the SDK is the `players.player_sdk` package,
 imported from the public `players` install, which tracks `main`) that plays **Crewrift**, a Coworld
 social-deduction game (Among Us–style: crewmates do tasks and vote; imposters
 kill, vent, and blend in). This document is the implementation spec.
-For orientation see [`README.md`](./README.md); for game constants, the Sprite-v1
-wire protocol, and source pointers see the player-directory top-level `AGENTS.md`.
+For codebase orientation, game constants, and source pointers, see
+the player-directory top-level `AGENTS.md`.
 
 > **Status:** This spec is implemented end-to-end for both roles. Attend Meeting
 > now has an opt-in LLM chat/vote path ([§10.3](#103-llm-meeting-decisions)) with
@@ -16,26 +16,6 @@ Conventions: paths like `sim:2464` cite the Crewrift Nim source (`sim` =
 `src/crewrift/sim.nim`, `global` = `src/crewrift/global.nim`, `protocols.nim` =
 `players/notsus/notsus/protocols.nim`), all in the
 `Metta-AI/coworld-crewrift` repo.
-
----
-
-## Contents
-
-| § | Section | Governs / key files |
-|---|---|---|
-| 1 | [Architecture](#1-architecture) | three-tier strategy→mode→action stack, the per-tick fold, invariants |
-| 2 | [Types](#2-types) | the six SDK type parameters — `types.py` |
-| 3 | [Transport & bridge](#3-transport--bridge) | websocket + Sprite-v1 decode + reconnect — `coworld/policy_player.py`, `coworld/scene.py` |
-| 4 | [Perception](#4-perception) | scene → labelled world-coord percepts — `perception/` |
-| 5 | [Belief](#5-belief) | world model, perception tape, per-player event log — `types.py` |
-| 6 | [Static map](#6-static-map-resource-file-bake) | baked nav graph + occupancy — `map/`, `nav.py`, `navbake.py` |
-| 7 | [Modes](#7-modes) | the behavioral stances per role — `modes/` |
-| 8 | [Intents](#8-intents) | the symbolic intent vocabulary |
-| 9 | [Action layer](#9-action-layer) | intents → wire commands, momentum/button FSMs — `action.py` |
-| 10 | [Strategy (mode selector) + suspicion](#10-strategy-mode-selector) | rule-based selector · Bayesian P(imposter) · agent tracking · LLM meeting/commander — `strategy/` |
-| 11 | [Package layout & tracing](#11-package-layout-and-tracing) | the file map + `domain.*` trace events |
-| 12 | [Tuning parameters](#12-tuning-parameters) | constants + the `CREWBORG_*` env-flag surface |
-| 13 | [Operational notes](#13-operational-notes) | runtime gotchas |
 
 ---
 
@@ -235,7 +215,9 @@ coords are `worldX = obj.x + cameraX` (`protocols.nim:496-499`). World coords ar
 unavailable until the map object arrives — degrade gracefully on the first ticks.
 
 **Self is not an object** — it is the implicit camera center. Self world position
-≈ `camera + fixed center offset`; self role/state comes from HUD labels (§4).
+≈ `camera + fixed center offset`; self **role** is latched from the RoleReveal
+interstitial text (`IMPS`/`CREWMATE`, §5), and kill-ready/death **state** come from
+HUD labels (§4).
 
 ### 3.3 Input & output
 
@@ -277,8 +259,8 @@ present*.
 | Field | Source (label / id range) | Notes |
 |---|---|---|
 | `tick`, `camera_ready`, `camera_x/y` | map object id 1 / sprite 1 | gates world coords |
-| `self_role` | `imposter icon`/`imposter icon cooldown` ⇒ imposter; `ghost icon` ⇒ dead; neither ⇒ crewmate | HUD (`global:2484-2506`) |
-| `self_kill_ready` | `imposter icon` (ready) vs `imposter icon cooldown` | imposter only |
+| `self_dead` | `ghost icon` present ⇒ `True` (our own death — a **state**, not a role; sets `belief.self_alive=False` while preserving the role). Imposter-vs-crew is latched separately at the belief layer from the RoleReveal text (`IMPS` ⇒ imposter, `CREWMATE` ⇒ crewmate; §5), so crew is as solid as imposter | HUD ghost icon (`global:2484-2506`) |
+| `self_kill_ready` | `imposter icon` (ready) vs `imposter icon cooldown` — kill **state**, not role | imposter only |
 | `self_world_xy` | camera + fixed center offset | approximate |
 | `visible_players[]` | `player <color> left/right`; ids `1000+joinOrder` | id, color, facing, world xy. Visible & alive only — a living agent never sees ghost objects (`global:2389-2398`) |
 | `visible_bodies[]` | `body <color>`; ids `2000+i` | id, color, world xy |
@@ -288,8 +270,7 @@ present*.
 | `phase_signals` | interstitial text + presence of voting objects | raw signals; the phase machine lives in belief (§5) |
 | `voting` | `vote cursor`, `vote skip cursor`, `vote self marker <color>`, `vote dot <color>` (ids `10100+target*MaxPlayers+voter`), `vote timer` | cursor, tally, timer |
 
-Color names (16) and the full label vocabulary are defined by the game's `/player`
-renderer (`src/crewrift/global.nim`) and consolidated in the top-level `AGENTS.md`.
+Color names (16) and the full label vocabulary are listed in `AGENTS.md` §2.
 
 ### 4.2 Task bubbles vs. arrows
 
@@ -385,8 +366,8 @@ ghosts and during meetings (no camera).
   (anchors, pairwise route polylines, coarse reachable grid) plus per-player
   reachability-disc location estimates, a separate teammate-imposter estimate,
   and the latest expected-crew occupancy grid. It is maintained after perception
-  folding and feeds imposter Evade re-approach room selection and pre-kill
-  search (see §10.2).
+  folding and feeds imposter Pretend room selection and pre-kill search (see
+  §10.2).
 - **inferences** — reserved slot for other strategy-produced facts.
 
 **Total player count.** Players appear as objects only when visible, but the
@@ -562,7 +543,7 @@ heavy pure-Python pass: **~14s on the first tick under the hosted 250m-CPU budge
 which froze the agent at spawn while the real-time 24 Hz engine streamed ~330 frames
 ahead (it then drained a stale backlog — the "slow to leave start" symptom). Since
 there is one static map, we bake both **once, offline** into a vendored asset
-(`map/croatoan_navbake.pkl.gz`, ~186 KiB) via `tools/build/nav_bake.py`, and
+(`map/croatoan_navbake.pkl.gz`, ~186 KiB) via `tools/nav_bake.py`, and
 load it on the first tick instead (`navbake.py`; ~0.1s vs ~29s in a 250m container —
 a ~280× cut, with the loaded graph/substrate byte-identical to a live build). The
 load **validates** the streamed mask still matches the baked one and, on any
@@ -604,7 +585,7 @@ re-decides.
 | **Hunt** | kill ready **and** a victim is visible | **commit to a visible victim and close/strike**: `select_victim` picks the most-isolated reachable visible crewmate, preferring targets not already claimed by a closer teammate; navigate to its **predicted intercept** (`strategy.trajectory` — lead a moving target); when in KillRange *and* unwitnessed → `kill`, else keep shadowing in range (lie in wait) |
 | **Evade** | for `EVADE_TICKS` after our own kill | **beeline toward the most-populated area** — the densest expected-crew room (occupancy grid §10.2, minus teammate pressure), else the hottest occupancy cell, else the last-seen crewmate (cold start). **Rewritten 2026-06-26**: the old Evade *fled* (vent away / walk off the corpse), feeding post-kill drift. New Evade *re-approaches* crew so a victim cluster is nearby when the window hands back to Search/Recon. **Paired with Hunt's drop-the-witness-check-after-first-kill** (§10): re-approaching the crowd only pays off once witnesses no longer veto the 2nd kill (else the crowd is a witness-rich dead end) — the two are evaluated together |
 | _(Report Body)_ | **removed from the imposter gate 2026-06-25** | Imposters **never report bodies**. Self-reporting our own kill opened a meeting that reset the cooldown and killed snowball kills (~79% of our body-report meetings were self-reports; warehouse, §perf). `report_body` is now **crewmate-only**. |
-| **Attend Meeting** | phase = `Voting` | **deflect onto crewmates, never a teammate** (§10.4): proactively accuse + vote a non-teammate who genuinely *looks* sus (real cues, same format as a crewmate); else wait and **bandwagon** onto a crewmate others suss/vote, citing *fabricated* safe cues in the identical format; else skip at the deadline |
+| **Attend Meeting** | phase = `Voting` | **deflect onto crewmates, never a teammate** (§10.4): proactively accuse + vote a non-teammate who genuinely *looks* sus (real cues, same format as a crewmate); else wait and **bandwagon** onto a crewmate others suss/vote, citing *fabricated* safe cues in the identical format; else, when **one removal from parity with a known live teammate**, *manufacture* a coordinated vote to close it; else skip at the deadline |
 
 **Search is the imposter's always-on seeking stance** (`modes/search.py`, rebuilt
 2026-06-24; the prior occupancy-density Pretend/Search is cold-stored at
@@ -809,7 +790,7 @@ Hunt chasing stale targets.
 
 **Aggressive experiment.** `CREWBORG_BE_DUMB=1` (or `BE_DUMB=1`) replaces the
 imposter `Playing` selector with only **Search**/**Hunt**: if kill-ready with a
-visible victim, Hunt; otherwise Search. This deliberately skips Evade
+visible victim, Hunt; otherwise Search. This deliberately skips Pretend, Evade,
 and imposter body reports so hosted/local runs can isolate whether always preparing
 to kill improves imposter outcomes versus the default blend-in policy.
 
@@ -820,9 +801,8 @@ to kill improves imposter outcomes versus the default blend-in policy.
 > offline LR-learning workflow, and the provenance log of every weight. This section
 > is the summary.
 
-`update_suspicion(belief)` runs every tick, last in the belief fold `update_belief →
-update_agent_tracking → update_event_log → update_social_evidence → update_suspicion`
-(composed in `build_runtime`). It maintains
+`update_suspicion(belief)` runs every tick in the fast loop *after* `update_belief`
++ `update_event_log` (composed in `build_runtime`). It maintains
 `belief.suspicion[color]` = the posterior **probability that player is an imposter**,
 ∈ [0, 1] — a real probability, so thresholds mean something. It drives the **vote**
 (`top_suspect`) and **Accuse** (`active_tail_suspect` — a live tail over
@@ -876,12 +856,11 @@ as exculpation (imposters fake tasks).
 v1 simplifications (documented for later): **naive-Bayes** independence between
 evidence types; **positive-evidence-only** (no exculpatory terms — the prior is the
 baseline); and a **static** `K / (P − 1)` prior without redistributing the imposter
-budget as players are caught or die (a proper joint model is a refinement).
-*Vote-tally* bandwagons (census-mapped `voting.dots`) and *chat-stance* counts are now
-folded every tick via `strategy/social_evidence.py`, feeding the fitted evidence weights
-and the imposter bandwagon. Still future evidence for the deterministic Bayesian model:
-*area-recency* and *alibi clearing*. The meeting LLM also sees these signals as
-serialized context, but does not write back durable suspicion facts.
+budget as players are caught or die (a proper joint model is a refinement). Still
+future evidence for the deterministic Bayesian model: *area-recency*,
+*alibi clearing*, *vote-tally* bandwagons (census-mapped `voting.dots`), and
+*chat semantics* (`chat_log`, §4.3). The meeting LLM already sees those signals
+as serialized context, but it does not write back durable suspicion facts.
 
 ### 10.2 Agent location tracking (`agent_tracking.py`)
 
@@ -896,11 +875,10 @@ last sighting. A fresh sighting collapses that player to the observed cell; when
 the player is absent, line-of-sight-visible cells are removed from their mass.
 
 The readout sums all tracked crew into an expected-crew occupancy grid and tracks
-teammate-imposter occupancy separately. Evade's re-approach aggregates the crew grid
-to room-level density, subtracts teammate pressure, and commits to the chosen room
-for the full Evade window so it reaches and fakes the task instead of
-periodically retargeting (via the `best_pretend_room_target` readout — the name is a
-carry-over from the retired Pretend mode). Visible kills still require Hunt's existing victim
+teammate-imposter occupancy separately. Pretend aggregates the crew grid to
+room-level density, subtracts teammate pressure, and commits to the chosen room
+for the full Pretend window so it reaches and fakes the task instead of
+periodically retargeting. Visible kills still require Hunt's existing victim
 selection, trajectory lead, KillRange check, and unwitnessed gate. The
 task-assignment/destination mixture from the design doc is not implemented yet;
 it is the next gated stage after measuring reachability-disc accuracy and kill
@@ -974,9 +952,33 @@ The priority order:
    and cite **fabricated** evidence — *safe, hard-to-disprove* cues only (`lurking on a
    vent`, `next to <body>'s body`, `they were tailing me`), never a bold falsifiable
    witnessed kill/vent (`accusation.fabricate_accusation`).
-3. **Skip.** If no crewmate ever takes heat, cast a skip at the deadline.
+3. **Parity-closing push.** If the board is **exactly one removal from parity** (a single
+   crew ejection wins the game) *and* we know a **live teammate**, don't skip a flat meeting
+   away — *manufacture* the pile: pick the best non-teammate crewmate and accuse+vote it like
+   a bandwagon (`imposter.parity_closing_vote_target`). The target rank is a **shared,
+   deterministic** key (existing votes, then lowest slot) so both imposters converge on the
+   *same* crewmate and their ballots stack into a plurality. Two safety gates keep it from the
+   "vote aggression raises ejection" trap (a same-policy A/B *did* confirm aggressive *killing*
+   raises ejection — this is voting, and far narrower): it fires **only** when
+   `imposter.alive_imposter_count >= 2` (so the parity arithmetic and the teammate exclusion are
+   trustworthy — and it never risks voting our own teammate when the reveal was missed) and
+   **only** at `crew_alive − imp_alive == 1` (a success ends the game, bounding exposure to this
+   one meeting). Motivation (warehouse 2026-06-30): the dominant crewborg imposter loss is
+   stalling at 3-crew/2-imp and never closing it, while the top imposters manufacture that
+   parity-closing ejection in the meeting. A/B (`crewborg-paritypush:v1`): imposter win
+   +14.4pp (43.7→58.1, p<1e-9) at flat kills.
+4. **Skip.** If no crewmate ever takes heat and we're not parity-closing, cast a skip at the deadline.
 
 Chat and vote stay coupled (we accuse exactly who we then vote for).
+
+The reveal-derived `teammate_colors` (§7.2) is what makes the never-out-a-teammate invariant and
+the parity gate sound. It is captured on **every** RoleReveal tick that shows the `IMPS` text
+(idempotent re-check, not a one-shot), so a single-frame parse blip cannot lose it. It is gated on
+the `IMPS` text specifically because the **crew** reveal *also* renders player icons in the `9500+`
+range — so teammate colors (and the imposter role itself) must be latched from the interstitial text
+(`IMPS` vs `CREWMATE`), never from the mere presence of reveal icons. A prior "latch any reveal icon
+on sight" widening dropped that text gate and made **every crew** false-latch imposter (playing the
+whole game as one, 0 tasks); the text gate is load-bearing, not incidental.
 
 ### 10.5 Reading opponents' chat (`strategy/meeting/chat_read.py`, `chat_nlp.py`)
 
@@ -1042,8 +1044,8 @@ the meeting LLM (§10.3) is untouched (only the Bedrock-enable check is shared).
   into belief each tick, bypassing the LLM/worker (no backend needed) — for deterministic control demos/QA.
 - **Danger mode (imposter, opt-in).** Two LLM-authorized risk levers that are the
   *deliberate exception* to "never touch the gates": `allow_witnessed_kill` (relax
-  Hunt's witness test, `hunt.py:68`) and `skip_evade` (suppress the post-kill Evade
-  window, `rule_based.py:143`). Both require a traced `danger_reason`; the play-guide
+  Hunt's witness test, `hunt.py:599`) and `skip_evade` (suppress the post-kill Evade
+  window, `rule_based.py:132`). Both require a traced `danger_reason`; the play-guide
   prompt marks them as ⚠️ DANGER. Unset → today's conservative behaviour.
 - **Gating & fallback.** Opt-in via `CREWBORG_LLM_COMMANDER=1` + a backend, mirroring
   `CREWBORG_LLM_MEETINGS`. No flag / no backend → worker disabled, `belief.commander` stays
@@ -1066,16 +1068,15 @@ crewborg/
   navbake.py         # load the offline-baked nav graph + occupancy substrate (tools/nav_bake.py bakes it)
   trace.py           # trace selection: event families + env-derived filtering (outputs are the SDK's)
   events.py          # CrewborgEventTracer: on_step_complete hook emitting domain.* events
-  modes/             # idle, normal, attend_meeting, report_body, accuse, evade, hunt, recon, search (+ imposter_common.py; _deprecated/ holds retired pretend)
-  strategy/          # rule_based.py: mode selector; suspicion.py: near-certain detection; social_evidence.py: vote/chat evidence; event_log.py: per-player observation log; occupancy.py: tape predicates; opportunity/trajectory/path_prediction
+  modes/             # idle, normal, attend_meeting, report_body, accuse, evade, pretend, search, hunt
+  strategy/          # rule_based.py: mode selector; suspicion.py: near-certain detection; event_log.py: per-player observation log; occupancy.py: tape predicates; opportunity/trajectory
   strategy/meeting/  # context/schema/llm (LLM path); accusation (chat templates); imposter (deflect/bandwagon); chat_read + chat_nlp (spaCy chat parsing)
-  strategy/commander/ # LLM gameplay commander: biases belief priorities (gated; does not select mode)
   perception/        # Sprite-v1 scene decoder: maintain tables, resolve objects → (label, world xy)
   map/               # vendored croatoan.resources + ported parser (§6)
   coworld/           # policy_player.py (the websocket bridge) + scene.py
   viewer/            # browser UI for inspecting trace-driven agent-perspective replays
   tests/             # action/modes/strategy/trace/runtime + bridge smoke + scene-decode tests
-  design.md  README.md  version_log.md
+  AGENTS.md  design.md  README.md
 ```
 
 **Tracing.** Stdout = protocol channel; traces/metrics flow through the SDK's
@@ -1214,9 +1215,10 @@ structural, and each still awaits tuning against a live server.
 | Voting policy | accuse + vote the **clear leading suspect** — near-certain (`P ≥ VOTE_PROBABILITY=0.8`) or a clear lead (`P ≥ VOTE_LEAD_MIN_P=0.5` and ahead of the runner-up by `VOTE_LEAD_MARGIN=0.2`), §10.1 — else **silent + skip** a flat field; always cast *something* before the timer (not voting costs −10) |
 | LLM meetings | opt-in with `CREWBORG_LLM_MEETINGS=1` plus Bedrock (`USE_BEDROCK=1`) or `ANTHROPIC_API_KEY`; default models `claude-haiku-4-5-20251001` direct / `us.anthropic.claude-haiku-4-5-20251001-v1:0` Bedrock; default timeout 3.0s; deadline prompt wins over chat prompts and is pulled earlier when needed so worst-case timeout plus margin returns before the ≤48-tick auto-submit window; chat cooldown is 100 ticks |
 | Chat NLP (§10.5) | **on by default**; kill switch `CREWBORG_CHAT_NLP=0` disables it (never imports/loads spaCy). Drives the imposter bandwagon's chat signal via `en_core_web_sm` dependency-parse negation scope, background-loaded so it never blocks play |
-| Aggressive imposter selector | opt-in with `CREWBORG_BE_DUMB=1` or `BE_DUMB=1`; during `Playing`, imposters skip Evade/ReportBody and always select Search unless kill-ready with a visible victim, then Hunt |
-| Report policy | crewmates always report visible bodies; **imposters NEVER report** (removed 2026-06-25) — they evade for `EVADE_TICKS = 72` (override `CREWBORG_EVADE_TICKS`) after their own kill, then go straight back to Search. Self-reporting our own kill opened a meeting that reset the kill cooldown and killed snowball kills (§7.2) |
-| Evade re-approach room targeting | room score = expected crew density minus teammate-imposter pressure (`TEAMMATE_ROOM_PENALTY = 3.0`, `agent_tracking.py`); commit to a real task station in the chosen room for the Evade window (the `best_pretend_room_target` readout — name carries over from the retired Pretend mode) |
+| Aggressive imposter selector | opt-in with `CREWBORG_BE_DUMB=1` or `BE_DUMB=1`; during `Playing`, imposters skip Pretend/Evade/ReportBody and always select Search unless kill-ready with a visible victim, then Hunt |
+| Report policy | crewmates always report visible bodies; **imposters NEVER report** (removed 2026-06-25) — they evade for `EVADE_TICKS = 72` after their own kill, then go straight back to Search. Self-reporting our own kill opened a meeting that reset the kill cooldown and killed snowball kills (§7.2) |
+| Pretend fake-task hold | one task-time (`TASK_TICKS = 72`) held at the station, then re-dispatch |
+| Pretend room targeting | room score = expected crew density minus teammate-imposter pressure (`TEAMMATE_ROOM_PENALTY = 3.0`); choose a real task station in the selected room; keep a chosen room for `ROOM_TARGET_MIN_TICKS = 10000` unless arriving or being preempted |
 | Kill isolation bar | clearance `BASE_ISOLATION_RADIUS = 48` px and witness window `WITNESS_WINDOW_TICKS = 72`, both relaxed to zero by urgency `URGENCY_FULL_TICKS = 240`; **and skipped entirely after our first kill** (Hunt's strike gate bypasses `unwitnessed` once `last_kill_tick` is set — prioritize banking the 2nd kill over stealth) |
 | Search lead | enter Search `SEARCH_LEAD_TICKS = 250` before the kill is ready (half the 500-tick cooldown — raised from 100 so we are already shadowing an isolated victim when the kill comes ready, converting the cooldown window to a kill ASAP; stops short of the BE_DUMB ceiling, which tripled ejections for +10% kills). Time-to-ready is reconstructed from the binary HUD: a learned `kill_cooldown_estimate` (or `DEFAULT_KILL_COOLDOWN_TICKS = 500`, matching the live game's `killCooldownTicks`, until measured) from the tracked cooldown start |
 | Hunt victim tracking | Hunt requires a visible victim; Search may follow a committed victim seen within `TRACK_WINDOW_TICKS = 120`; trajectory lead is capped at `MAX_LEAD_TICKS = 24` (velocity from sightings ≤ `VELOCITY_MAX_DT = 4` apart, `AGENT_SPEED_PX = 3`) |

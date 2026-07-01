@@ -2,10 +2,12 @@
 """Create and monitor Coworld experience requests, and resolve the IDs they need.
 
 An experience request is a hosted batch of episodes you define (target + roster +
-roles + count); the server runs them and you poll the `xreq_…` to completion, then
-pull artifacts (the `coworld-episode-artifacts` skill). This tool handles the
-mechanical parts — auth, live-schema validation, the POST + readback race, polling,
-and ID resolution — and leaves *composition of the request body* to you (see
+roles + count); the server runs them. After `create`, the DEFAULT is to stream the
+results while episodes are still running (`fetch_artifacts.py --xreq … --watch`, or
+Crewrift's `stream_eval.py` for artifacts + event warehouse — see the SKILL.md step
+4); `monitor` remains for a quick status glance. This tool handles the mechanical
+parts — auth, live-schema validation, the POST + readback race, polling, and ID
+resolution — and leaves *composition of the request body* to you (see
 `references/api.md` for every field).
 
 Three subcommands:

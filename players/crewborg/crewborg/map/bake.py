@@ -1,27 +1,8 @@
 """Classify resource rects into the baked static map (port of ``sim.nim``).
 
-Stage 2 of the static-map bake (``parser`` parse → classify here → ``types.MapData``).
-Sorts the flat :class:`ResourceRect` list into tasks (kept in **file order**, which is
-the perception stream's task index), vents (grouped by their trailing alphanumeric char),
-rooms, and the derived emergency button (28×34 centered on the ``bridge`` room, or the
-first room / map center as fallback). See design §6.
-
-Rect classification is by name: exactly ``task`` → a task tile; ``vent*`` (but not the
-plural ``vents`` legend label) → a vent; any other non-empty name that isn't a section
-legend (``vents``/``tasks``/``rooms``) → a room. Tasks are named for their nearest room
-so logs read meaningfully.
-
-Collaborators
--------------
-Relies on: ``map.parser`` (``load_resource_rects`` + :class:`ResourceRect`) and
-  ``map.types`` (the output models). ``load_croatoan_map`` reads the vendored
-  ``croatoan.resources`` via ``importlib.resources``.
-Used by: ``__init__.build_runtime`` bakes ``belief.map`` at startup; the bridge calls
-  ``walkability_matches`` once the streamed mask arrives to detect a wrong-map server.
-
-Modifying this file: the name-classification rules and the file-order = task-index
-invariant are a port of the engine's ``sim.nim`` and a contract with the perception
-stream. Changing them silently shifts task indices — keep them aligned to the source.
+Tasks (file order = stream index), vents (group = trailing alphanumeric char),
+rooms, and the derived emergency button (28×34 centered on the ``bridge`` room).
+See design §6.
 """
 
 from __future__ import annotations
@@ -41,31 +22,24 @@ BUTTON_HEIGHT = 34
 
 
 def _name_key(name: str) -> str:
-    """Canonical comparison key for a rect name: trimmed and lowercased."""
     return name.strip().lower()
 
 
 def _is_task(name: str) -> bool:
-    """A task tile is named exactly ``task`` (case-insensitive)."""
     return _name_key(name) == "task"
 
 
 def _is_vent(name: str) -> bool:
-    """A vent name starts with ``vent`` but is not the plural ``vents`` legend label."""
     key = _name_key(name)
     return key.startswith("vent") and key != "vents"
 
 
 def _is_room(name: str) -> bool:
-    """A room is any non-empty name that is neither a task, a vent, nor a section legend
-    (``vents``/``tasks``/``rooms``) — i.e. the catch-all named region."""
     key = _name_key(name)
     return bool(key) and key not in ("vents", "tasks", "rooms") and not key.startswith("vent") and key != "task"
 
 
 def _vent_group_char(name: str) -> str:
-    """The vent's teleport group: its last ASCII-alphanumeric char (e.g. ``vent a`` → ``a``).
-    Vents that share this char teleport together. Falls back to ``"v"`` if none is found."""
     key = _name_key(name)
     for ch in reversed(key):
         if ch.isalnum() and ch.isascii():
@@ -74,16 +48,10 @@ def _vent_group_char(name: str) -> str:
 
 
 def _center(rect: ResourceRect) -> MapPoint:
-    """The integer center of a parsed rect (floor-divided, matching the engine)."""
     return MapPoint(x=rect.x + rect.w // 2, y=rect.y + rect.h // 2)
 
 
 def _room_distance_squared(room: Room, x: int, y: int) -> int:
-    """Squared distance from point ``(x, y)`` to ``room``'s rectangle (0 if inside).
-
-    Per-axis clamp distance — the standard point-to-AABB metric — kept squared to avoid
-    a sqrt, since it is only used to rank rooms by nearness in ``_nearest_room_name``.
-    """
     if x < room.x:
         dx = room.x - x
     elif x >= room.x + room.w:
@@ -100,9 +68,6 @@ def _room_distance_squared(room: Room, x: int, y: int) -> int:
 
 
 def _nearest_room_name(rooms: list[Room], x: int, y: int) -> str | None:
-    """Name of the room nearest ``(x, y)`` (a containing room short-circuits), or ``None``
-    if there are no rooms. Used to give each task a human-readable ``Task near <room>`` name."""
-
     best_distance = None
     best_name: str | None = None
     for room in rooms:
@@ -116,18 +81,12 @@ def _nearest_room_name(rooms: list[Room], x: int, y: int) -> str | None:
 
 
 def _task_name(rooms: list[Room], rect: ResourceRect, index: int) -> str:
-    """A display name for a task: ``Task near <nearest room>``, or ``Task <n>`` (1-based)
-    when there are no rooms to anchor it. Cosmetic only — the task's identity is its index."""
-
     center = _center(rect)
     room_name = _nearest_room_name(rooms, center.x, center.y)
     return f"Task near {room_name}" if room_name is not None else f"Task {index + 1}"
 
 
 def _centered_rect(center: MapPoint, w: int, h: int, map_w: int, map_h: int) -> MapRect:
-    """A ``w×h`` rect centered on ``center``, clamped fully inside the ``map_w×map_h`` map.
-    Used to derive the emergency-button rectangle from the bridge-room center."""
-
     x = max(0, min(center.x - w // 2, max(0, map_w - w)))
     y = max(0, min(center.y - h // 2, max(0, map_h - h)))
     return MapRect(x=x, y=y, w=w, h=h)
@@ -138,15 +97,7 @@ def bake_map(
     width: int = DEFAULT_MAP_WIDTH,
     height: int = DEFAULT_MAP_HEIGHT,
 ) -> MapData:
-    """Classify parsed rects into a :class:`MapData` (design §6).
-
-    Buckets each rect by name (task / vent / room), preserving file order for tasks so a
-    task's position equals its stream index; assigns each vent a 1-based ``group_index``
-    within its group char; names tasks for their nearest room; derives ``home`` from the
-    ``bridge`` room center (falling back to the first room, then map center) and the
-    emergency ``button`` as a fixed-size rect centered there. ``width``/``height`` default
-    to the croatoan dimensions and define the coordinate space consumers validate against.
-    """
+    """Classify parsed rects into a :class:`MapData` (design §6)."""
 
     task_rects: list[ResourceRect] = []
     vents: list[Vent] = []

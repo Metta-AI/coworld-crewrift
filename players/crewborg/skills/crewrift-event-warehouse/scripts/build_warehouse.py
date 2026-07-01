@@ -32,7 +32,7 @@ import subprocess
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
-REPO = HERE.parents[4]  # players/crewborg/skills/crewrift-event-warehouse/scripts -> repo root
+REPO = HERE.parents[5]  # players/crewborg/skills/crewrift-event-warehouse/scripts -> repo root
 WH_DIR = REPO / "players/crewborg/tools/event-warehouse/crewrift-event-warehouse"
 FETCH = REPO / "players/crewborg/skills/coworld-episode-artifacts/scripts/fetch_artifacts.py"
 
@@ -117,8 +117,8 @@ def summarize(out: Path) -> int:
     manifest = json.loads((out / "manifest.json").read_text())
     warned = sum(1 for e in manifest.get("episodes", []) if e.get("trace_warning"))
     print("\n=== warehouse manifest ===")
-    for k in ("episodes_total", "episodes_ok", "episodes_skipped", "episodes_failed",
-              "events_written", "distinct_policies"):
+    for k in ("episodes_total", "episodes_ok", "episodes_cached", "episodes_skipped",
+              "episodes_failed", "events_written", "distinct_policies"):
         print(f"  {k}: {manifest.get(k)}")
     print(f"  event_keys: {', '.join(manifest.get('event_keys', []))}")
     if warned:

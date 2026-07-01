@@ -363,8 +363,8 @@ it calls AWS Bedrock in hosted episodes through a per-pod **sidecar** that holds
 signs the calls — so no API keys ever ship in the player. That path is the single most error-prone
 part of the platform, so read the contract + debugging here *before* turning the LLM on. Authoritative
 source: metta `docs/BEDROCK.md` (the player runtime contract) + the runner wiring cited under "How the
-access is delivered" below; crewborg's own gating is in `crewborg/strategy/meeting/llm.py` +
-`crewborg/strategy/commander/llm.py`.
+access is delivered" below; crewborg's own gating is in `crewrift/crewborg/strategy/meeting/llm.py` +
+`crewrift/crewborg/strategy/commander/llm.py`.
 
 > ### ⚠️ THE ONE RULE (if you use Bedrock) — send every call to `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`
 > A hosted player pod is given **`AWS_ENDPOINT_URL_BEDROCK_RUNTIME`** (e.g. `http://127.0.0.1:<port>`).

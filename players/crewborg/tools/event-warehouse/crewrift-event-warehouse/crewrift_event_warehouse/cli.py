@@ -73,7 +73,8 @@ def _run_build(args: argparse.Namespace) -> int:
     print(
         f"wrote {summary.out_dir}: "
         f"{summary.events_written} events across {summary.episodes_ok} episodes "
-        f"({summary.episodes_skipped} skipped, {summary.episodes_failed} failed), "
+        f"({summary.episodes_cached} cached, {summary.episodes_skipped} skipped, "
+        f"{summary.episodes_failed} failed), "
         f"{summary.distinct_policies} distinct policies"
     )
     return 0

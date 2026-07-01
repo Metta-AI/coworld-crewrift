@@ -1,49 +1,17 @@
-"""Probabilistic per-agent location tracking — the *belief* layer's spatial memory.
+"""Probabilistic per-agent location tracking for imposter search.
 
-Where the roster (``types.PlayerRecord``) holds the last fix on each player, this
-module answers the harder question the imposter modes need: *given that I lost
-sight of the crew, where are they likely to be now?* It implements the first
-behaviour-changing slice of ``docs/agent-tracking.md``:
+This module implements the first behaviour-changing slice of
+``docs/agent-tracking.md``:
 
-* a deterministic static **substrate** (``OccupancySubstrate``): anchors, pairwise
-  route polylines, and a coarse reachable occupancy grid, built once per episode;
-* a per-player **reachability-disc** position belief (``AgentPositionEstimate``)
-  that spreads probability over the cells a lost player could have walked to, with
-  line-of-sight *negative* observations (a cell we can currently see and don't see
-  them in is excluded); and
-* readout helpers that turn the aggregate crew **occupancy** (``OccupancySnapshot``)
-  into "walk toward the hottest likely crew cell / densest crew room".
+* a deterministic static substrate: anchors, pairwise route polylines, and a
+  coarse reachable occupancy grid;
+* a per-player reachability-disc position belief with line-of-sight negative
+  observations; and
+* a readout helper for "walk toward the hottest likely crew cell".
 
 The richer task-destination mixture from the design intentionally remains a
 later stage. The reachability filter is useful on its own, deterministic, and
 keeps all live work to cheap table lookups over a coarse grid.
-
-Collaborators
--------------
-Relies on:
-  - ``nav`` — ``NavGraph`` (reachable nodes, anchors, ``map_*`` dims) and
-    ``plan_route`` (to bake the substrate's pairwise route polylines).
-  - ``map.types.MapData`` (TYPE_CHECKING) — rooms / tasks / home / button geometry
-    for anchors and room labels.
-  - ``types.Belief`` / ``types.PerceptionFrame`` (TYPE_CHECKING) — the live fold this
-    advances over: ``roster`` life-status, ``recent_frames`` (visible players +
-    LoS ``visible_mask``), ``teammate_colors``, ``last_tick``.
-Used by:
-  - ``__init__.build_runtime`` calls ``update_agent_tracking`` each tick (folded
-    into belief right after ``update_belief``).
-  - ``navbake`` serializes/loads the ``OccupancySubstrate`` alongside the nav graph.
-  - ``modes.evade`` reads ``best_pretend_room_target`` / ``best_seek_point``;
-    ``modes._deprecated.search`` reads ``ranked_seek_points``.
-Emits / touches: mutates ``belief.agent_tracking`` only (``estimates`` /
-  ``teammate_estimates`` / ``snapshot`` / ``teammate_snapshot`` /
-  ``previous_visible_colors`` / ``reacquisitions``). Never touches the roster,
-  suspicion, or any other belief section, and never emits intents or trace events
-  (``events.py`` reads this state out for the occupancy traces).
-
-Modifying this file: this is a *pure readout* over the finalized perception fold —
-it observes belief and writes only its own ``agent_tracking`` sub-state. Keep the
-disc/occupancy math deterministic and cheap (table lookups over the coarse grid);
-do not reach into strategy, suspicion, or the action layer here.
 """
 
 from __future__ import annotations
@@ -63,11 +31,7 @@ if TYPE_CHECKING:
 Point = tuple[int, int]
 AnchorKind = Literal["home", "button", "task"]
 
-# Side length (world px) of one coarse occupancy cell. Coarser than the nav grid:
-# occupancy is a room-scale "where is the crew" readout, not pixel pathing.
 GRID_CELL_SIZE = 32
-# Crewmate walk speed ceiling (world px / tick), from sim.nim. The reachability disc
-# for a player last seen ``age`` ticks ago has radius ``MAX_SPEED_PX_PER_TICK · age``.
 MAX_SPEED_PX_PER_TICK = 2.75
 
 
@@ -83,12 +47,7 @@ class TrackingAnchor(BaseModel):
 
 
 class RoutePolyline(BaseModel):
-    """A pixel polyline (a baked anchor→anchor route) with arc-length lookup.
-
-    ``cumulative_lengths[i]`` is the distance along ``points`` up to vertex ``i`` and
-    ``total_length`` the full route length, so ``point_at`` can map "distance walked"
-    to a world pixel for motion prediction along a known route.
-    """
+    """A pixel polyline with cumulative arc-length lookup."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -98,9 +57,6 @@ class RoutePolyline(BaseModel):
 
     @classmethod
     def from_points(cls, points: list[Point]) -> "RoutePolyline":
-        """Build a polyline from a raw point list, dropping consecutive duplicates and
-        precomputing the cumulative arc-length table."""
-
         deduped: list[Point] = []
         for point in points:
             if not deduped or deduped[-1] != point:
@@ -157,13 +113,7 @@ class OccupancyCell(BaseModel):
 
 @dataclass(frozen=True)
 class OccupancySubstrate:
-    """Static per-episode tracking substrate (pure function of nav graph + map).
-
-    ``anchors`` are the named home/button/task points; ``polylines`` maps each
-    ordered anchor pair to its baked route; ``cells`` is the reachable coarse grid
-    keyed by ``index = row * cols + col``. Built once (and offline-bakeable via
-    ``navbake``) because the O(anchors²) route sweep is expensive.
-    """
+    """Static per-episode tracking substrate."""
 
     anchors: tuple[TrackingAnchor, ...]
     polylines: dict[tuple[str, str], RoutePolyline]
@@ -174,14 +124,7 @@ class OccupancySubstrate:
 
 
 class AgentPositionEstimate(BaseModel):
-    """Latest position distribution for one other agent (one reachability disc).
-
-    ``mass_by_cell`` is the (uniform) probability spread over the candidate cells;
-    ``disc_radius`` is the reachability radius in world px (0 when observed this
-    tick), ``age_ticks`` how long since last seen, and ``top_*`` the single most
-    likely cell / point / probability. ``support_cell_count`` is how many cells carry
-    mass — a width-of-uncertainty readout.
-    """
+    """Latest position distribution for one other agent."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -198,12 +141,7 @@ class AgentPositionEstimate(BaseModel):
 
 
 class OccupancySnapshot(BaseModel):
-    """Coarse-grid **expected** crew occupancy for the latest tick.
-
-    ``expected_by_cell`` sums every tracked agent's per-cell mass, so a cell's value
-    is the expected number of (crew, or teammate) agents there. ``top_*`` is the
-    hottest cell; the seek/room readouts rank off this.
-    """
+    """Coarse-grid expected crew occupancy for the latest tick."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -218,19 +156,7 @@ class OccupancySnapshot(BaseModel):
 
 @dataclass(frozen=True)
 class OccupancyRoomTarget:
-    """A room-level "blend near likely crew" target for imposter routing.
-
-    ``density`` is crew occupancy per cell, ``teammate_density`` the same for fellow
-    imposters, and ``score = density - TEAMMATE_ROOM_PENALTY · teammate_density`` — so
-    a room crowded with crew but not with a teammate scores highest. ``point`` is the
-    room's representative cell center to navigate to.
-
-    Produced by ``best_pretend_room_target`` and consumed by the live **Evade** mode
-    (``modes.evade``) to beeline toward where the crew most likely are after a kill.
-    The ``pretend`` in the producer's name is legacy — it dates to the retired Pretend
-    imposter mode (removed 2026-06-24); the live imposter modes are Search / Recon /
-    Hunt / Evade.
-    """
+    """Room-level target for imposter Pretend routing."""
 
     room_name: str
     point: Point
@@ -241,13 +167,7 @@ class OccupancyRoomTarget:
 
 
 class ReacquisitionEvent(BaseModel):
-    """A predicted-vs-actual record logged when a lost player re-enters view.
-
-    Compares where the disc said the player most likely was (``predicted_cell`` /
-    ``predicted_point`` at ``top_probability``) against where they actually
-    reappeared (``actual_*``); ``distance_error`` (world px) is the tracker's miss.
-    Diagnostic only — drained by ``events.py`` into occupancy traces.
-    """
+    """A predicted-vs-actual observation when a lost player re-enters view."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -263,14 +183,7 @@ class ReacquisitionEvent(BaseModel):
 
 
 class AgentTrackingState(BaseModel):
-    """Mutable tracking state stored on :class:`Belief` (the ``agent_tracking`` field).
-
-    ``substrate`` is the static per-episode grid (built lazily, or loaded from the
-    bake). ``estimates`` / ``teammate_estimates`` are the per-color discs for live
-    crew / teammates; ``snapshot`` / ``teammate_snapshot`` their aggregate occupancy.
-    ``previous_visible_colors`` powers reacquisition detection (a color that was lost
-    and is now visible); ``reacquisitions`` is the append-only diagnostic log.
-    """
+    """Mutable tracking state stored on :class:`Belief`."""
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -289,13 +202,7 @@ def build_occupancy_substrate(
     *,
     cell_size: int = GRID_CELL_SIZE,
 ) -> OccupancySubstrate:
-    """Build the static substrate: anchors, pairwise route polylines, and a coarse
-    reachable grid.
-
-    Pure function of the nav graph + map; the O(anchors²) ``plan_route`` sweep makes
-    it the heavy half of the offline bake (``navbake``). Called lazily by
-    ``update_agent_tracking`` only when no baked substrate was loaded.
-    """
+    """Build anchors, pairwise route polylines, and a coarse reachable grid."""
 
     anchors = tuple(_anchors(nav, map_data))
     polylines: dict[tuple[str, str], RoutePolyline] = {}
@@ -319,15 +226,7 @@ def build_occupancy_substrate(
 
 
 def update_agent_tracking(belief: "Belief") -> None:
-    """Advance the per-player location tracker from the finalized perception fold.
-
-    Called once per tick (after ``update_belief``). Lazily builds the substrate when
-    nav + map are ready, then: logs reacquisitions for crew that just came back into
-    view, recomputes each live crew / teammate disc (observed → exact cell, else a
-    reachability disc minus currently-visible cells), and rebuilds the aggregate
-    occupancy snapshots. Mutates only ``belief.agent_tracking``; no-ops until the
-    substrate exists.
-    """
+    """Advance the per-player location tracker from the finalized perception fold."""
 
     tracking = belief.agent_tracking
     if tracking.substrate is None and belief.nav is not None and belief.map is not None:
@@ -374,12 +273,6 @@ def _estimate_colors(
     visible_colors: set[str],
     frame: "PerceptionFrame | None",
 ) -> dict[str, AgentPositionEstimate]:
-    """Build a position estimate for each color in ``colors``.
-
-    A color visible this tick gets an exact (single-cell) estimate; an unseen one gets
-    a reachability disc grown from its last-seen fix (or home before it was ever seen).
-    """
-
     estimates: dict[str, AgentPositionEstimate] = {}
     for color in sorted(colors):
         record = belief.roster[color]
@@ -402,12 +295,7 @@ def _estimate_colors(
 
 
 def best_seek_point(belief: "Belief", self_xy: Point | None = None) -> Point | None:
-    """Return the hottest reachable occupancy cell center, or ``None`` if no mass.
-
-    The single best "walk toward likely crew" point for imposter seeking (used by the
-    live Evade fallback). ``self_xy`` is accepted for call-site symmetry but unused —
-    cells are already prefiltered to the reachable component, so no live A* is needed.
-    """
+    """Return the hottest reachable occupancy cell for imposter search."""
 
     del self_xy  # cells are prefiltered to the reachable component; no live A* here
     points = ranked_seek_points(belief)
@@ -415,11 +303,7 @@ def best_seek_point(belief: "Belief", self_xy: Point | None = None) -> Point | N
 
 
 def ranked_seek_points(belief: "Belief") -> list[Point]:
-    """Return occupancy cell centers from hottest to coldest (positive mass only).
-
-    The full ranked seek list behind ``best_seek_point``; consumed by the deprecated
-    occupancy Search. Empty when there is no substrate/snapshot or no mass yet.
-    """
+    """Return occupancy cell centers from hottest to coldest for active search."""
 
     substrate = belief.agent_tracking.substrate
     snapshot = belief.agent_tracking.snapshot
@@ -437,11 +321,7 @@ def ranked_seek_points(belief: "Belief") -> list[Point]:
     return points
 
 
-# Stay in the current room unless a rival room beats it by more than this factor —
-# damps room-to-room flip-flopping when two rooms have near-equal crew density.
 ROOM_TARGET_HYSTERESIS = 0.80
-# Weight subtracted per unit of *teammate* density when scoring a room, so two
-# imposters spread out instead of piling into the same crowd.
 TEAMMATE_ROOM_PENALTY = 3.0
 
 
@@ -452,17 +332,12 @@ def best_pretend_room_target(
     current_room_name: str | None = None,
     eligible_room_names: set[str] | None = None,
 ) -> OccupancyRoomTarget | None:
-    """Return the best room-level "blend near crew" target from crew density and
-    teammate pressure (see :class:`OccupancyRoomTarget`).
+    """Return the best room-level Pretend target from crew density and imposter pressure.
 
-    Consumed by the live **Evade** mode (the ``pretend`` name is legacy from the
-    retired Pretend mode; the live imposter modes are Search / Recon / Hunt / Evade).
-    Crew occupancy is scored at *room* scale because cell-level maxima are too twitchy
-    once per-agent support spreads; teammate pressure is subtracted (not folded into
-    crew occupancy) so an imposter blends near likely crew while avoiding a second
-    imposter already in that room. ``current_room_name`` gets ``ROOM_TARGET_HYSTERESIS``
-    stickiness to avoid flip-flopping; ``eligible_room_names`` (when given) restricts
-    the candidate rooms. ``None`` when no room has positive expected crew.
+    Crew occupancy is useful at room scale; cell-level maxima are too twitchy once
+    the per-agent support becomes broad. Teammate pressure is kept separate from
+    crew occupancy so an imposter can blend near likely crew while avoiding a
+    second imposter already occupying or searching the same room.
     """
 
     substrate = belief.agent_tracking.substrate
@@ -512,6 +387,34 @@ def best_pretend_room_target(
     return best if best.expected > 0 else None
 
 
+def room_occupancy(belief: "Belief") -> dict[str, tuple[float, float]]:
+    """Per-room ``(crew_density, teammate_density)`` from the occupancy substrate.
+
+    Density = expected crew (or teammate) mass in the room / its cell count, so rooms of
+    different sizes compare fairly. Empty dict when no substrate/snapshot has built yet
+    (early game) — callers must tolerate that and fall back to non-occupancy signals.
+    """
+
+    substrate = belief.agent_tracking.substrate
+    snapshot = belief.agent_tracking.snapshot
+    if substrate is None or snapshot is None:
+        return {}
+    room_cells = _cells_by_room(substrate)
+    expected_by_room = _room_expected(substrate, snapshot.expected_by_cell)
+    teammate_snapshot = belief.agent_tracking.teammate_snapshot
+    teammate_by_room = (
+        _room_expected(substrate, teammate_snapshot.expected_by_cell) if teammate_snapshot is not None else {}
+    )
+    out: dict[str, tuple[float, float]] = {}
+    for room_name, expected in expected_by_room.items():
+        cells = room_cells.get(room_name)
+        if not cells:
+            continue
+        n = len(cells)
+        out[room_name] = (expected / n, teammate_by_room.get(room_name, 0.0) / n)
+    return out
+
+
 def _cells_by_room(substrate: OccupancySubstrate) -> dict[str, list[OccupancyCell]]:
     out: dict[str, list[OccupancyCell]] = {}
     for cell in substrate.cells.values():
@@ -556,10 +459,6 @@ def _snap(nav: NavGraph, point: Point) -> Point:
 
 
 def _coarse_grid(nav: NavGraph, map_data: "MapData", cell_size: int) -> tuple[dict[int, OccupancyCell], int, int]:
-    """Bucket every reachable nav node into a coarse ``cell_size`` grid; one
-    ``OccupancyCell`` per occupied bucket, centered on its most-central node and
-    labeled with the room it sits in."""
-
     rows = math.ceil(nav.map_height / cell_size)
     cols = math.ceil(nav.map_width / cell_size)
     by_cell: dict[tuple[int, int], list[Point]] = {}
@@ -591,8 +490,6 @@ def _observed_estimate(
     tick: int,
     point: Point,
 ) -> AgentPositionEstimate:
-    """A certain (single-cell, radius-0) estimate for a player seen at ``point`` now."""
-
     cell = _cell_for_point(substrate, point)
     mass = {cell.index: 1.0} if cell is not None else {}
     return AgentPositionEstimate(
@@ -618,15 +515,6 @@ def _reachability_estimate(
     last_seen: Point,
     frame: "PerceptionFrame | None",
 ) -> AgentPositionEstimate:
-    """A reachability-disc estimate for an unseen player: uniform mass over the cells
-    within walking range of ``last_seen``, *minus* any cell we can currently see (a
-    negative observation — if it were there we'd see it).
-
-    The disc radius grows with age at ``MAX_SPEED_PX_PER_TICK``; support widens to all
-    non-visible cells, then all cells, if the disc empties. ``top`` is the cell nearest
-    the last-seen fix (the single most likely spot under a "hasn't moved far" prior).
-    """
-
     age = max(0, now_tick - last_seen_tick)
     radius = MAX_SPEED_PX_PER_TICK * age
     support_radius = radius + math.sqrt(2 * substrate.cell_size * substrate.cell_size) / 2
@@ -662,8 +550,6 @@ def _snapshot(
     tick: int,
     estimates: Iterable[AgentPositionEstimate],
 ) -> OccupancySnapshot:
-    """Sum a set of per-agent estimates into the aggregate expected-occupancy grid."""
-
     expected: dict[int, float] = {}
     tracked = 0
     support_cells: set[int] = set()
@@ -712,9 +598,6 @@ def _reacquisition(
 
 
 def _cell_for_point(substrate: OccupancySubstrate, point: Point) -> OccupancyCell | None:
-    """The occupancy cell containing ``point`` (or the nearest one if that bucket is
-    unreachable/empty); ``None`` only when the grid has no cells at all."""
-
     row = min(max(point[1] // substrate.cell_size, 0), substrate.rows - 1)
     col = min(max(point[0] // substrate.cell_size, 0), substrate.cols - 1)
     index = row * substrate.cols + col
@@ -726,10 +609,6 @@ def _cell_for_point(substrate: OccupancySubstrate, point: Point) -> OccupancyCel
 
 
 def _point_visible(frame: "PerceptionFrame | None", point: Point) -> bool:
-    """Whether a world ``point`` falls inside this frame's true line-of-sight mask
-    (the negative-observation test). False when there is no frame/mask or it's
-    off-camera."""
-
     if frame is None or frame.visible_mask is None:
         return False
     sx = point[0] - frame.camera_x

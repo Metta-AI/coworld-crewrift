@@ -10,7 +10,7 @@ skill).
 
 It explains the **API** and its options so you can compose whatever request you
 need — it is not a fixed recipe book; mix the building blocks below as the question
-demands. `SKILL.md` has the end-to-end loop (resolve → compose → create → monitor →
+demands. `SKILL.md` has the end-to-end loop (resolve → compose → create → stream →
 analyze) this fits into.
 
 The API is **game-agnostic** (works for any Coworld); only `game_config_overrides`

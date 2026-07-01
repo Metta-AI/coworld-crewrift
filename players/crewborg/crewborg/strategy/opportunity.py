@@ -10,32 +10,6 @@ The witness bar is not fixed: the longer the imposter has been *able* to kill
 without doing so, the more it relaxes (``kill_urgency_ticks``), so a cautious
 imposter that never finds a clean opening still escalates rather than stalling
 forever (design §10 "act with urgency").
-
-This module also reconstructs the kill cooldown from the binary HUD
-(``ticks_until_kill_ready``) and owns the Recon pre-position trigger
-(``recon_window`` / ``most_recent_victim``).
-
-Collaborators
--------------
-Relies on:
-  - ``nav.plan_route`` — reachability filter in ``select_victim`` (only commit to a
-    victim we can actually route to).
-  - ``types.Belief`` — reads the roster, ``teammate_colors``, self position, and the
-    cooldown-tracking fields (``self_kill_ready``, ``kill_ready_since_tick``,
-    ``kill_cooldown_start_tick``, ``kill_cooldown_estimate``). Reads only; nothing stored.
-Used by:
-  - ``strategy.rule_based`` — the imposter mode gates (``has_visible_victim``,
-    ``ticks_until_kill_ready``, ``recon_window``, ``most_recent_victim``).
-  - ``modes.hunt`` (``select_victim`` / ``unwitnessed`` / ``visible_victims``),
-    ``modes.recon`` (``most_recent_victim``), ``strategy.commander.context`` and
-    ``events.py`` (``ticks_until_kill_ready`` / ``kill_urgency_ticks`` readouts).
-Emits / touches: nothing — pure queries over belief. The selection it returns is acted
-  on by the mode objects, not here.
-
-Modifying this file: these are read-only helpers; keep them side-effect-free. The
-witness relaxation (``unwitnessed`` shrinking ``radius_sq``/``window`` with urgency) and
-the isolation-then-nearest victim ranking are the kill-conversion levers — tune them
-against A/Bs, not by eye.
 """
 
 from __future__ import annotations
@@ -69,6 +43,21 @@ TEAMMATE_CLAIM_RADIUS = 80
 # target league) uses 500 ticks; regular Crewrift (0.1.58) uses 800. We still learn
 # the true value from the HUD once a cooldown runs to ready.
 DEFAULT_KILL_COOLDOWN_TICKS = 500
+
+# Enter Search this many ticks before the kill comes off cooldown. Search finds
+# and follows a victim; Hunt only activates once the kill is ready and a victim is
+# visible. Raised from 100 → 250 (half the 500-tick cooldown): we want to be already
+# shadowing an isolated victim when the kill comes ready, so the cooldown window
+# converts to a kill ASAP — a partner's kill→report can reset our cooldown, so banking
+# our own kill quickly is the only lever on our side (see tentative lessons). 250
+# deliberately stops short of "search the whole cooldown": the BE_DUMB ceiling arm
+# (search ~97% of ticks) tripled our ejection rate (14%→40%) for only +10% kills, so we
+# keep a Pretend window for cover.
+SEARCH_LEAD_TICKS = 250
+
+# Backwards-compatible name for docs/tests that still refer to the old Hunt lead
+# term. New code should use SEARCH_LEAD_TICKS.
+HUNT_LEAD_TICKS = SEARCH_LEAD_TICKS
 
 
 def kill_urgency_ticks(belief: Belief) -> int:
@@ -191,9 +180,6 @@ def _is_unwitnessed(target: PlayerRecord, belief: Belief, radius_sq: float, wind
 
 
 def _claimed_by_teammate(target: PlayerRecord, belief: Belief, self_xy: tuple[int, int]) -> bool:
-    """Whether a recently-seen living fellow imposter is both closer to ``target`` than we
-    are and within ``TEAMMATE_CLAIM_RADIUS`` of it — i.e. the partner is better placed to
-    take this victim, so we should prefer another (a soft, deconfliction-only signal)."""
     target_xy = (target.world_x, target.world_y)
     self_dist = _dist2(self_xy, target_xy)
     for teammate in belief.roster.values():

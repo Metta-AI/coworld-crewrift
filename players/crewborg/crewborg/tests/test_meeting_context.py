@@ -1,11 +1,17 @@
-"""Meeting LLM context and vote-legality tests."""
+"""Meeting LLM context and decision schema tests."""
 
 from __future__ import annotations
+
+import pytest
 
 from crewborg.perception.entities import VoteCandidate, VoteDot, VotingState
 from crewborg.strategy.meeting import (
     VOTE_SKIP,
+    MeetingDecision,
+    MeetingDecisionValidationError,
+    sanitize_chat,
     serialize_meeting_context,
+    validate_meeting_decision,
     valid_vote_targets,
 )
 from crewborg.types import Belief, ChatEvent, PlayerRecord
@@ -53,3 +59,34 @@ def test_meeting_context_serializes_timer_chat_votes_and_suspicion() -> None:
     assert context["voting"]["tally"] == {VOTE_SKIP: 1, "green": 1}
     assert context["players"][0]["color"] == "blue"
     assert context["suspicion"]["would_vote"] == "red"
+
+
+def test_chat_sanitizer_keeps_printable_ascii_and_truncates() -> None:
+    assert sanitize_chat("  héllo\nthere  ") == "hllothere"
+    assert len(sanitize_chat("x" * 500)) == 160
+
+
+def test_meeting_decision_validation_rejects_dead_or_unknown_vote_target() -> None:
+    with pytest.raises(MeetingDecisionValidationError):
+        validate_meeting_decision(
+            MeetingDecision(action="submit_vote", vote_target="green"),
+            alive_vote_targets={"red"},
+            fallback_vote=VOTE_SKIP,
+        )
+
+
+def test_submit_without_target_uses_tentative_then_fallback() -> None:
+    decision = validate_meeting_decision(
+        MeetingDecision(action="submit_vote"),
+        alive_vote_targets={"red"},
+        current_tentative="red",
+        fallback_vote=VOTE_SKIP,
+    )
+    assert decision.vote_target == "red"
+
+    decision = validate_meeting_decision(
+        MeetingDecision(action="submit_vote"),
+        alive_vote_targets={"red"},
+        fallback_vote=VOTE_SKIP,
+    )
+    assert decision.vote_target == VOTE_SKIP

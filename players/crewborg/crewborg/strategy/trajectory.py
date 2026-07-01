@@ -4,25 +4,6 @@ Estimates a player's velocity from its recent sightings and extrapolates a futur
 position, so Hunt can **lead** (intercept) a moving victim instead of tail-chasing
 its live position — a tail-chase at equal speed never closes, so kills only ever
 landed on stopped crewmates before.
-
-This is the *short, straight-line* intercept primitive (two sightings, no nav graph).
-Its richer cousin ``strategy.path_prediction`` models full route destinations for
-following a target across rooms; this one is for the final close in Hunt.
-
-Collaborators
--------------
-Relies on:
-  - ``types.PlayerRecord`` — reads ``history`` (the recent ``(tick, x, y)`` sighting
-    trail) and ``world_x/y``. Pure: nothing stored, no nav, no belief.
-Used by:
-  - ``modes.hunt`` — ``lead_ticks`` + ``predict`` to aim at the victim's intercept point.
-Emits / touches: nothing — pure functions returning a velocity / lead count / point.
-
-Modifying this file: keep it a cheap 2-sighting estimate; the guards
-(``VELOCITY_MAX_DT`` rejecting wide gaps, ``MAX_LEAD_TICKS`` capping the throw) exist so
-a stale/noisy trail can't fling the aim point across the map — a stationary or
-unreliable target must predict to its current position (a no-op lead). For destination
-following, reach for ``strategy.path_prediction`` instead, not a bigger model here.
 """
 
 from __future__ import annotations

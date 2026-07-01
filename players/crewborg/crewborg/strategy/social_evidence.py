@@ -15,38 +15,13 @@ features (design: ``suspicion_lab/README.md`` §5/§10; offline mirror:
 - **Watched real-task completion** — the strongest exculpatory cue (imposters
   cannot complete tasks). Detected when the global ``crew_tasks_remaining`` HUD
   counter decrements by exactly one while exactly one visible, living player is
-  finishing a near-full task-site dwell. A fake task hold (an imposter merely
-  standing at a station) never decrements the counter, so it can't trigger this.
-  Stricter than the offline truth (completion-while-visible): we must watch most of
-  the dwell — the undercount only pulls posteriors toward the prior, never past it.
+  finishing a near-full task-site dwell. A fake task hold (Pretend) never
+  decrements the counter, so it can't trigger this. Stricter than the offline
+  truth (completion-while-visible): we must watch most of the dwell — the
+  undercount only pulls posteriors toward the prior, never past it.
 
 Counters are cumulative for the whole episode (evidence never resets at meetings)
 and live on ``PlayerRecord``; ``suspicion._fitted_features`` reads them.
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.event_log`` (upstream) — the ``task`` dwell intervals on
-    ``PlayerRecord.events`` that ``_detect_watched_completions`` reads; this must run
-    after ``update_event_log`` and before ``update_suspicion`` each tick.
-  - ``types.Belief`` — the meeting/vote/chat/HUD fields it folds in
-    (``chat_log``, ``voting`` dots+candidates, ``meeting_caller_*``,
-    ``crew_tasks_remaining``) and the ``social_*`` staging/dedup scratch it owns.
-Used by:
-  - the fitted suspicion model only: ``suspicion._fitted_features`` reads the
-    per-player public counters this maintains. The legacy hand model ignores them.
-Emits / touches: increments cumulative counters on ``PlayerRecord``
-  (``accusations_made`` / ``times_accused`` / ``times_defended`` / ``votes_cast`` /
-  ``votes_skipped`` / ``voted_against_me`` / ``vote_agreed_with_me`` /
-  ``reported_bodies`` / ``button_calls_made`` / ``tasks_completed_watched``) and
-  advances ``belief.social_*`` staging state. No perception, no action.
-
-Modifying this file: keep the stance heuristics, the copresence/dwell gates, and the
-feature *names* aligned with the offline extractor
-(``suspicion_lab/tools/features.py``) — a runtime/offline mismatch
-silently corrupts the fitted scores. Every counter must be banked **exactly once** per
-real event (the ``social_*counted/staged/banked`` dedup keys exist for this); double
--counting inflates suspicion. Counters never reset mid-episode.
 """
 
 from __future__ import annotations
@@ -88,8 +63,6 @@ def update_social_evidence(belief: Belief) -> None:
 
 
 def _color_pattern(belief: Belief) -> re.Pattern | None:
-    """A word-boundary regex matching any current roster color name (longest-first so a
-    color that is a prefix of another still matches), or ``None`` if the roster is empty."""
     colors = [c for c in belief.roster if c]
     if not colors:
         return None
@@ -98,10 +71,6 @@ def _color_pattern(belief: Belief) -> re.Pattern | None:
 
 
 def _count_chat_stances(belief: Belief) -> None:
-    """Parse each not-yet-counted meeting chat line to ``(speaker, stance, target)`` and
-    bump the counters: the first named non-self color is the target, ``defends`` (checked
-    first) vs ``accuses`` comes from the hint regexes, and lines that name no one or match
-    no hint are dropped (never guessed). Each ``(tick, speaker, text)`` is counted once."""
     if not belief.chat_log:
         return
     pattern = _color_pattern(belief)
@@ -218,11 +187,6 @@ def _bank_meeting_caller(belief: Belief) -> None:
 
 
 def _detect_watched_completions(belief: Belief) -> None:
-    """Credit a watched real-task completion (the strongest exculpatory cue). Fires only on
-    a clean single decrement of the global ``crew_tasks_remaining`` HUD counter, and only
-    when **exactly one** visible living player is mid-/just-finishing a near-full task dwell
-    (``end`` within ``DWELL_END_GRACE_TICKS``, duration ≥ ``WATCHED_DWELL_MIN_TICKS``) — an
-    ambiguous decrement (none or multiple candidates) credits no one."""
     remaining = belief.crew_tasks_remaining
     prev = belief.social_prev_tasks_remaining
     belief.social_prev_tasks_remaining = remaining

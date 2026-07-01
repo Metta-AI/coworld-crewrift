@@ -193,3 +193,115 @@ def test_global_rows_have_null_policy(tmp_path: Path, fake_helper: Path) -> None
     pydict = meta.to_pydict()
     assert all(slot == -1 for slot in pydict["slot"])
     assert all(pv is None for pv in pydict["policy_version"])
+
+
+def _third_episode(root: Path) -> dict:
+    return write_episode(
+        root,
+        ereq_id="ereq-3",
+        results={
+            "scores": [7, 4],
+            "names": ["A-name", "D-name"],
+            "win": [True, False],
+            "tasks": [3, 1],
+            "kills": [0, 0],
+            "crew": [1, 1],
+            "imposter": [0, 0],
+        },
+        replay_rows=[
+            {"ts": 2, "player": 0, "key": "entered_room", "value": {"room": "Engine", "phase": "Playing"}},
+        ],
+        players=[
+            {"slot": 0, "player_id": "polA-v1", "display_name": "polA:v1"},
+            {"slot": 1, "player_id": "polD-v1", "display_name": "polD:v1"},
+        ],
+    )
+
+
+def _event_counts(out: Path) -> dict[str, int]:
+    con = duckdb.connect()
+    rows = con.execute(
+        "SELECT episode_id, count(*) FROM read_parquet(?, hive_partitioning=true) GROUP BY 1",
+        [str(out / "events" / "**" / "*.parquet")],
+    ).fetchall()
+    return dict(rows)
+
+
+def test_incremental_build_caches_ok_episodes_and_matches_full_rebuild(
+    tmp_path: Path, fake_helper: Path
+) -> None:
+    root = tmp_path / "eps"
+    root.mkdir()
+    ep1, ep2 = _two_episode_batch(root)
+    ep3 = _third_episode(root)
+    batch12 = [ReporterEpisodeInput.model_validate(e) for e in (ep1, ep2)]
+    batch123 = [ReporterEpisodeInput.model_validate(e) for e in (ep1, ep2, ep3)]
+
+    out = tmp_path / "wh"
+    s1 = build_warehouse(batch12, out, workers=1)
+    assert s1.episodes_ok == 2 and s1.episodes_cached == 0
+
+    s2 = build_warehouse(batch123, out, workers=1)
+    assert s2.episodes_cached == 2          # ep1+ep2 not reprocessed
+    assert s2.episodes_ok == 3              # merged warehouse total
+    assert s2.episodes_total == 3
+
+    # the incremental result must equal a from-scratch build of the same set
+    fresh = tmp_path / "wh_fresh"
+    build_warehouse(batch123, fresh, workers=1)
+    inc_players = pq.read_table(out / "episode_players.parquet").sort_by(
+        [("episode_id", "ascending"), ("slot", "ascending")]
+    )
+    fresh_players = pq.read_table(fresh / "episode_players.parquet").sort_by(
+        [("episode_id", "ascending"), ("slot", "ascending")]
+    )
+    assert inc_players.equals(fresh_players)
+    assert _event_counts(out) == _event_counts(fresh)
+
+    inc_manifest = json.loads((out / "manifest.json").read_text())
+    fresh_manifest = json.loads((fresh / "manifest.json").read_text())
+    assert {e["episode_id"] for e in inc_manifest["episodes"]} == {
+        e["episode_id"] for e in fresh_manifest["episodes"]
+    }
+    assert inc_manifest["event_keys"] == fresh_manifest["event_keys"]
+
+
+def test_incremental_build_unions_prior_episodes_not_in_this_call(
+    tmp_path: Path, fake_helper: Path
+) -> None:
+    root = tmp_path / "eps"
+    root.mkdir()
+    ep1, ep2 = _two_episode_batch(root)
+    ep3 = _third_episode(root)
+    out = tmp_path / "wh"
+    build_warehouse([ReporterEpisodeInput.model_validate(e) for e in (ep1, ep2)], out, workers=1)
+
+    # building with ONLY ep3 must keep ep1/ep2 in the manifest and players table
+    s = build_warehouse([ReporterEpisodeInput.model_validate(ep3)], out, workers=1)
+    assert s.episodes_total == 3 and s.episodes_ok == 3
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert {e["episode_id"] for e in manifest["episodes"]} == {"ereq-1", "ereq-2", "ereq-3"}
+    players = pq.read_table(out / "episode_players.parquet")
+    assert set(players.column("episode_id").to_pylist()) == {"ereq-1", "ereq-2", "ereq-3"}
+
+
+def test_incremental_build_reattempts_failed_episodes(tmp_path: Path, fake_helper: Path) -> None:
+    root = tmp_path / "eps"
+    root.mkdir()
+    ep1, ep2 = _two_episode_batch(root)
+    batch = [ReporterEpisodeInput.model_validate(e) for e in (ep1, ep2)]
+    out = tmp_path / "wh"
+
+    results_path = root / "ereq-2" / "results.json"
+    good = results_path.read_text()
+    results_path.write_text("NOT JSON")          # -> ereq-2 fails extraction
+    s1 = build_warehouse(batch, out, workers=1)
+    assert s1.episodes_failed == 1 and s1.episodes_ok == 1
+
+    results_path.write_text(good)                # fixed -> re-attempted next build
+    s2 = build_warehouse(batch, out, workers=1)
+    assert s2.episodes_failed == 0
+    assert s2.episodes_ok == 2
+    assert s2.episodes_cached == 1               # only ereq-1 was cached
+    players = pq.read_table(out / "episode_players.parquet")
+    assert set(players.column("episode_id").to_pylist()) == {"ereq-1", "ereq-2"}

@@ -1,41 +1,4 @@
-"""LLM client seam for meeting chat/vote decisions: backend select + Bedrock sidecar gating.
-
-This is the boundary between the meeting layer and an actual model call. ``build_meeting_llm_client_from_env``
-reads the environment and returns a client implementing the ``MeetingLLMClient`` protocol —
-either a live ``AnthropicMeetingClient`` or, whenever the LLM can't or shouldn't run, a
-``DisabledMeetingClient``. The factory is **total**: it never raises. Anything that goes
-wrong (flag off, no backend, SDK import failure, bad config) becomes a disabled client with
-a ``disabled_reason``, and the caller (``modes.attend_meeting``) takes the deterministic
-fallback path. This is one half of the "deterministic fallback is never bypassed" invariant —
-the LLM is strictly opt-in (``CREWBORG_LLM_MEETINGS=1``) and strictly best-effort.
-
-Backend selection (gating logic lives in ``build_meeting_llm_client_from_env``):
-  - The opt-in flag must be set, else ``DisabledMeetingClient``.
-  - Bedrock is used if the SDK's ``bedrock_enabled(env)`` says so **or** the loopback
-    sidecar endpoint is present. The sidecar case matters: the hosted runner strips
-    ``USE_BEDROCK`` from the player container and injects ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME``
-    instead, so the SDK's own check reports no backend in-pod; ``_sidecar_bedrock`` treats
-    that endpoint as the real Bedrock signal (see the issue doc referenced inline).
-  - With no Bedrock and no ``ANTHROPIC_API_KEY``, there is no backend → disabled.
-  - Model id, max tokens, temperature, timeout, trace flags, and prompt dir are read from
-    ``CREWBORG_LLM_*`` env, with the actual model resolved by the SDK's ``resolve_model``.
-
-Collaborators
--------------
-Relies on:
-  - ``players.player_sdk`` (lazy-imported in ``_load_sdk_helpers``) — ``bedrock_enabled``,
-    ``select_client``, ``resolve_model``, ``call_json``, ``extract_json_object``, and the
-    default model ids. The SDK is what actually talks to Anthropic/Bedrock; this module
-    only wires it behind the protocol.
-  - ``schema.MeetingDecision`` — parses the model's JSON into the validated decision.
-  - ``prompts.system_prompt_for_context`` — role-specific system prompt for each call.
-Used by: ``modes.attend_meeting`` (constructs a client in ``__init__``, calls ``.decide``).
-
-Modifying this file: preserve totality — ``build_meeting_llm_client_from_env`` must return a
-client, never raise, so the fallback path is always reachable. Keep the sidecar-endpoint
-gate; without it, hosted Bedrock games silently run LLM-off (the exact bug the inline doc
-links). The chat/vote shape the model is asked for must stay in sync with ``schema.py``.
-"""
+"""LLM client seam for meeting chat/vote decisions."""
 
 from __future__ import annotations
 
@@ -49,27 +12,11 @@ from pydantic import BaseModel, ConfigDict
 from crewborg.strategy.meeting.prompts import PROMPT_DIR_ENV, system_prompt_for_context
 from crewborg.strategy.meeting.schema import VOTE_SKIP, MeetingDecision
 
-#: Fallback model id for the dataclass default only. In practice the live config's model is
-#: chosen by the SDK's ``resolve_model`` (direct vs Bedrock id, or a ``CREWBORG_LLM_MODEL``
-#: override), so this is rarely the id actually used.
 DEFAULT_MEETING_MODEL = "claude-haiku-4-5-20251001"
 
 
 @dataclass(frozen=True)
 class MeetingLLMConfig:
-    """Immutable per-build LLM settings, assembled from ``CREWBORG_LLM_*`` env.
-
-    Attributes:
-      - ``model``: resolved model id passed to the SDK call.
-      - ``use_bedrock``: whether to route via Bedrock (vs the direct Anthropic API).
-      - ``max_tokens`` / ``temperature``: generation knobs (low temperature for steadier
-        meeting behavior).
-      - ``timeout_seconds``: per-call wall-clock budget; the mode also uses it to decide how
-        early it must stop calling so a late call can't miss the vote deadline.
-      - ``trace_raw``: when set, the result carries the raw request/response for debugging.
-      - ``prompt_dir``: optional override directory for the role prompt files.
-    """
-
     model: str = DEFAULT_MEETING_MODEL
     use_bedrock: bool = False
     max_tokens: int = 512
@@ -93,11 +40,6 @@ class MeetingLLMResult(BaseModel):
 
 
 class MeetingLLMClient(Protocol):
-    """Structural type for a meeting client. ``enabled`` lets the caller branch to the
-    deterministic path without a model call; ``disabled_reason`` explains why (for tracing).
-    ``decide`` maps serialized context → a parsed ``MeetingLLMResult`` for one tick. Both the
-    live and disabled clients below conform; tests supply their own fakes."""
-
     enabled: bool
     disabled_reason: str | None
 
@@ -106,10 +48,6 @@ class MeetingLLMClient(Protocol):
 
 @dataclass(frozen=True)
 class DisabledMeetingClient:
-    """The "no LLM" client returned whenever the model is off or unavailable. ``enabled`` is
-    ``False`` so the caller never calls ``decide``; if something does call it, it raises
-    (a programming error, not a runtime path). ``disabled_reason`` records why it's off."""
-
     disabled_reason: str = "disabled"
     enabled: bool = False
 
@@ -119,12 +57,7 @@ class DisabledMeetingClient:
 
 
 class AnthropicMeetingClient:
-    """Anthropic Messages API adapter, kept behind the meeting-client protocol.
-
-    Holds the resolved ``config`` plus the SDK callables injected at build time (the raw
-    ``client``, ``call_json`` to do one structured request, ``extract_json_object`` to pull
-    the JSON body out of the model's text). Stateless per call; ``decide`` does one request
-    and parses the response into a ``MeetingDecision``."""
+    """Anthropic Messages API adapter, kept behind the meeting-client protocol."""
 
     enabled = True
     disabled_reason = None
@@ -147,14 +80,6 @@ class AnthropicMeetingClient:
         return self.config.timeout_seconds
 
     def decide(self, context: dict[str, Any], *, trigger: str) -> MeetingLLMResult:
-        """Run one model call for the given meeting context and return the parsed decision
-        plus call metadata (model, latency, token usage). ``context`` is the serialized
-        belief (``context.serialize_meeting_context``); ``trigger`` names why we're calling
-        this tick (``meeting_start`` / ``new_chat`` / ``deadline`` / …) and is echoed into
-        the prompt. The user message is the context + the expected response schema as compact
-        JSON; the system prompt is role-selected. Raises if the model output won't parse into
-        a ``MeetingDecision`` (the caller catches it and falls back)."""
-
         request = {
             "trigger": trigger,
             "context": context,
@@ -188,13 +113,6 @@ class AnthropicMeetingClient:
 
 
 def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> MeetingLLMClient:
-    """Construct the meeting client from the environment. **Never raises**: returns a live
-    ``AnthropicMeetingClient`` when the LLM is enabled and a backend is reachable, otherwise
-    a ``DisabledMeetingClient`` carrying the reason. ``env`` defaults to ``os.environ`` and
-    is injectable for tests. See the module docstring for the full gating order (opt-in flag
-    → Bedrock-or-key backend → config from ``CREWBORG_LLM_*``). Any exception during build
-    (e.g. the SDK import failing) is swallowed into a disabled client."""
-
     env = env or os.environ
     if env.get("CREWBORG_LLM_MEETINGS", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return DisabledMeetingClient("CREWBORG_LLM_MEETINGS is not enabled")
@@ -204,7 +122,7 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
         # AWS_ENDPOINT_URL_BEDROCK_RUNTIME instead, so the SDK's bedrock_enabled() (which only
         # checks USE_BEDROCK/CLAUDE_CODE_USE_BEDROCK) reports no backend in-pod. Gate on what we
         # actually receive: treat the sidecar endpoint as a Bedrock signal. See
-        # docs/reference/coworld-platform.md (Bedrock section).
+        # docs/reference/coworld-platform.md.
         use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
         if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledMeetingClient("no LLM backend configured")
@@ -237,9 +155,6 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
 
 
 class _SDKHelpers(NamedTuple):
-    """The bundle of ``players.player_sdk`` callables/defaults this module needs, grouped so
-    they're imported once and passed around as one value (keeps the SDK import lazy)."""
-
     bedrock_enabled: Callable[..., bool]
     select_client: Callable[..., Any]
     resolve_model: Callable[..., str]
@@ -250,10 +165,6 @@ class _SDKHelpers(NamedTuple):
 
 
 def _load_sdk_helpers() -> _SDKHelpers:
-    """Lazily import the player SDK and bundle the helpers we use. Imported inside the
-    function (not at module load) so importing this module never hard-depends on the SDK,
-    and a missing SDK degrades to a disabled client via the caller's ``try``."""
-
     from players.player_sdk import (
         DEFAULT_BEDROCK_MODEL,
         DEFAULT_DIRECT_MODEL,
@@ -286,8 +197,6 @@ def _sidecar_bedrock(env: dict[str, str]) -> bool:
 
 
 def _env_int(env: dict[str, str], name: str, default: int) -> int:
-    """Read ``env[name]`` as an int, falling back to ``default`` when unset or unparseable."""
-
     try:
         return int(env.get(name, default))
     except (TypeError, ValueError):
@@ -295,8 +204,6 @@ def _env_int(env: dict[str, str], name: str, default: int) -> int:
 
 
 def _env_float(env: dict[str, str], name: str, default: float) -> float:
-    """Read ``env[name]`` as a float, falling back to ``default`` when unset or unparseable."""
-
     try:
         return float(env.get(name, default))
     except (TypeError, ValueError):

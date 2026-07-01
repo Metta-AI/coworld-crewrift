@@ -7,8 +7,8 @@ kill comes off cooldown, so a victim is in hand the instant we can kill.
 from __future__ import annotations
 
 from crewborg.modes.recon import ReconMode
-from crewborg.strategy.opportunity import recon_window
-from crewborg.types import ActionState, Belief, PlayerRecord
+from crewborg.strategy.opportunity import most_recent_victim, recon_window
+from crewborg.types import ActionState, Belief, CommanderPriorities, PlayerRecord
 
 
 def _imposter() -> Belief:
@@ -32,12 +32,48 @@ def test_recon_beelines_to_the_most_recently_seen_crewmate() -> None:
     assert intent.point == (300, 80)
 
 
+def test_recon_prefers_commander_target_player_when_alive_and_known() -> None:
+    b = _imposter()
+    _seen(b, "green", (200, 60), tick=45)  # current default target
+    _seen(b, "blue", (300, 80), tick=20)
+    b.commander = CommanderPriorities(target_player="blue", as_of_tick=b.last_tick)
+    intent = ReconMode().decide(b, ActionState())
+    assert intent.kind == "navigate_to"
+    assert intent.point == (300, 80)
+
+
+def test_recon_target_player_falls_back_when_unknown_or_dead() -> None:
+    b = _imposter()
+    _seen(b, "green", (200, 60), tick=45)
+    b.commander = CommanderPriorities(target_player="blue", as_of_tick=b.last_tick)
+    assert ReconMode().decide(b, ActionState()).point == (200, 60)
+
+    dead_target = _seen(b, "blue", (300, 80), tick=49)
+    dead_target.life_status = "dead"
+    assert ReconMode().decide(b, ActionState()).point == (200, 60)
+
+
 def test_recon_ignores_the_teammate_imposter() -> None:
     b = _imposter()
     _seen(b, "red", (300, 80), tick=49)   # teammate, most recent — must be skipped
     _seen(b, "green", (200, 60), tick=30)  # the only real crewmate
     intent = ReconMode().decide(b, ActionState())
     assert intent.point == (200, 60)
+
+
+def test_recon_ignores_dead_crew() -> None:
+    b = _imposter()
+    dead = _seen(b, "green", (300, 80), tick=49)
+    dead.life_status = "dead"
+    _seen(b, "blue", (200, 60), tick=30)
+    intent = ReconMode().decide(b, ActionState())
+    assert intent.point == (200, 60)
+
+
+def test_recon_idles_with_no_known_crew() -> None:
+    b = _imposter()  # roster empty
+    assert ReconMode().decide(b, ActionState()).kind == "idle"
+    assert most_recent_victim(b) is None
 
 
 def test_recon_window_default_and_env(monkeypatch) -> None:

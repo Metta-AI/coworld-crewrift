@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Expand corpus replays into cached JSONL event streams.
 
-Stage B of the suspicion-learning pipeline (../README.md §4).
+Stage B of the suspicion-learning pipeline (docs/designs/suspicion-learning.md §4).
 Runs the version-matched `expand_replay` binary (`--format jsonl --snapshot-every N`)
 over every corpus episode and writes `expanded/<episode_dir>.jsonl.gz`. Idempotent:
 existing outputs are skipped. Hash-fails are recorded in `expanded/_manifest.json`
@@ -22,9 +22,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# suspicion_lab/tools/ -> players/crewborg (the player root)
-PLAYER_ROOT = Path(__file__).resolve().parents[2]
-SUSPICION_LAB = PLAYER_ROOT / "suspicion_lab"
+LAB_ROOT = Path(__file__).resolve().parents[2]          # players/crewborg/
+SUSPICION_LAB = LAB_ROOT / "suspicion_lab"
 DEFAULT_REF = "42fed21"   # first ref with JSONL + visibility output (coworld-crewrift #57)
 DEFAULT_SNAPSHOT_EVERY = 24
 
@@ -34,7 +33,7 @@ def log(msg: str) -> None:
 
 
 def expander_path(ref: str) -> Path:
-    path = PLAYER_ROOT / "tools" / "bin" / f"expand_replay-{ref}"  # built by tools/build_expand_replay.sh
+    path = LAB_ROOT / "tools" / "bin" / f"expand_replay-{ref}"
     if not path.exists():
         sys.exit(
             f"No expander binary for ref {ref} at {path}.\n"

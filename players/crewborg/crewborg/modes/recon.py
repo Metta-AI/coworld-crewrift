@@ -14,67 +14,61 @@ view and Hunt takes over and kills immediately.
 Intentionally simple and aggressive for now — James's call is to test a short 100-tick
 window and see what it does (a longer window risks the over-extension that gets Aaron
 caught 39% of the time). Target selection + window live in ``strategy.opportunity``.
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.opportunity.most_recent_victim`` — the most-recently-seen live non-teammate
-    crewmate to beeline toward.
-  - ``modes.imposter_common`` (``ic``) — ``self_xy``.
-  - ``strategy.commander.bias.commander_of`` — optional LLM target-player override.
-  - ``types`` — ``ActionState`` / ``Belief`` / ``Intent``.
-Used by:
-  - ``strategy.rule_based`` selects this mode when the kill is within ``recon_window()``
-    ticks of ready and a crewmate has been seen (§10) — it sits between Search and Hunt.
-  - ``__init__.build_runtime`` registers it in the ``ModeRegistry``.
-Emits: a ``navigate_to`` intent (close on the target), or ``idle`` when there is no
-  position/target.
-
-Modifying this file: it only chooses *where to pre-position* — it never moves the agent
-or kills (that is ``action.py`` / Hunt). The window/gate that activates Recon lives in the
-selector + ``strategy.opportunity``, not here.
 """
 
 from __future__ import annotations
 
+from crewborg.agent_tracking import best_seek_point
 from crewborg.modes import imposter_common as ic
 from crewborg.strategy.commander.bias import commander_of
 from crewborg.strategy.opportunity import most_recent_victim
 from crewborg.types import ActionState, Belief, Intent
 from players.player_sdk import EmptyModeParams, Mode, ModeParams
 
+# We count ourselves as having "reached" a target's last-known spot within this radius (px).
+REACHED_RADIUS_SQ = 24**2
+
 
 class ReconMode(Mode[Belief, ActionState, Intent]):
-    """Pre-kill beeline to a crewmate. Stateless — the target (commander override, else
-    most-recently-seen crewmate) is re-chosen each tick."""
-
     name = "recon"
     params_type = EmptyModeParams
 
     def __init__(self, params: ModeParams | None = None) -> None:
         super().__init__(params)
+        self._abandoned: str | None = None  # a target we reached but who had already left
 
     def decide(self, belief: Belief, action_state: ActionState) -> Intent:
-        """Return a ``navigate_to`` intent aimed at the target crewmate (live position when
-        visible, last-known otherwise), so a victim is in view the instant the cooldown clears
-        and Hunt takes over. ``idle`` when we have no self position or no known crewmate.
-        ``action_state`` is unused — pure over belief."""
         del action_state
+        self_xy = ic.self_xy(belief)
+        if self_xy is None:
+            return Intent(kind="idle", reason="recon: no self position")  # startup no-op (no camera)
+
         target = self._commander_target(belief) or most_recent_victim(belief)
-        if target is None or ic.self_xy(belief) is None:
-            # Gate only routes here when a crew has been seen; idle is a safe no-op.
-            return Intent(kind="idle", reason="recon: no known crewmate to close on")
-        return Intent(
-            kind="navigate_to",
-            point=(target.world_x, target.world_y),
-            reason="recon: closing on a crewmate before the kill comes ready",
-        )
+        if target is not None:
+            target_xy = (target.world_x, target.world_y)
+            visible = target.last_seen_tick == belief.last_tick
+            if visible:
+                self._abandoned = None  # they're back in view — commit
+                return Intent(kind="navigate_to", point=target_xy,
+                              reason="recon: closing on a crewmate before the kill comes ready")
+            reached = ic.dist2(self_xy, target_xy) <= REACHED_RADIUS_SQ
+            if reached:
+                # We walked to their last-known spot and they aren't here — abandon it (never
+                # stand still on a ghost position; that was the recon-stall freeze).
+                self._abandoned = target.color
+            if target.color != self._abandoned:
+                return Intent(kind="navigate_to", point=target_xy,
+                              reason="recon: closing on a crewmate's last-known position")
+
+        # No live/unreached target — fall back to SEARCH behaviour: head toward where crew are
+        # expected. NEVER idle here (idling with no escape is the trap; see best_practices).
+        seek = best_seek_point(belief)
+        if seek is not None:
+            return Intent(kind="navigate_to", point=ic.reachable_point(belief, seek),
+                          reason="recon: no live target — seek toward expected crew")
+        return Intent(kind="idle", reason="recon: no crew signal yet")  # rare: no occupancy built yet
 
     def _commander_target(self, belief: Belief):
-        """If the (optional, gated) LLM commander named a ``target_player``, return that
-        crewmate when it is a live non-teammate in the roster — else ``None`` so we fall back
-        to ``most_recent_victim``. Unlike Hunt, Recon does not require the target to be
-        currently visible or reachable (it is only pre-positioning, not striking)."""
         cmd = commander_of(belief)
         if cmd is None or cmd.target_player is None or cmd.target_player in belief.teammate_colors:
             return None

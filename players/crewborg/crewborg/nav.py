@@ -28,33 +28,6 @@ correctness is enforced at **pixel resolution**, not at the coarse approximation
 ``plan_route`` runs A* over the node graph, then string-pulls the result with a
 pixel-resolution line-of-sight pass. The action layer (:mod:`.action`) follows the
 returned waypoints; this module never touches transport.
-
-This module is the spatial substrate the whole stack stands on: belief builds the
-graph, the action layer plans/follows routes, and several strategy/mode helpers query
-reachability and anchors. It is pure geometry — no game state, no intents.
-
-Collaborators
--------------
-Relies on:
-  - ``map.types.MapData`` (TYPE_CHECKING) — ``home`` (flood seed) and the task / vent /
-    button rects whose reachable anchors are precomputed and validated.
-  - stdlib ``heapq`` (A*), ``numpy`` (the walkability / clearance / reachable masks).
-Used by:
-  - ``types.update_belief`` calls ``build_nav_graph`` (live fallback) and stores the
-    ``NavGraph`` on ``belief.nav``; ``navbake`` bakes/loads the same graph offline.
-  - ``action`` (``plan_route`` / ``plan_route_via_vents`` follow), ``agent_tracking``
-    (``plan_route`` for substrate polylines, ``nearest_reachable_node`` snapping),
-    ``modes.hunt`` (reachability check), ``strategy.opportunity`` / ``path_prediction``.
-Emits / touches: returns routes (``list[Point]``) and the immutable-after-build
-  ``NavGraph``; mutates nothing outside the graph it constructs. Logs a build-time
-  warning naming any destination with no reachable anchor.
-
-Modifying this file: correctness lives at **pixel resolution** — A* edges and the
-spawn flood validate against the true walkability mask, while the coarse grid and the
-clearance (eroded) mask only steer node placement / smoothing for control margin.
-Never let the coarse grid or clearance gate *reachability* (that reintroduces the
-wall-adjacent-task false-unreachable bug), and keep the no-corner-cutting rule in
-``_segment_clear`` / the flood so routes can't squeeze diagonally through walls.
 """
 
 from __future__ import annotations
@@ -126,15 +99,7 @@ class VentEdge:
 
 @dataclass
 class NavGraph:
-    """A coarse navigation graph over the pixel walkability mask (design §6).
-
-    Built once per episode and treated as immutable thereafter. Carries the exact
-    ``walkability`` mask it was built from (so ``navbake`` can validate a baked graph
-    against the streamed map), the per-cell ``node_point`` / ``adjacency`` graph, the
-    ``reachable`` component, the eroded ``clearance`` mask routes prefer, and the
-    precomputed destination anchors (task / vent / button) plus imposter-only
-    ``vent_edges``. ``unreachable`` names any destination with no reachable anchor.
-    """
+    """A coarse navigation graph over the pixel walkability mask (design §6)."""
 
     walkability: np.ndarray  # bool, shape (height, width); True == walkable pixel
     cell_size: int

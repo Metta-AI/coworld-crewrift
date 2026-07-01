@@ -57,39 +57,6 @@ in two tiers:
 
 The same heavy families can also be enabled narrowly via ``CREWBORG_TRACE_GROUPS``
 or ``CREWBORG_TRACE_INCLUDE``; the stderr sink applies the matching output filter.
-
-This is an *observer* hanging off the side of the cognitive stack — it reads the
-finalized belief / intent / command after a tick and renders telemetry; it is not
-itself a stage in perception → belief → strategy → modes → action.
-
-Collaborators
--------------
-Relies on:
-  - ``players.player_sdk`` — ``StepContext`` (the finalized tick), ``EventEmitter``
-    (the ``domain.``-prefixed emit/counter/gauge seam).
-  - ``types`` — reads ``Belief`` (phase/role/roster/bodies/suspicion/kill timing/
-    agent_tracking), ``ActionState``, ``Intent``, ``Command``, ``CommanderPriorities``,
-    ``PlayerRecord``.
-  - ``strategy.suspicion`` — ``witnessed_imposters`` / ``top_suspect`` /
-    ``_prior_imposter_p`` and the ``VOTE_PROBABILITY`` / ``ACCUSE_TAIL_RECENCY_TICKS``
-    bars, so the snapshot mirrors what Attend Meeting / Accuse actually use.
-  - ``strategy.opportunity`` — ``kill_urgency_ticks`` / ``has_trackable_victim`` for
-    the kill-state traces.
-  - ``strategy.commander.trace.CommanderTrace`` — background-thread telemetry it drains
-    onto the loop thread.
-  - ``action`` (``BTN_A`` / ``BTN_B``), ``perception.constants``, ``trace.TraceConfig``
-    (the env-derived include/exclude/group filter).
-Used by:
-  - ``__init__.build_runtime`` wires ``CrewborgEventTracer`` as ``on_step_complete``.
-Emits / touches: emits ``domain.*`` trace events, counters, and gauges only. It is
-  read-only over belief **except** for draining two transient queues
-  (``belief.commander_danger_events`` — and ``CommanderTrace`` — are cleared as they
-  are flushed); it never changes any decision-bearing state.
-
-Modifying this file: this tracer must stay a pure observer of game state — keep the
-strategy modules themselves free of tracing by reading their results off belief here,
-and never let an emit path mutate decision state. New always-on events must stay lean
-(hosted logs are capped); put heavy/per-tick dumps behind the debug/viewer gates.
 """
 
 from __future__ import annotations
@@ -105,6 +72,7 @@ from crewborg.strategy.opportunity import has_trackable_victim, kill_urgency_tic
 from crewborg.strategy.suspicion import (
     ACCUSE_TAIL_RECENCY_TICKS,
     VOTE_PROBABILITY,
+    _fitted_features,
     _prior_imposter_p,
     top_suspect,
     witnessed_imposters,
@@ -167,17 +135,17 @@ class CrewborgEventTracer:
         self._emit_kill_debug = self._optional_event_enabled("domain.kill_state", self._debug)
         self._emit_occupancy_debug = self._optional_event_enabled("domain.occupancy_snapshot", self._debug)
         self._emit_commander = self._optional_event_enabled("domain.commander_call", self._debug)
+        # Suspicion-training capture (opt-in, off by default): when set, suspicion_snapshot
+        # additionally carries, per suspect, the EXACT runtime feature vector the model
+        # scores (`_fitted_features`) plus the raw inputs needed to rebuild/parity-check it
+        # (`seen_ticks`; each event's `end_tick`). This makes the trace sufficient to refit
+        # the suspicion model on what crewborg actually computes live, closing the
+        # train->serve gap (docs/suspicion.md "where it breaks").
+        self._emit_suspicion_features: bool = (
+            os.environ.get("CREWBORG_TRACE_SUSPICION_FEATURES", "").strip().lower() in ("1", "true", "yes", "on")
+        )
 
     def __call__(self, context: StepContext[Belief, ActionState, Intent, Command]) -> None:
-        """The ``on_step_complete`` hook: run every observer for this finalized tick.
-
-        Order matters only for the gated/heavy families (debug/viewer) running after
-        the always-on deltas; each ``_observe_*`` is an independent edge/delta detector
-        that compares the tick's state against the previous-tick state it caches and
-        emits on change. Pure observation — no belief mutation beyond draining the two
-        transient telemetry queues.
-        """
-
         belief = context.belief
         emit = context.emit
         if self._emit_commander:
@@ -212,10 +180,6 @@ class CrewborgEventTracer:
         self._observe_commander_danger(belief, emit)
 
     def _optional_event_enabled(self, event_name: str, mode_enabled: bool) -> bool:
-        """Whether a heavy/optional event family should be emitted: on if its mode
-        (debug/viewer) is active and not explicitly excluded, or if the env trace
-        config narrowly targets it (groups/include) regardless of mode."""
-
         enabled_by_mode = mode_enabled and not self._trace_config.excludes_event(event_name)
         return enabled_by_mode or self._trace_config.targets_event(event_name)
 
@@ -457,15 +421,21 @@ class CrewborgEventTracer:
             return
         target = top_suspect(belief)
         witnessed = witnessed_imposters(belief)
-        ranking = [
-            {
+        features = self._emit_suspicion_features
+        ranking: list[dict[str, object]] = []
+        for color, p in sorted(belief.suspicion.items(), key=lambda kv: kv[1], reverse=True):
+            record = belief.roster.get(color)
+            entry: dict[str, object] = {
                 "color": color,
                 "p": round(p, 4),
                 "confirmed": color in witnessed,
-                "events": _event_summary(belief.roster.get(color)),
+                "events": _event_summary(record, with_end_tick=features),
             }
-            for color, p in sorted(belief.suspicion.items(), key=lambda kv: kv[1], reverse=True)
-        ]
+            if features and record is not None:
+                # Training capture: the exact model input + the raw inputs to parity-check it.
+                entry["features"] = _fitted_features(belief, record)
+                entry["seen_ticks"] = record.seen_ticks
+            ranking.append(entry)
         emit.event(
             "suspicion_snapshot",
             {
@@ -662,21 +632,29 @@ def _kill_state(belief: Belief) -> dict[str, object]:
     }
 
 
-def _event_summary(record: PlayerRecord | None) -> list[dict[str, object]]:
-    """Compact per-player event log for a suspicion snapshot (durations, not spans)."""
+def _event_summary(record: PlayerRecord | None, with_end_tick: bool = False) -> list[dict[str, object]]:
+    """Compact per-player event log for a suspicion snapshot (durations, not spans).
+
+    With ``with_end_tick`` (training capture), each event also carries its ``end_tick`` —
+    the raw input ``follow_death_samples`` needs (compared against the victim's
+    ``death_seen_tick``), which the duration alone can't reconstruct.
+    """
 
     if record is None:
         return []
-    return [
-        {
+    out: list[dict[str, object]] = []
+    for event in record.events:
+        entry: dict[str, object] = {
             "kind": event.kind,
             "dur": event.duration_ticks,
             "target": event.target_color,
             "region": event.region_index,
             "min_dist": event.min_dist,
         }
-        for event in record.events
-    ]
+        if with_end_tick:
+            entry["end_tick"] = event.end_tick
+        out.append(entry)
+    return out
 
 
 def _decision_snapshot_payload(context: StepContext[Belief, ActionState, Intent, Command]) -> dict[str, Any]:

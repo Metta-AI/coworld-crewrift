@@ -21,29 +21,6 @@ in range and the kill would go **unwitnessed**:
 Victim selection also has a local teammate-claim heuristic: if a recently seen
 fellow imposter is already closer to a target, prefer another victim when one
 exists.
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.opportunity`` — ``select_victim`` (most-isolated visible target),
-    ``unwitnessed`` (the witness gate), ``visible_victims``.
-  - ``strategy.trajectory`` — ``predict`` / ``lead_ticks`` (lead a moving victim).
-  - ``modes.imposter_common`` (``ic``) — shared ``self_xy`` / ``dist2`` helpers.
-  - ``action.KILL_RANGE_SQ`` — the squared kill radius the strike test uses.
-  - ``nav.plan_route`` — reachability check for a commander-forced target.
-  - ``strategy.commander.bias.commander_of`` — optional LLM danger-mode levers.
-  - ``types`` — ``Belief`` / ``ActionState`` / ``Intent`` / ``PlayerRecord``.
-Used by:
-  - ``strategy.rule_based`` selects this mode (kill ready + a visible victim; §10).
-  - ``__init__.build_runtime`` registers it in the ``ModeRegistry``.
-Emits: ``kill`` / ``navigate_to`` / ``idle`` intents (executed downstream by
-  ``action.resolve_action``) and a ``commander_danger`` trace event when a witnessed
-  kill is taken under danger mode.
-
-Modifying this file: it decides *whether and where to strike* — it never moves the
-agent or presses buttons (that is ``action.py``). The strike gate (``in_range`` and
-``self_kill_ready`` and (unwitnessed or already-killed or danger)) encodes the core
-2nd-kill-conversion rule; change it deliberately and re-read design §10.
 """
 
 from __future__ import annotations
@@ -59,11 +36,6 @@ from players.player_sdk import EmptyModeParams, Mode, ModeParams
 
 
 class HuntMode(Mode[Belief, ActionState, Intent]):
-    """Kill-ready pursuit of a committed visible victim (see module docstring for the full
-    behavior and collaborators). Stateful only in ``_victim_color`` — the one crewmate we
-    have committed to — which persists across ticks so we don't re-pick a target every frame
-    while the current one stays visible."""
-
     name = "hunt"
     params_type = EmptyModeParams
 
@@ -72,12 +44,6 @@ class HuntMode(Mode[Belief, ActionState, Intent]):
         self._victim_color: str | None = None  # the crewmate we have committed to hunting
 
     def decide(self, belief: Belief, action_state: ActionState) -> Intent:
-        """Return this tick's intent: ``kill`` if kill-ready, in range, and the strike is
-        allowed (unwitnessed / already-killed / danger-mode); otherwise ``navigate_to`` the
-        victim's predicted intercept (close the gap, or lie in wait when in range but
-        witnessed); ``idle`` if we have no self-position or no committable victim (the
-        selector then normally flips to Search/Recon). ``action_state`` is unused — Hunt is
-        pure over belief."""
         del action_state
         self_xy = ic.self_xy(belief)
         if self_xy is None:
@@ -85,7 +51,7 @@ class HuntMode(Mode[Belief, ActionState, Intent]):
 
         victim = self._resolve_victim(belief)
         if victim is None:
-            return Intent(kind="idle", reason="no victim to hunt")  # selector normally flips to Search/Recon
+            return Intent(kind="idle", reason="no victim to hunt")  # selector normally flips to Search/Pretend
 
         victim_xy = (victim.world_x, victim.world_y)
         in_range = ic.dist2(self_xy, victim_xy) <= KILL_RANGE_SQ
@@ -143,10 +109,6 @@ class HuntMode(Mode[Belief, ActionState, Intent]):
         return victim
 
     def _commander_victim(self, belief: Belief) -> PlayerRecord | None:
-        """If the (optional, gated) LLM commander named a ``target_player``, return that
-        crewmate when it is currently a visible, reachable victim — else ``None`` so we fall
-        back to ``select_victim``. Never overrides the deterministic pick unless the forced
-        target is actually killable (visible + a plannable route)."""
         cmd = commander_of(belief)
         if cmd is None or cmd.target_player is None:
             return None

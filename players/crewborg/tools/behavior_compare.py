@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare policies' per-game BEHAVIOUR head-to-head from an event warehouse.
 
-Given a built `crewrift-event-warehouse` (see ../skills/crewrift-event-warehouse), this
+Given a built `crewrift-event-warehouse` (see ../.claude/skills/crewrift-event-warehouse), this
 diffs any set of policies — in a chosen ROLE — on the behavioural dimensions that drive
 imposter (or crew) success: proximity to the opposite team, isolation (kill setups),
 following/chasing, room circulation, where time is spent, and ejection rate. Where
@@ -21,7 +21,7 @@ HOW TO EDIT (add a dimension)
     Each dimension is one small function that runs a DuckDB query over the warehouse and
     returns a per-policy DataFrame, plus a print. To add one: write a `dim_*` query against
     the relevant event `key` (the catalog is
-    ../skills/crewrift-event-warehouse/references/event-catalog.md — note the slot-join
+    ../.claude/skills/crewrift-event-warehouse/references/event-catalog.md — note the slot-join
     rules and that proximity/isolation are GLOBAL rows with `player_a`/`player_b`), then call
     it in `main`. Per-game rates divide by `games[policy]` (the ops-filtered role-game count).
 """

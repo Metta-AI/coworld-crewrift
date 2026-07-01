@@ -11,25 +11,6 @@ The whole thing is gated by ``CREWBORG_CHAT_NLP`` (default on) — a runtime kil
 unset it (``=0``) and we never import spaCy or load the model, and chat parsing is off
 (the imposter bandwagon falls back to the reliable vote signal only). spaCy is imported
 **only** inside the loader thread, so a disabled agent never pays the import.
-
-This is a process-global, lazily-loaded singleton (module-level ``_model``/``_thread``/
-``_failed`` under ``_lock``). ``get_model()`` returning ``None`` is a normal, expected state
-(disabled / still loading / failed), and every caller degrades gracefully to no chat signal —
-loading the model is never on a blocking path.
-
-Collaborators
--------------
-Relies on: ``spacy`` + the ``en_core_web_sm`` model (optional; absence ⇒ ``failed`` state,
-  not a crash). Imported only inside ``_load``.
-Used by:
-  - ``chat_read.chat_accusers`` calls ``get_model()`` and does nothing without a model.
-  - ``crewborg.__init__.build_runtime`` calls ``ensure_loading()`` at agent build so the load
-    overlaps pre-game idle and is ready before the first meeting.
-  - ``modes.attend_meeting`` reads ``state()`` for tracing.
-
-Modifying this file: keep the model load off the gameplay hot path and keep ``get_model()``
-``None``-safe for callers — the design depends on "no model yet" being harmless. Keep the
-spaCy import inside the thread so a disabled or model-less agent never pays for it.
 """
 
 from __future__ import annotations
@@ -38,11 +19,9 @@ import os
 import threading
 from typing import Any
 
-_ENV_FLAG = "CREWBORG_CHAT_NLP"  # kill switch; default on
-_DISABLED_VALUES = {"0", "false", "no", "off"}  # values of _ENV_FLAG that turn NLP off
+_ENV_FLAG = "CREWBORG_CHAT_NLP"
+_DISABLED_VALUES = {"0", "false", "no", "off"}
 
-# Process-global singleton state, guarded by _lock. Lifecycle: nothing → _thread set
-# (loading) → _model set (ready) | _failed (load error). get_model() == None until ready.
 _lock = threading.Lock()
 _model: Any | None = None
 _thread: threading.Thread | None = None
@@ -50,9 +29,6 @@ _failed = False
 
 
 def is_enabled() -> bool:
-    """Whether chat NLP is on (``CREWBORG_CHAT_NLP`` default on; ``0``/``false``/``no``/``off``
-    disable it). The master gate read by every other entry point here."""
-
     return os.environ.get(_ENV_FLAG, "1").strip().lower() not in _DISABLED_VALUES
 
 
@@ -86,9 +62,6 @@ def state() -> str:
 
 
 def _load() -> None:
-    """Background thread body: import spaCy and load ``en_core_web_sm`` (NER disabled),
-    publishing it to ``_model`` on success or setting ``_failed`` on any error. Runs once."""
-
     global _model, _failed
     try:
         import spacy  # imported only here, so a disabled agent never pays for it

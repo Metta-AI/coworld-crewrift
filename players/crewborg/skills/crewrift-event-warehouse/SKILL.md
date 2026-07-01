@@ -1,6 +1,6 @@
 ---
 name: crewrift-event-warehouse
-description: "Use to build and query the Crewrift event warehouse — a policy-indexed DuckDB/Parquet dataset of per-tick gameplay events (kills, follows, proximity, votes, tasks, chat) over many episodes — for deep, mechanistic, cross-episode questions about a policy's behaviour. Triggers: 'how often is crewborg near a crewmate without killing', 'who trails crewborg', 'where does it abandon tasks', 'does it vote real imposters', 'build the warehouse for this round', 'query the events'. This is the deep-dig mainstay after crewrift-survey flags something."
+description: "Use to build and query the Crewrift event warehouse — a policy-indexed DuckDB/Parquet dataset of per-tick gameplay events (kills, follows, proximity, votes, tasks, chat) over many episodes — for deep, mechanistic, cross-episode questions about a policy's behaviour. Triggers: 'how often is crewborg near a crewmate without killing', 'who trails crewborg', 'where does it abandon tasks', 'does it vote real imposters', 'build the warehouse for this round', 'query the events', 'stream an experience request into a warehouse'. For a FRESH experience request, stream_eval.py builds the warehouse WHILE the episodes run (the default; builds are incremental). This is the deep-dig mainstay after crewrift-survey flags something."
 ---
 
 # Crewrift Event Warehouse
@@ -37,6 +37,23 @@ uv run python "$B" --policy crewborg -n 200 --out /tmp/wh --expand-replay /tmp/e
 ```
 
 It prints the manifest summary and **flags `trace_warning` episodes** (the #1 failure, below).
+
+**Streaming (the default for fresh experience requests):** don't wait for the
+xreq to finish — `stream_eval.py` overlaps fetch + build, so the warehouse is
+ready as the last episode ends:
+
+```bash
+S=players/crewborg/skills/crewrift-event-warehouse/scripts/stream_eval.py
+uv run python "$S" --xreq xreq_A [--xreq xreq_B] --out /tmp/wh --expand-replay /tmp/expand-<commit>
+# episodes land in /tmp/wh_episodes/; the warehouse builds incrementally into /tmp/wh
+# batches: every 10 new episodes or 120s (--batch-n / --batch-secs); crash-safe rerun
+```
+
+Builds are **incremental**: episodes already in the manifest as `ok` are never
+re-expanded, so repeated builds over a growing episode dir only pay for the
+new ones (this also makes re-running `build_warehouse.py` after a partial
+failure cheap). A version-skewed `--expand-replay` is warned after the FIRST
+batch, minutes in.
 
 ### ⚠️ The one hard part — `expand_replay` version coupling
 

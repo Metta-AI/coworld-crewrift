@@ -16,32 +16,6 @@ point" routine that follows the baked nav route (design §9):
 - ``navigate_to`` → follow the route to the point.
 - ``complete_task`` → navigate to the task rect, then hold A with no d-pad
   (movement suppressed — any d-pad input resets the 72-tick task progress).
-
-This is the final stage of the cognitive stack (… → modes → **action**): modes emit
-a symbolic ``Intent``; this layer turns it into the button bitmask the bridge sends.
-
-Collaborators
--------------
-Relies on:
-  - ``nav.plan_route`` / ``nav.plan_route_via_vents`` — the A* routes the follower
-    walks (the vent-aware variant is imposter-flee only).
-  - ``types`` — ``Intent`` (input), ``Belief`` (read: ``nav`` / ``map`` / ``roster`` /
-    ``bodies`` / ``voting`` / self position), ``ActionState`` (the cross-tick execution
-    state it mutates), ``Command`` (output wire payload).
-Used by:
-  - ``__init__.build_runtime`` passes ``resolve_action`` as the runtime's action stage.
-  - ``coworld.policy_player`` (the bridge) consumes the ``Command`` / encoders.
-  - ``events.py`` reads ``KILL_RANGE_SQ`` and the ``BTN_*`` bits to derive attempt
-    traces from the produced command; ``modes.hunt`` reads ``KILL_RANGE_SQ``.
-Emits / touches: produces a per-tick ``Command`` (held button mask + optional chat)
-  and mutates ``ActionState`` (current intent, nav route/cursor/goal, teleport map,
-  last self position, vote/chat latches). Never mutates ``Belief``.
-
-Modifying this file: this layer is *mechanism, not policy* — it executes the intent it
-is handed and must not make strategic choices (target/victim/vote selection live in
-modes + strategy). Honor the edge-triggered vs level-triggered button distinction
-(``_edge_press`` for A presses that must re-fire, B held for vents) and keep the
-range gates (``*_RANGE_SQ``) matched to ``sim.nim``.
 """
 
 from __future__ import annotations
@@ -53,7 +27,7 @@ INPUT_HEADER = 0x84
 CHAT_HEADER = 0x81
 MASK_BITS = 0x7F
 
-# Button bit assignments (design §3.3).
+# Button bit assignments (AGENTS.md §2 / design §3.3).
 BTN_UP = 0x01
 BTN_DOWN = 0x02
 BTN_LEFT = 0x04
@@ -127,32 +101,22 @@ def _movement_mask(self_xy: tuple[int, int], target_xy: tuple[int, int], velocit
 
 
 def _dist2(a: tuple[int, int], b: tuple[int, int]) -> int:
-    """Squared world-pixel distance between two points (compared against ``*_RANGE_SQ``)."""
-
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
 
 
 def _self_xy(belief: Belief) -> tuple[int, int] | None:
-    """Our current world position, or ``None`` before the camera/self fix exists."""
-
     if belief.self_world_x is None or belief.self_world_y is None:
         return None
     return belief.self_world_x, belief.self_world_y
 
 
 def _velocity(action_state: ActionState, self_xy: tuple[int, int]) -> tuple[int, int]:
-    """Per-axis world-px displacement since last tick (0,0 on the first observed tick);
-    the momentum estimate the predictive-stop deadband uses."""
-
     if action_state.last_self_x is None or action_state.last_self_y is None:
         return 0, 0
     return self_xy[0] - action_state.last_self_x, self_xy[1] - action_state.last_self_y
 
 
 def _reset_execution(action_state: ActionState, intent: Intent) -> None:
-    """Adopt a new intent and discard all in-progress execution (route, button/vote/chat
-    latches), called when the incoming intent differs from the stored one."""
-
     action_state.current_intent = intent
     action_state.route = []
     action_state.route_cursor = 0
@@ -273,10 +237,6 @@ def resolve_action(intent: Intent, belief: Belief, action_state: ActionState) ->
 def _resolve(
     intent: Intent, belief: Belief, action_state: ActionState, self_xy: tuple[int, int] | None
 ) -> Command:
-    """Dispatch one intent to its handler. Idle/loiter hold still; vote/chat are
-    position-free; every world-relative intent first requires ``self_xy`` (else hold
-    still until the camera is up). Unknown kinds fall through to a held mask of 0."""
-
     if intent.kind in ("idle", "loiter"):
         return Command(held_mask=0)
 
@@ -322,9 +282,6 @@ def _resolve(
 def _resolve_complete_task(
     intent: Intent, belief: Belief, action_state: ActionState, self_xy: tuple[int, int]
 ) -> Command:
-    """Drive onto the task station's anchor, then (once inside the rect) hold A with no
-    d-pad so progress accrues without resetting. No-op for an out-of-range index."""
-
     if intent.task_index is None or belief.map is None or intent.task_index >= len(belief.map.tasks):
         return Command(held_mask=0)
     task = belief.map.tasks[intent.task_index]
@@ -343,9 +300,6 @@ def _resolve_complete_task(
 def _resolve_report(
     intent: Intent, belief: Belief, action_state: ActionState, self_xy: tuple[int, int]
 ) -> Command:
-    """Navigate to the target body; once within ReportRange, a fresh A press reports it.
-    No-op if the body id is unknown."""
-
     body = belief.bodies.get(intent.target_id) if intent.target_id is not None else None
     if body is None:
         return Command(held_mask=0)
@@ -423,9 +377,6 @@ def _resolve_call_meeting(
 def _resolve_kill(
     intent: Intent, belief: Belief, action_state: ActionState, self_xy: tuple[int, int]
 ) -> Command:
-    """Navigate to the victim (by color); once within KillRange, a fresh A press kills.
-    Hunt owns the strike *decision* — this only executes it. No-op for an unknown color."""
-
     target = belief.roster.get(intent.target_color) if intent.target_color is not None else None
     if target is None:
         return Command(held_mask=0)
@@ -440,10 +391,6 @@ def _resolve_kill(
 def _resolve_vent(
     intent: Intent, belief: Belief, action_state: ActionState, self_xy: tuple[int, int]
 ) -> Command:
-    """Drive onto the chosen vent's anchor, then hold B (level-triggered) within
-    VentRange of its center to teleport. ``target_id`` picks the vent; default is the
-    nearest. No-op when the map has no vents."""
-
     index = _select_vent_index(belief, intent.target_id, self_xy)
     if index is None:
         return Command(held_mask=0)
@@ -460,9 +407,6 @@ def _resolve_vent(
 
 
 def _select_vent_index(belief: Belief, target_id: int | None, self_xy: tuple[int, int]) -> int | None:
-    """Pick which vent to use: the explicit ``target_id`` if in range, else the nearest
-    vent by center distance; ``None`` when the map has no vents."""
-
     if belief.map is None or not belief.map.vents:
         return None
     vents = belief.map.vents

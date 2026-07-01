@@ -50,3 +50,20 @@ def test_recovers_on_a_direction_reversal() -> None:
         p.observe(tick=i, point=(x, 32))
     best = p.best()
     assert best is not None and best.dest_label.endswith(":L")  # now heading left
+
+
+def test_advances_predicted_position_through_occlusion() -> None:
+    p = _predictor()
+    _run(p, range(40, 70, 3))  # walking right, then lost
+    before = p.best().pred_pos[0]
+    t = p.last_tick
+    for k in range(1, 12):
+        p.observe(tick=t + k, point=None)
+    after = p.best().pred_pos[0]
+    assert after > before  # prediction kept moving toward the goal while occluded
+
+
+def test_no_candidates_before_any_sighting() -> None:
+    p = _predictor()
+    p.observe(tick=0, point=None)
+    assert p.best() is None

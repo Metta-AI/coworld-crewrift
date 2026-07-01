@@ -10,27 +10,6 @@ This is the presentation layer over the suspicion model: it reuses the per-event
 log-LR functions (``suspicion.py``) to *rank* a suspect's evidence, then maps each
 winning cue to a human phrase. Keep the phrasing here; keep the scoring in
 ``suspicion.py``.
-
-Both a crewmate's real accusation (``build_accusation``) and an imposter's *fabricated*
-one (``fabricate_accusation``) render through the **same** ``_format`` template, so the
-chat shape is identical and the accusation is not a role tell (design §10.4) — the only
-difference is real vs invented evidence, not the wording or structure.
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.suspicion`` — the per-event log-LR scorers (``_tailing_self_log_lr``,
-    ``_follow_log_lr``, ``_body_proximity_log_lr``, ``_vent_dwell_log_lr``) and
-    ``WITNESSED_LOG_LR``, reused to *rank* evidence (not to recompute suspicion).
-  - ``schema.CHAT_MAX_CHARS`` — the hard cap the rendered line is truncated to.
-  - ``types`` — ``Belief`` (roster/events) and ``PlayerEvent`` (real and synthetic).
-Used by: ``modes.attend_meeting`` — ``build_accusation`` for the crewmate/imposter real
-  deflection; ``fabricate_accusation`` for the imposter bandwagon.
-
-Modifying this file: keep ``build_accusation`` and ``fabricate_accusation`` rendering
-through the same ``_format`` (the anti-tell). Fabricated accusations must cite only
-**safe, hard-to-disprove** cues — never a bold witnessed kill/vent another player could
-contradict. This module reads belief and returns a string; it has no game side effects.
 """
 
 from __future__ import annotations
@@ -80,18 +59,11 @@ def fabricate_accusation(belief: Belief, color: str) -> str | None:
 
 
 def _format(color: str, reasons: list[str]) -> str:
-    """The shared render — ``"<color> sus: r1, r2"`` (top ``MAX_REASONS``), truncated to
-    ``CHAT_MAX_CHARS``. The single template both real and fabricated accusations use, so the
-    line is the same shape either way (the anti-tell)."""
-
     line = f"{color} sus: {', '.join(reasons[:MAX_REASONS])}"
     return line[:CHAT_MAX_CHARS]
 
 
 def _synthetic(kind: str, *, target_color: str | None = None) -> PlayerEvent:
-    """A zero-time placeholder event so a fabricated accusation can reuse the same phrase
-    helpers as a real one (the phrasers read ``target_color`` but ignore timing)."""
-
     return PlayerEvent(kind=kind, start_tick=0, end_tick=0, target_color=target_color)
 
 
@@ -153,9 +125,6 @@ def _add_strongest(scored, events, kind, log_lr, phrase) -> None:
         scored.append((best[0], phrase(best[1])))
 
 
-# Cue → human phrase. ``_phrase_follow`` / ``_phrase_near_body`` name the victim color from
-# the event; ``_phrase_tail`` / ``_phrase_vent_dwell`` take no detail (the ``event`` arg is
-# accepted only so all phrasers share one signature for ``_add_strongest``).
 def _phrase_tail(event: PlayerEvent) -> str:
     return "they were tailing me"
 

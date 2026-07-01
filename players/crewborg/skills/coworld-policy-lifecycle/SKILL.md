@@ -98,5 +98,5 @@ comes from the membership-events evidence, which the monitor surfaces.
 - **`resolve-and-upload` is NOT this flow** — it's a Coworld/*game* upload wrapper, not a policy one.
 - Routes used: `/v2/league-submissions`, `/v2/league-policy-memberships`,
   `/v2/policy-membership-events`, `/v2/divisions/{id}/leaderboard`. The discipline behind "submit
-  rarely" is in [`../../docs/best_practices.md`](../../docs/best_practices.md).
+  rarely" is in [`crewrift_lab/best_practices.md`](../../docs/best_practices.md).
 - Full CLI flags + routes + the submission/qualification model: [`references/cli.md`](references/cli.md).

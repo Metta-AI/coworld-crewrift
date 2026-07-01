@@ -108,7 +108,7 @@ pass, use this skill's `fetch_artifacts.py` instead.
   `/v2/experience-request-episodes` route was removed.
 - **~2026-06 (auth)**: `softmax.auth.load_current_cogames_token(api_server=...)` →
   `softmax.auth.load_current_token(server=...)`. The old name is gone; tools that
-  still call it (e.g. an older `crewborg/scripts/fetch_episodes.py`) fail at auth
+  still call it (e.g. an older `crewrift/crewborg/scripts/fetch_episodes.py`) fail at auth
   until updated.
 
 When you hit drift: diff `<base>/openapi.json` against the routes above, fix the

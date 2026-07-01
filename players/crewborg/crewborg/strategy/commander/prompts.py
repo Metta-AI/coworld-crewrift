@@ -1,37 +1,12 @@
-"""Build the role-specific system prompt for gameplay-commander LLM decisions.
-
-Assembles the system prompt as ``_COMMON_PROMPT`` (shared framing + the hard
-"bias, don't force" rules) followed by a role doctrine block (crewmate vs imposter).
-The doctrine block is loaded from an on-disk Markdown file under ``memory/`` (so it can
-be tuned without a code change), falling back to a hard-coded string when that file is
-absent or empty.
-
-Collaborators
--------------
-Relies on:
-  - the ``memory/`` sibling dir (``crewmate.md`` / ``imposter.md``) for editable doctrine,
-    overridable via the ``CREWBORG_LLM_PROMPT_DIR`` env var.
-Used by:
-  - ``llm.AnthropicCommanderClient.decide`` — calls ``system_prompt_for_role`` with the
-    role from the serialized context and the configured ``prompt_dir``.
-
-Modifying this file: the prompt only frames the LLM; the *enforced* contract is
-``schema.sanitize_priorities`` (legal rooms/players, danger-reason requirement). Keep the
-prompt's stated rules in sync with what the sanitizer actually accepts, and remember the
-``_role_prompt`` cache is keyed on ``(role_key, prompt_dir)`` — edited Markdown is only
-picked up on a fresh process.
-"""
+"""Role-specific system prompt loading for gameplay commander decisions."""
 
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
 
-#: Env var overriding the directory the role doctrine Markdown is loaded from
-#: (default: the ``memory/`` dir beside this file).
 PROMPT_DIR_ENV = "CREWBORG_LLM_PROMPT_DIR"
 
-#: Maps the two canonical roles to their doctrine Markdown filename.
 _ROLE_FILES = {
     "crewmate": "crewmate.md",
     "imposter": "imposter.md",
@@ -60,7 +35,6 @@ Rules:
 - Keep reason short and grounded in the supplied context.
 """
 
-# Hard-coded doctrine used only when the on-disk Markdown for a role can't be read.
 _FALLBACK_ROLE_PROMPTS = {
     "crewmate": (
         "Crewmate doctrine: prefer useful task progress without walking into isolated danger. "
@@ -76,21 +50,12 @@ _FALLBACK_ROLE_PROMPTS = {
 
 
 def system_prompt_for_role(role: str | None, *, prompt_dir: str | None = None) -> str:
-    """Full system prompt = common framing + role doctrine for the given role.
-
-    Any role other than ``"imposter"`` (including ``None`` / unknown) maps to the
-    crewmate doctrine — crewmate is the safe default. ``prompt_dir`` overrides where the
-    doctrine Markdown is read from (defaults to the ``memory/`` sibling dir)."""
     role_key = "imposter" if role == "imposter" else "crewmate"
     return "\n\n".join((_COMMON_PROMPT, _role_prompt(role_key, prompt_dir)))
 
 
 @lru_cache(maxsize=16)
 def _role_prompt(role_key: str, prompt_dir: str | None) -> str:
-    """Load (and cache) one role's doctrine text; fall back to the built-in on any read error.
-
-    Cached on ``(role_key, prompt_dir)`` so the Markdown is read once per process — an empty
-    or unreadable file yields the hard-coded fallback rather than a blank doctrine."""
     path = _prompt_path(role_key, prompt_dir)
     try:
         text = path.read_text(encoding="utf-8").strip()
@@ -100,6 +65,5 @@ def _role_prompt(role_key: str, prompt_dir: str | None) -> str:
 
 
 def _prompt_path(role_key: str, prompt_dir: str | None) -> Path:
-    """Path to a role's doctrine Markdown under ``prompt_dir`` (or the default ``memory/`` dir)."""
     root = Path(prompt_dir) if prompt_dir else Path(__file__).with_name("memory")
     return root / _ROLE_FILES[role_key]

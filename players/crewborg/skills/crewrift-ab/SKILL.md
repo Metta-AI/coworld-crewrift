@@ -39,7 +39,10 @@ everyone else's changes.
    - **Testing an env-flag change?** the baseline must carry **all** of the candidate's runtime env
      *minus the one flag* — isolate exactly the change, not the whole env.
 
-3. **Pull both batches** (`coworld-episode-artifacts`), one dir per side.
+3. **Pull both batches** (`coworld-episode-artifacts`), one dir per side — **streaming
+   by default**: fire one `fetch_artifacts.py --xreq … --watch` per arm in the background
+   right after step 2's creates, so both downloads overlap the still-running episodes
+   (or one `stream_eval.py` per arm if the qualitative half will want warehouses).
 
 4. **Quantitative diff + report:**
    ```bash

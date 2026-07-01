@@ -9,30 +9,11 @@ at spawn while the real-time 24 Hz engine streams ahead (the agent then drains a
 stale backlog). See WORKING_CONTEXT / design §6.
 
 There is only one, static map in the game, so we bake this **once offline**
-(``tools/build/nav_bake.py``) into a vendored asset and load it at runtime.
+(``tools/nav_bake.py``) into a vendored asset and load it at runtime.
 Loading validates that the streamed walkability mask still matches what we baked
 against; on any mismatch, missing asset, or load error we **fall back to the live
 build** — correctness never depends on the asset, only startup latency does. A
 mismatch is the signal to re-run ``nav_bake`` (the map changed).
-
-Collaborators
--------------
-Relies on:
-  - ``nav.NavGraph`` and ``agent_tracking.OccupancySubstrate`` (TYPE_CHECKING) — the
-    two heavy artifacts pickled together; the ``NavGraph.walkability`` mask is the
-    validation key.
-  - stdlib ``gzip`` / ``pickle`` / ``importlib.resources``, ``numpy`` (mask compare).
-Used by:
-  - ``types.update_belief`` calls ``load_navbake`` on the first tick with a walkability
-    mask; the bake tool (``tools/build/nav_bake.py``) calls ``serialize_navbake``.
-Emits / touches: pure load/serialize — returns the (nav, substrate) pair or ``None``;
-  no belief, no events, no mutation. The only side effect is reading the vendored file.
-
-Modifying this file: the load path must be **fail-safe** — every error mode collapses
-to ``None`` so the runtime falls back to the live build and never crashes on a bad/
-absent/stale asset. Bump ``NAVBAKE_FORMAT`` whenever the serialized payload shape
-changes (old assets are then ignored, not mis-loaded), and keep the walkability-mask
-equality check as the freshness guard.
 """
 
 from __future__ import annotations

@@ -148,7 +148,15 @@ Deflect heat onto crewmates, never teammates, and survive the meeting. Order of 
    `votes·VOTE_WEIGHT(2) + distinct chat-accusers·CHAT_WEIGHT(1)`, excluding teammates, self,
    the dead, and skip; the most-heated crewmate wins. The accusation is **fabricated**
    (`accusation.fabricate_accusation`) but rendered in the identical format (§6).
-3. **Skip** (path `skip`) — if nobody is taking heat, idle and watch; skip at the deadline.
+3. **Parity-closing push** (path `parity_push`) — if the board is **one removal from parity**
+   (`crew_alive − imp_alive == 1`) and a **live teammate is known** (`alive_imposter_count >= 2`),
+   *manufacture* a vote: `imposter.parity_closing_vote_target` picks the best non-teammate crewmate
+   (shared deterministic rank — existing votes, then lowest slot — so both imposters stack the same
+   target into a plurality), and we accuse+vote it like a bandwagon. Both gates keep it from the
+   "vote aggression raises ejection" trap: it only fires when the parity math/teammate exclusion are
+   trustworthy and a single ejection *wins the game*. **A/B-validated: imposter win +14.4pp (p<1e-9),
+   kills flat.** Rationale, evidence, and merge guide: the lab design doc `imposter-parity-meeting.md` (not shipped in this package).
+4. **Skip** (path `skip`) — if nobody is taking heat and we're not parity-closing, idle and watch; skip at the deadline.
 
 `imposter.votes_against` counts votes cast against each candidate by *other* players (skip
 votes and our own ballot excluded) and is also surfaced in the trace. The **never out a

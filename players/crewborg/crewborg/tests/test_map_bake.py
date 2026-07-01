@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from crewborg.map import bake_map
+from crewborg.map import (
+    DEFAULT_MAP_HEIGHT,
+    DEFAULT_MAP_WIDTH,
+    bake_map,
+    load_croatoan_map,
+    walkability_matches,
+)
 from crewborg.map.parser import load_resource_rects
 
 CROATOAN = """
@@ -74,3 +80,19 @@ def test_bake_classifies_tasks_vents_rooms_and_button() -> None:
     # Button is the 28x34 rect centered on the Bridge room center (170, 340).
     assert (data.button.w, data.button.h) == (28, 34)
     assert data.button.center.x == 170 and data.button.center.y == 340
+
+
+def test_croatoan_bake_is_self_consistent() -> None:
+    data = load_croatoan_map()
+    assert (data.width, data.height) == (DEFAULT_MAP_WIDTH, DEFAULT_MAP_HEIGHT)
+    assert len(data.tasks) > 0 and len(data.vents) > 0 and len(data.rooms) > 0
+    # The emergency button is derived from the Bridge room and clamped to the map.
+    assert any(r.name.lower() == "bridge" for r in data.rooms)
+    assert 0 <= data.button.x <= DEFAULT_MAP_WIDTH - data.button.w
+    assert 0 <= data.button.y <= DEFAULT_MAP_HEIGHT - data.button.h
+
+
+def test_walkability_matches_checks_map_dimensions() -> None:
+    data = load_croatoan_map()
+    assert walkability_matches(data, DEFAULT_MAP_WIDTH, DEFAULT_MAP_HEIGHT)
+    assert not walkability_matches(data, DEFAULT_MAP_WIDTH, DEFAULT_MAP_HEIGHT + 1)

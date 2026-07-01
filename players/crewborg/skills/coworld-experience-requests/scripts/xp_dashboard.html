@@ -2,96 +2,169 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>XP-request dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Experience Request — live</title>
 <style>
-  :root { --bg:#0e1116; --panel:#161b22; --line:#283040; --fg:#e6edf3; --mut:#8b96a5;
-          --good:#3fb950; --bad:#f85149; --warm:#d29922; --accent:#58a6ff; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
-  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex;
-           align-items:baseline; gap:18px; flex-wrap:wrap; position:sticky; top:0;
-           background:var(--bg); z-index:5; }
-  h1 { font-size:16px; margin:0; font-weight:600; }
-  .live { font-size:12px; padding:2px 8px; border-radius:10px; }
-  .live.ok { background:#1d3a23; color:var(--good); } .live.stale{ background:#3a1d1d; color:var(--bad);}
-  .mut { color:var(--mut); } .big{font-size:20px;font-weight:600;}
-  main { padding:18px 20px; display:flex; flex-direction:column; gap:22px; max-width:1200px; }
-  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
-  .panel h2 { font-size:13px; margin:0 0 12px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em;}
-  .bar { height:10px; background:#0b0f14; border-radius:5px; overflow:hidden; margin-top:6px;}
-  .bar > i { display:block; height:100%; background:var(--accent); }
-  .reqgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
-  .reqcard { border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
-  table { border-collapse:collapse; width:100%; font-size:13px; }
-  th,td { padding:5px 9px; text-align:right; border-bottom:1px solid var(--line); white-space:nowrap; }
-  th:first-child,td:first-child { text-align:left; }
-  th { color:var(--mut); font-weight:500; }
-  tr.me td { background:#15243a; }
-  .wr { font-weight:600; }
-  /* score strips */
-  .strip { display:grid; grid-template-columns:230px 1fr; align-items:center; gap:10px; margin:3px 0; }
-  .strip .name { font-size:12px; overflow:hidden; text-overflow:ellipsis; }
-  .track { position:relative; height:22px; background:#0b0f14; border-radius:4px; }
-  .dot { position:absolute; top:50%; width:7px; height:7px; border-radius:50%;
-         transform:translate(-50%,-50%); background:var(--accent); opacity:.55; }
-  .dot.win { background:var(--good); } .dot.loss{ background:var(--bad); }
-  .axis { display:grid; grid-template-columns:230px 1fr; gap:10px; color:var(--mut); font-size:11px; margin-top:6px;}
-  .axis .ticks{ display:flex; justify-content:space-between;}
-  /* heatmap */
-  .hm { overflow-x:auto; }
-  .cell { display:inline-block; min-width:62px; text-align:center; padding:6px 4px; border-radius:4px; font-size:12px;}
-  .empty { color:#39424f; }
+  :root{
+    --bg:#fffdf4; --surface:#fffaf0; --surface-alt:#f8f6ef;
+    --fg:#111827; --fg-subtle:#555; --fg-muted:#999;
+    --ink-navy:#1a3875; --sage:#6e8050; --terracotta:#b36e4e; --gold:#d4a853;
+    --accent:#859ebe; --border:#e4dac8; --border-strong:#d4c9b5; --border-subtle:#f0ebe1;
+    --serif:Georgia,"Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);
+       -webkit-font-smoothing:antialiased;}
+  .num{font-family:var(--mono);font-feature-settings:"tnum" 1;}
+
+  /* ---- masthead ---- */
+  header{position:sticky;top:0;z-index:5;background:var(--bg);
+         border-bottom:2px solid var(--border-strong);padding:16px 26px 12px;}
+  .mast{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  h1{font:700 24px/1.1 var(--serif);margin:0;letter-spacing:-.01em;}
+  .metrics{margin-top:8px;color:var(--fg-subtle);font-size:13px;display:flex;
+           gap:20px;flex-wrap:wrap;align-items:baseline;}
+  .metrics b{color:var(--fg);}
+  .metrics .lbl{color:var(--fg-muted);text-transform:uppercase;letter-spacing:.08em;
+                font-size:10.5px;font-weight:700;margin-right:5px;}
+
+  /* ---- status pill ---- */
+  .pill{font:700 10.5px/1 var(--sans);text-transform:uppercase;letter-spacing:.08em;
+        padding:4px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:6px;}
+  .pill.ok{background:rgba(133,158,190,.18);color:var(--ink-navy);}
+  .pill.stale{background:rgba(179,110,78,.14);color:var(--terracotta);}
+  .pill .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);
+             animation:pulse 1.5s ease infinite;}
+  .pill.stale .dot{background:var(--terracotta);animation:none;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+
+  /* ---- layout ---- */
+  main{max-width:1160px;margin:0 auto;padding:26px;display:flex;flex-direction:column;gap:34px;}
+  section{display:flex;flex-direction:column;gap:12px;}
+  h2{font:700 12px/1 var(--sans);margin:0;color:var(--ink-navy);text-transform:uppercase;
+     letter-spacing:.12em;padding-bottom:8px;border-bottom:1px solid var(--border);}
+
+  /* ---- progress ---- */
+  .bar{height:8px;background:var(--surface-alt);border-radius:999px;overflow:hidden;
+       border:1px solid var(--border);}
+  .bar>i{display:block;height:100%;background:var(--sage);transition:width .4s ease;}
+  .reqgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
+  .reqcard{border:1px solid var(--border);border-radius:3px;padding:11px 13px;background:var(--surface);}
+  .reqcard .rid{font-family:var(--mono);font-size:12px;color:var(--fg-subtle);
+                display:flex;justify-content:space-between;gap:8px;align-items:baseline;}
+  .reqcard .cnt{margin:7px 0 8px;font-size:14px;}
+  .tag{font:700 9.5px/1 var(--sans);text-transform:uppercase;letter-spacing:.06em;
+       padding:3px 7px;border-radius:999px;white-space:nowrap;}
+  .tag.completed,.tag.complete{background:rgba(110,128,80,.16);color:var(--sage);}
+  .tag.running{background:rgba(133,158,190,.18);color:var(--ink-navy);}
+  .tag.pending,.tag.created{background:rgba(212,168,83,.18);color:#8a6d1f;}
+  .tag.failed{background:rgba(179,110,78,.16);color:var(--terracotta);}
+
+  /* ---- leaderboard ---- */
+  table{border-collapse:collapse;width:100%;font-size:13.5px;}
+  th,td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--border-subtle);
+        white-space:nowrap;}
+  th:first-child,td:first-child{text-align:left;}
+  thead th{color:var(--fg-muted);font:700 10.5px/1 var(--sans);text-transform:uppercase;
+           letter-spacing:.08em;border-bottom:1.5px solid var(--border-strong);}
+  tbody td{font-family:var(--mono);font-feature-settings:"tnum" 1;}
+  tbody td:first-child{font-family:var(--sans);}
+  tbody tr:hover td{background:rgba(26,56,117,.04);}
+  tr.me td{background:rgba(133,158,190,.12);}
+  tr.me td:first-child{box-shadow:inset 3px 0 0 var(--ink-navy);font-weight:600;}
+  .wr{font-weight:700;}
+  .sub{color:var(--fg-muted);font-size:12px;}
+  .empty-row td{text-align:center;color:var(--fg-muted);font-style:italic;font-family:var(--sans);
+                padding:20px;}
+
+  /* ---- heatmap (single aligned grid: label + 3 role columns) ---- */
+  .hm{display:grid;grid-template-columns:minmax(150px,1.6fr) repeat(3,minmax(70px,1fr));
+      gap:5px;align-items:stretch;}
+  .hm-hd{font:700 10px/1 var(--sans);text-transform:uppercase;letter-spacing:.08em;
+         color:var(--fg-muted);text-align:center;align-self:end;padding-bottom:4px;}
+  .hm-corner{}
+  .hm-rl{font-size:12.5px;display:flex;align-items:center;padding-right:6px;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .hm-cell{font-family:var(--mono);font-feature-settings:"tnum" 1;font-size:13px;font-weight:600;
+           text-align:center;padding:9px 4px;border-radius:3px;color:var(--fg);
+           border:1px solid rgba(0,0,0,.04);}
+  .dim{color:var(--fg-muted);font-weight:400;}
+
+  .legend{display:flex;align-items:center;gap:8px;color:var(--fg-muted);font-size:11px;margin-top:2px;}
+  .legend .scale{height:9px;width:120px;border-radius:999px;
+    background:linear-gradient(90deg,var(--terracotta),var(--gold),var(--sage));}
+
+  @media(max-width:600px){
+    main{padding:18px;}
+    .metrics{gap:12px;}
+    section{overflow-x:auto;}
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>XP-request dashboard</h1>
-  <span id="live" class="live stale">connecting…</span>
-  <span class="mut">done <b id="done" class="fg">0</b>/<b id="total">0</b>
-        (<b id="pct">0</b>%) · <b id="rate">0</b>/min · ETA <b id="eta">—</b></span>
-  <span class="mut">scored <b id="scored">0</b> · ops-filtered <b id="ops">0</b></span>
+  <div class="mast">
+    <h1>Experience Request</h1>
+    <span id="live" class="pill stale"><span class="dot"></span>connecting…</span>
+  </div>
+  <div class="metrics">
+    <span><span class="lbl">Done</span><b id="done" class="num">0</b><span class="sub">/</span><b id="total" class="num">0</b> <span class="sub">(<span id="pct" class="num">0</span>%)</span></span>
+    <span><span class="lbl">Rate</span><b id="rate" class="num">0</b><span class="sub">/min</span></span>
+    <span><span class="lbl">ETA</span><b id="eta" class="num">—</b></span>
+    <span><span class="lbl">Scored</span><b id="scored" class="num">0</b></span>
+    <span><span class="lbl">Ops-filtered</span><b id="ops" class="num">0</b></span>
+  </div>
 </header>
+
 <main>
-  <section class="panel">
-    <h2>Completion progress</h2>
+  <section>
+    <h2>Completion</h2>
     <div class="bar"><i id="prog" style="width:0%"></i></div>
-    <div class="reqgrid" id="reqs" style="margin-top:12px"></div>
+    <div class="reqgrid" id="reqs"></div>
   </section>
 
-  <section class="panel">
-    <h2>Leaderboard — win-rate by player/policy (× role)</h2>
+  <section>
+    <h2>Win-rate by player &amp; policy, split by role</h2>
     <table id="lb"><thead><tr>
-      <th>player (policy:v)</th><th>games</th><th>win%</th>
-      <th>crew win% (n)</th><th>imp win% (n)</th><th>score μ</th>
+      <th>Player · policy:v</th><th>games</th><th>win %</th>
+      <th>crew win % (n)</th><th>imposter win % (n)</th><th>score μ</th>
     </tr></thead><tbody></tbody></table>
   </section>
 
-  <section class="panel">
+  <section>
     <h2>Win-rate heatmap — overall · crew · imposter</h2>
     <div class="hm" id="heat"></div>
-  </section>
-
-  <section class="panel">
-    <h2>Score distribution — one strip per player (green=win, red=loss)</h2>
-    <div id="strips"></div>
-    <div class="axis"><div></div><div class="ticks" id="axis"></div></div>
+    <div class="legend"><span>lower</span><span class="scale"></span><span>higher win %</span></div>
   </section>
 </main>
 
 <script>
 const POLL_MS = 5000;
-let SROW = {min:0,max:1};
 
 function fmtETA(s){ if(s==null) return "—"; if(s<60) return s+"s";
   const m=Math.floor(s/60), ss=s%60; if(m<60) return m+"m"+(ss?ss+"s":"");
   const h=Math.floor(m/60); return h+"h"+(m%60)+"m"; }
-function colorFor(p){ // p in 0..100 -> red..yellow..green
-  if(p==null) return "#1c2230";
-  const t=p/100, r=Math.round(248*(1-t)+63*t), g=Math.round(81*(1-t)+185*t), b=Math.round(73*(1-t)+80*t);
-  return `rgba(${r},${g},${b},.85)`; }
+
+function lerp(a,b,t){ return Math.round(a+(b-a)*t); }
+// win% (0..100) -> terracotta → gold → sage, as a soft cell tint over cream
+function heatBg(p){
+  if(p==null) return "var(--surface-alt)";
+  const t=Math.max(0,Math.min(100,p))/100; let r,g,b;
+  if(t<0.5){ const u=t/0.5; r=lerp(0xb3,0xd4,u); g=lerp(0x6e,0xa8,u); b=lerp(0x4e,0x53,u); }
+  else{ const u=(t-0.5)/0.5; r=lerp(0xd4,0x6e,u); g=lerp(0xa8,0x80,u); b=lerp(0x53,0x50,u); }
+  return `rgba(${r},${g},${b},.5)`;
+}
+// win% text color: terracotta (low) → sage (high); muted when unknown
+function winText(p){
+  if(p==null) return "var(--fg-muted)";
+  const t=Math.max(0,Math.min(100,p))/100;
+  return `rgb(${lerp(0xb3,0x6e,t)},${lerp(0x6e,0x80,t)},${lerp(0x4e,0x50,t)})`;
+}
 function setLive(ok,txt){ const e=document.getElementById("live");
-  e.className="live "+(ok?"ok":"stale"); e.textContent=txt; }
+  e.className="pill "+(ok?"ok":"stale");
+  e.innerHTML='<span class="dot"></span>'+esc(txt); }
 
 async function poll(){
   try{
@@ -113,57 +186,50 @@ function render(d){
   // per-request cards
   document.getElementById("reqs").innerHTML = d.requests.map(q=>{
     const pct=q.total? Math.round(100*q.completed/q.total):0;
-    return `<div class="reqcard"><div class="name">${q.xreq.slice(0,18)}…
-      <span class="mut">${q.status}</span></div>
-      <div>${q.completed}/${q.total} <span class="mut">(${pct}%)</span></div>
+    const st=(q.status||"").toLowerCase();
+    return `<div class="reqcard">
+      <div class="rid"><span>${esc(q.xreq.slice(0,20))}…</span><span class="tag ${st}">${esc(q.status)}</span></div>
+      <div class="cnt"><span class="num">${q.completed}</span><span class="sub">/${q.total}</span>
+        <span class="sub">(${pct}%)</span></div>
       <div class="bar"><i style="width:${pct}%"></i></div></div>`;
   }).join("");
 
   const lb=d.leaderboard;
-  // leaderboard table
-  document.getElementById("lb").querySelector("tbody").innerHTML = lb.map(p=>{
-    const me = /crewborg:/.test(p.label) ? "me" : "";
-    const w = p.win==null?"—":p.win;
-    return `<tr class="${me}"><td>${esc(p.label)}</td><td>${p.n}</td>
-      <td class="wr" style="color:${colorFor(p.win)}">${w}</td>
-      <td>${p.crew_win==null?"—":p.crew_win} <span class="mut">(${p.crew_n})</span></td>
-      <td>${p.imp_win==null?"—":p.imp_win} <span class="mut">(${p.imp_n})</span></td>
-      <td>${p.score_mean==null?"—":p.score_mean}</td></tr>`;
-  }).join("");
+  // leaderboard
+  const tb=document.getElementById("lb").querySelector("tbody");
+  if(!lb.length){
+    tb.innerHTML=`<tr class="empty-row"><td colspan="6">No scored episodes yet — waiting for the first results.</td></tr>`;
+  } else {
+    tb.innerHTML = lb.map(p=>{
+      const me = /crewborg:/.test(p.label) ? "me" : "";
+      const w = p.win==null?"—":p.win;
+      return `<tr class="${me}"><td>${esc(p.label)}</td><td>${p.n}</td>
+        <td class="wr" style="color:${winText(p.win)}">${w}</td>
+        <td>${p.crew_win==null?"—":p.crew_win} <span class="sub">(${p.crew_n})</span></td>
+        <td>${p.imp_win==null?"—":p.imp_win} <span class="sub">(${p.imp_n})</span></td>
+        <td>${p.score_mean==null?"—":p.score_mean}</td></tr>`;
+    }).join("");
+  }
 
-  // heatmap: rows=players, cols=[overall,crew,imp]
+  // heatmap — ONE grid so header cols and data cols always align.
+  const heat=document.getElementById("heat");
   const cols=[["overall","win"],["crew","crew_win"],["imp","imp_win"]];
-  let h = `<div><span class="cell"></span>`+cols.map(c=>`<span class="cell mut">${c[0]}</span>`).join("")+`</div>`;
-  h += lb.map(p=>{
-    const cells=cols.map(c=>{
-      const v=p[c[1]];
-      return `<span class="cell" style="background:${colorFor(v)}">${v==null?'<span class="empty">·</span>':v}</span>`;
+  if(!lb.length){
+    heat.innerHTML=`<div class="hm-corner"></div>`+cols.map(c=>`<div class="hm-hd">${c[0]}</div>`).join("")+
+      `<div class="hm-rl dim" style="grid-column:1/-1;font-style:italic">No scored episodes yet.</div>`;
+  } else {
+    let h = `<div class="hm-corner"></div>`+cols.map(c=>`<div class="hm-hd">${c[0]}</div>`).join("");
+    h += lb.map(p=>{
+      const label=`<div class="hm-rl">${esc(short(p.label))}</div>`;
+      const cells=cols.map(c=>{ const v=p[c[1]];
+        return `<div class="hm-cell" style="background:${heatBg(v)}">${v==null?'<span class="dim">·</span>':v}</div>`;
+      }).join("");
+      return label+cells;
     }).join("");
-    return `<div><span class="cell" style="text-align:left;min-width:230px">${esc(short(p.label))}</span>${cells}</div>`;
-  }).join("");
-  document.getElementById("heat").innerHTML=h;
-
-  // score strips — shared x-axis across all players.
-  // Each sample is [score, win]; color by the authoritative win flag (a win is the
-  // +100 objective bonus, NOT score>0 — a crewmate can score 8 from tasks and lose).
-  let mn=Infinity,mx=-Infinity;
-  lb.forEach(p=>p.scores.forEach(([s,_])=>{ if(s<mn)mn=s; if(s>mx)mx=s; }));
-  if(!isFinite(mn)){mn=0;mx=1;}
-  if(mn===mx){mx=mn+1;}
-  const span=mx-mn;
-  document.getElementById("strips").innerHTML = lb.map(p=>{
-    const dots=p.scores.map(([s,w])=>{
-      const x=100*(s-mn)/span;
-      const cls = w?"win":"loss";
-      return `<span class="dot ${cls}" style="left:${x}%" title="${s}${w?' WIN':''}"></span>`;
-    }).join("");
-    return `<div class="strip"><span class="name">${esc(short(p.label))}</span>
-      <div class="track">${dots}</div></div>`;
-  }).join("");
-  const ticks=[mn, mn+span*0.25, mn+span*0.5, mn+span*0.75, mx].map(v=>`<span>${Math.round(v)}</span>`).join("");
-  document.getElementById("axis").innerHTML=ticks;
+    heat.innerHTML=h;
+  }
 }
-function short(s){ return s.length>34? s.slice(0,33)+"…": s; }
+function short(s){ return s.length>36? s.slice(0,35)+"…": s; }
 function esc(s){ return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 poll(); setInterval(poll, POLL_MS);

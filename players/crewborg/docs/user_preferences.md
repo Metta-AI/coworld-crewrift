@@ -40,3 +40,15 @@ player (best practices)?
 
 _None recorded yet — preferences are the human's to state, not something this player inherits. Add
 them here as they come up._
+
+- **XP requests > 16 episodes: always bring up the dashboard** (James, 2026-07-01).
+  Whenever you create an experience request with more than 16 episodes, start the XP
+  dashboard (`players/crewborg/skills/coworld-experience-requests/scripts/xp_dashboard.py
+  --port <port> xreq_...`) and give the human the `http://localhost:<port>` link in the
+  same message that reports the request was created.
+
+- **Always upload policies with ALL telemetry enabled unless told otherwise** (James, 2026-07-01).
+  Every `coworld upload-policy` gets `--secret-env CREWBORG_METRICS=1 --secret-env
+  CREWBORG_TRACE_GROUPS=all`. Massive logs when needed beat re-uploading the same policy
+  and re-running XP requests. NB league artifacts are ephemeral (~one round's retention) —
+  harvest them promptly each round.

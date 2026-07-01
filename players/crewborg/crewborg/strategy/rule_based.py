@@ -33,41 +33,16 @@ scene, preferably through a vent. Imposters NEVER report bodies; self-reporting 
 own kill triggered a meeting that reset the cooldown and killed snowball kills. Once
 Evade ends we go straight back to Search (or Hunt/Recon if the gates match).
 
-(5) is the always-on fallback (the literal ``otherwise`` — it has no gate of its own):
-whenever nothing higher fires, the imposter Searches. Search (``modes/search.py``)
-sweeps nearby reachable rooms, holds a line-of-sight vantage on whatever crew it finds,
-and follows a crewmate to their next room (route projection via
-``strategy.path_prediction``) — keeping us near crew so a kill window opens. Hunt does
-not pre-position anymore; it activates only when the kill is ready and a victim is
-visible. Recon (4) is the only *tick-windowed* pre-position
-(``ticks_until_kill_ready() ≤ recon_window()``, reconstructed from the binary HUD via
-``strategy.opportunity``).
+(5) fires once the kill cooldown is within a short lead window of being ready
+(`ticks_until_kill_ready ≤ SEARCH_LEAD_TICKS`, reconstructed from the binary HUD via
+`strategy.opportunity`). Search walks occupancy hot spots until it sees a crewmate,
+then follows that target. Hunt does not pre-position anymore; it activates only when
+the kill is ready and a victim is visible.
 
 Aggressive experiment: ``CREWBORG_BE_DUMB=1`` (or ``BE_DUMB=1``) replaces the
 imposter ``Playing`` priority with only Search/Hunt: Hunt when kill-ready with a
-visible victim, otherwise Search. It deliberately skips Evade, Recon, and Report Body
-so we can isolate "always prepare to kill" behavior.
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.opportunity`` — ``has_visible_victim`` / ``ticks_until_kill_ready`` /
-    ``recon_window`` / ``most_recent_victim`` (the imposter kill-window gates).
-  - ``strategy.suspicion`` — ``active_tail_suspect`` (the crewmate Accuse trigger).
-  - ``strategy.commander.bias.commander_of`` — optional LLM ``skip_evade`` lever.
-  - ``types.Belief`` (read-only here, except appending ``commander_danger_events``) and
-    ``players.player_sdk.ModeDirective`` (the value returned).
-Used by:
-  - ``__init__.build_runtime`` wraps this in ``SynchronousStrategyRunner`` and calls
-    ``decide`` once per tick to pick the active mode.
-Emits / touches: returns a ``ModeDirective`` (the chosen mode name + reason); the named
-  mode object then produces the actual ``Intent``. No I/O, no perception, no action.
-
-Modifying this file: this is the per-tick mode SELECTOR — it only *chooses* a mode, it
-never moves the agent or computes geometry (the mode objects and ``action.py`` do that).
-Keep ``decide`` a pure function of ``belief`` plus the two sticky fields
-(``_accuse_target`` / ``_button_call_spent``). The priority *order* in each
-``_select_*`` is the design contract (§10); reorder it deliberately, not incidentally.
+visible victim, otherwise Search. It deliberately skips Pretend, Evade, and
+Report Body so we can isolate "always prepare to kill" behavior.
 """
 
 from __future__ import annotations
@@ -104,23 +79,15 @@ class RuleBasedStrategy:
         self._button_call_spent: bool = False
 
     def decide(self, snapshot: BeliefSnapshot[Belief, ActionState]) -> ModeDirective:
-        """Strategy entry point (called once per tick by ``SynchronousStrategyRunner``):
-        read the current belief out of the shared snapshot and pick the active mode."""
         with snapshot.read() as memory:
             belief = memory.belief
             directive = self.select(belief)
         return directive
 
     def select(self, belief: Belief) -> ModeDirective:
-        """Pick the mode for this tick from belief alone (the snapshot-free seam used by
-        tests). Thin wrapper over ``_select``."""
         return self._select(belief)
 
     def _select(self, belief: Belief) -> ModeDirective:
-        """Phase + role dispatch implementing the §10 priority order: meeting phases →
-        Attend Meeting; a dead self → Normal (ghost tasks); imposter → ``_select_imposter``;
-        otherwise the live-crewmate field (report body > accuse a tail > do tasks). Has the
-        side effect of managing the sticky Accuse target / one-shot button budget."""
         phase = belief.phase
 
         if phase in ("Lobby", "RoleReveal"):
@@ -131,9 +98,9 @@ class RuleBasedStrategy:
             return ModeDirective(mode="attend_meeting", source="strategy", reason="meeting open")
 
         if phase == "Playing":
-            # A crewmate ghost can't report or be threatened; it only finishes its
-            # own tasks (design §7.3), so it goes straight to Normal.
-            if belief.self_role == "dead":
+            # A ghost (dead, either role) can't report or be threatened; it only
+            # finishes its own tasks (design §7.3), so it goes straight to Normal.
+            if not belief.self_alive:
                 self._accuse_target = None
                 return ModeDirective(mode="normal", source="strategy", reason="ghost: finish own tasks")
             if belief.self_role == "imposter":
@@ -184,7 +151,10 @@ class RuleBasedStrategy:
             )
         if belief.self_kill_ready and has_visible_victim(belief):
             return ModeDirective(mode="hunt", source="strategy", reason="kill ready: hunt visible victim")
-        if ticks_until_kill_ready(belief) <= recon_window() and most_recent_victim(belief) is not None:
+        # Recon only in the strictly PRE-ready window. If the kill is already ready but no
+        # victim is visible, do NOT recon (it would beeline to a stale last-known position and
+        # freeze on it — see the recon-stall lesson); go to Search to actively find a victim.
+        if not belief.self_kill_ready and ticks_until_kill_ready(belief) <= recon_window() and most_recent_victim(belief) is not None:
             return ModeDirective(mode="recon", source="strategy", reason="kill nearly ready: close on a crewmate")
         return ModeDirective(mode="search", source="strategy", reason="seek crew to be near a kill")
 
@@ -210,9 +180,6 @@ class RuleBasedStrategy:
         return record is not None and record.life_status != "dead"
 
     def _inside_button_rect(self, belief: Belief) -> bool:
-        """Whether our own position is inside the emergency-button rect (so an A-press
-        this tick actually spends the call). False until both the map and our position
-        are known."""
         if belief.map is None or belief.self_world_x is None or belief.self_world_y is None:
             return False
         button = belief.map.button
@@ -222,8 +189,6 @@ class RuleBasedStrategy:
         )
 
     def _reset_for_new_game(self) -> None:
-        """Clear per-game state at Lobby/RoleReveal: drop any committed accuse target and
-        restore the single emergency-button-call budget for the new game."""
         self._accuse_target = None
         self._button_call_spent = False
 

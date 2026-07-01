@@ -1,33 +1,4 @@
-"""Validate raw commander LLM JSON into a safe, typed ``CommanderPriorities``.
-
-The trust boundary between untrusted LLM output and the modes that consume it. Raw JSON
-(from the LLM, or from the ``CREWBORG_COMMANDER_FORCE`` test override) is never installed
-into belief directly — it passes through ``sanitize_priorities`` first, which drops any
-field that names an illegal room/player, coerces enums to their default, and gates the
-two DANGER levers behind a non-empty ``danger_reason``. Whatever survives is, by
-construction, safe for a mode to act on, so "commander off / garbage in = inert".
-
-Collaborators
--------------
-Relies on:
-  - ``types.CommanderPriorities`` — the frozen, ``extra="forbid"`` target model.
-  - the ``legal_rooms`` / ``legal_players`` sets (from ``context.py``) as the validity sets.
-Used by:
-  - ``strategy.CommanderStrategy.decide`` — sanitizes both worker output and forced
-    priorities before stamping ``as_of_tick`` and publishing as the ``commander`` inference.
-
-Modifying this file: this is a trust boundary — every field must default to the
-behavior-preserving value when input is missing or malformed. The two DANGER levers
-(``allow_witnessed_kill`` / ``skip_evade``) MUST stay gated on ``has_danger_reason``;
-that is what stops the LLM from silently turning on risky play.
-
-``strength`` is SOFT-ONLY on the live LLM path, **by design**: the model is never asked for
-it (``llm.py``'s ``response_schema`` and the prompts omit ``strength``), so LLM-authored
-priorities always sanitize to ``"soft"`` — bias, never force. ``"hard"`` forcing (read by
-``modes.normal`` / ``modes.search`` as "force, don't just bias") is reachable ONLY through
-the ``CREWBORG_COMMANDER_FORCE`` override — a deterministic test / QA / control path the LLM
-cannot trigger. Keep it this way unless you intend to let the LLM hard-force modes.
-"""
+"""Validate raw commander LLM JSON against the current legal game state."""
 
 from __future__ import annotations
 
@@ -35,10 +6,7 @@ from typing import Any
 
 from crewborg.types import CommanderPriorities
 
-#: Accepted ``posture`` values; anything else is coerced to the behavior-neutral default.
 _VALID_POSTURES = {"stick", "isolate", "neutral"}
-#: Accepted ``strength`` values; ``"soft"`` = bias only, ``"hard"`` = force. Soft-only on the
-#: live LLM path; ``"hard"`` only via CREWBORG_COMMANDER_FORCE (see module docstring).
 _VALID_STRENGTHS = {"soft", "hard"}
 
 
@@ -49,15 +17,7 @@ def sanitize_priorities(
     *,
     as_of_tick: int,
 ) -> CommanderPriorities:
-    """Return a safe commander payload, dropping invalid or stale-by-construction fields.
-
-    Each field is reduced to a value a mode can trust: room/player fields must be present
-    in ``legal_rooms`` / ``legal_players`` (else ``None``); ``target_task`` must be a real
-    ``int`` (``bool`` is rejected — ``type(...) is int`` excludes ``True``/``False``);
-    ``posture`` / ``strength`` fall back to their neutral defaults on any unknown value; and
-    the two DANGER levers are forced ``False`` unless a non-empty ``danger_reason`` string is
-    supplied. ``as_of_tick`` stamps the freshness clock that ``bias.commander_of`` reads for
-    its TTL. The returned model is frozen."""
+    """Return a safe commander payload, dropping invalid or stale-by-construction fields."""
 
     danger_reason = raw.get("danger_reason")
     has_danger_reason = isinstance(danger_reason, str) and bool(danger_reason.strip())
@@ -92,5 +52,4 @@ def sanitize_priorities(
 
 
 def _legal_string(value: Any, legal_values: set[str]) -> str | None:
-    """Return ``value`` only when it is a string present in ``legal_values``; otherwise ``None``."""
     return value if isinstance(value, str) and value in legal_values else None

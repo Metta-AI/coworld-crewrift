@@ -1,51 +1,4 @@
-"""Attend Meeting mode: conversational chat plus deadline-safe voting (design §10.4).
-
-Active for the whole ``Voting`` phase. It runs two layers:
-
-- **LLM-driven (primary).** When a meeting LLM client is enabled, each tick may fire a
-  cadence-gated call (``_next_llm_trigger``: meeting start / new external chat / chat
-  cooldown ready / deadline) that returns a structured ``MeetingDecision`` — send a chat
-  line, set a tentative vote, or submit the vote. Validation, duplicate-chat suppression,
-  and a chat cooldown sit between the decision and the emitted intent.
-- **Deterministic fallback.** When the client is disabled, or a call fails/returns an
-  invalid decision, role-specific rules take over (``_decide_crewmate`` /
-  ``_decide_imposter``). Chat and vote are always **coupled** — we accuse exactly whom we
-  vote (the anti-tell). Crewmate: accuse + vote a clear leading suspect, else stay silent
-  and skip a flat field. Imposter: proactively deflect onto a non-teammate with real
-  citable evidence; else **bandwagon** onto a crewmate already taking heat with a *safely
-  fabricated* accusation in the identical format; else wait and skip at the deadline. We
-  never vote a teammate, and a hard guard forbids ever voting ourselves out.
-
-**Deadline safety is the invariant.** No matter the path, the vote is auto-submitted once
-the meeting clock is within ``AUTO_SUBMIT_REMAINING_TICKS`` of expiry, and an LLM call is
-only started if it can finish (timeout + margin) before that deadline — so a slow or
-failing LLM can never cost us the vote.
-
-Collaborators
--------------
-Relies on:
-  - ``strategy.meeting`` — the LLM client (``MeetingLLMClient`` /
-    ``build_meeting_llm_client_from_env``), context serialization, decision validation,
-    valid vote targets, and the ``VOTE_SKIP`` / ``CHAT_MAX_CHARS`` constants.
-  - ``strategy.meeting.accusation`` — ``build_accusation`` (real) / ``fabricate_accusation``.
-  - ``strategy.meeting.context`` — ``CHAT_COOLDOWN_TICKS`` / ``VOTE_TIMER_TICKS``.
-  - ``strategy.meeting.imposter`` — ``bandwagon_target`` / ``votes_against``.
-  - ``strategy.meeting`` ``chat_nlp`` / ``chat_read`` — chat-accuser parsing for bandwagon.
-  - ``strategy.suspicion.top_suspect`` — the deterministic suspect/fallback vote target.
-  - ``belief.voting`` / ``action_state.vote_confirmed`` — meeting state and our own marker.
-Used by:
-  - ``strategy.rule_based`` selects this mode for the entire ``Voting`` phase (§10).
-  - ``__init__.build_runtime`` registers it in the ``ModeRegistry``.
-Emits: ``chat`` / ``vote`` / ``idle`` intents (executed by ``action.py``) and a rich set of
-  ``meeting_*`` trace events + counters (context, decision, fallback, vote/chat selected).
-
-Modifying this file: it decides *what to say and whom to vote* and emits a symbolic Intent
-only — it never walks to the vote panel or types (that is ``action.py``). The deadline /
-auto-submit timing (``_should_auto_submit`` / ``_can_start_llm_call`` /
-``_latest_safe_llm_start_remaining_ticks``) is the load-bearing safety logic; change it
-deliberately. All per-meeting state is reset by ``_reset_for_meeting_if_needed`` keyed on
-``phase_start_tick`` — add new state there too.
-"""
+"""Attend Meeting mode: conversational chat plus deadline-safe voting."""
 
 from __future__ import annotations
 
@@ -68,39 +21,25 @@ from crewborg.strategy.meeting.context import (
     CHAT_COOLDOWN_TICKS,
     VOTE_TIMER_TICKS,
 )
-from crewborg.strategy.meeting.imposter import bandwagon_target, votes_against
+from crewborg.strategy.meeting.imposter import (
+    bandwagon_target,
+    parity_closing_vote_target,
+    votes_against,
+)
 from crewborg.strategy.meeting import chat_nlp, chat_read
-from crewborg.strategy.suspicion import top_suspect
+from crewborg.strategy.suspicion import chat_suspect, top_suspect
 from crewborg.types import ActionState, Belief, ChatEvent, Intent
 from players.player_sdk import EmptyModeParams, Mode
 
-# Minimum ticks between successive LLM calls — throttles cost and avoids re-prompting on
-# every tick while chat trickles in.
 LLM_MIN_CALL_INTERVAL_TICKS = 12
-# Remaining-ticks threshold at/under which we fire the one final "deadline" LLM prompt
-# (floored against the latest-safe start so the call can still finish before auto-submit).
 DEADLINE_LLM_REMAINING_TICKS = 96
-# Remaining-ticks threshold at/under which we stop deliberating and force the vote out.
 AUTO_SUBMIT_REMAINING_TICKS = 48
-# Meeting clock conversion: VOTE_TIMER_TICKS spans 10 seconds, so this is ticks per second.
 MEETING_TICKS_PER_SECOND = VOTE_TIMER_TICKS // 10
-# Safety slack (ticks) added on top of the LLM timeout when deciding the latest safe start.
 LLM_TIMEOUT_MARGIN_TICKS = LLM_MIN_CALL_INTERVAL_TICKS
-# Assumed LLM timeout (seconds) when the client doesn't expose ``timeout_seconds``.
 DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
 
 
 class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
-    """Meeting chat + voting stance. Holds extensive per-meeting state, all reset by
-    ``_reset_for_meeting_if_needed`` when ``phase_start_tick`` changes: the LLM client and
-    its trigger/cadence bookkeeping (``_last_llm_call_tick``, ``_last_external_chat_signature``,
-    ``_deadline_prompted``), chat bookkeeping (``_sent_chat_texts``, ``_pending_chat_text``,
-    ``_last_chat_tick``, ``_last_cooldown_prompt_chat_tick``, ``_chat_parse_cache``), the vote
-    machine (``_tentative_vote`` we lean toward, ``_active_vote_target``/``_active_vote_reason``
-    once committed, ``_vote_submitted``), and one-shot trace latches (``_deterministic_chatted``,
-    ``_disabled_traced``, ``_decision_traced``). ``_meeting_id`` is the current
-    ``phase_start_tick`` used to detect a new meeting."""
-
     name = "attend_meeting"
     params_type = EmptyModeParams
 
@@ -125,16 +64,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         self._decision_traced = False
 
     def is_legal(self, belief: Belief) -> bool:
-        """This mode is only valid during the ``Voting`` phase (a meeting is open)."""
         return belief.phase == "Voting"
 
     def decide(self, belief: Belief, action_state: ActionState) -> Intent:
-        """Drive one tick of the meeting. Resolves committed/confirmed votes first (idempotent
-        once submitted), then: if the LLM is disabled → deterministic fallback; if past the
-        auto-submit deadline → force the vote; flush a pending chat once its cooldown clears;
-        otherwise, on a cadence trigger, call the LLM and apply/validate its decision (falling
-        back on failure). Returns the resulting ``chat`` / ``vote`` / ``idle`` intent. Reads
-        ``action_state.vote_confirmed`` to latch that our vote landed."""
         self._reset_for_meeting_if_needed(belief)
         if action_state.vote_confirmed:
             self._vote_submitted = True
@@ -192,7 +124,8 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return self._decide_crewmate(belief)
 
     def _decide_crewmate(self, belief: Belief) -> Intent:
-        """Accuse + vote a clear leading suspect; else stay silent and skip a flat field."""
+        """Accuse + vote a clear leading suspect; else SHARE a read on a softer suspect
+        (chat only, no vote) rather than going silent — vote restraint is unchanged."""
 
         if not self._deterministic_chatted:
             self._deterministic_chatted = True
@@ -205,6 +138,13 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
                     return self._send_chat_intent(belief, accusation, reason="accusing clear suspect")
                 self._trace_meeting_decision(belief, role="crewmate", path="vote_no_chat", target=target)
             else:
+                # No clear suspect to VOTE — but voice an evidence-cited read instead of
+                # going silent (chat only; we still skip the vote on a thin field).
+                soft = chat_suspect(belief)
+                read = build_accusation(belief, soft) if soft is not None else None
+                if read is not None:
+                    self._trace_meeting_decision(belief, role="crewmate", path="share_read", target=soft)
+                    return self._send_chat_intent(belief, read, reason="sharing read (no vote)")
                 self._trace_meeting_decision(belief, role="crewmate", path="silent_skip", target=None)
         return self._submit_vote_intent(belief, reason="deterministic meeting vote")
 
@@ -243,7 +183,23 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
                 return self._send_chat_intent(belief, fabricated, reason="imposter bandwagon: fabricated")
             return self._submit_vote_intent(belief, reason="imposter bandwagon vote")
 
-        # 3. No one to deflect onto yet — wait, then skip at the deadline.
+        # 3. Parity-closing push — one removal from a win and no crewmate is taking
+        #    heat on their own, so MANUFACTURE the pile instead of skipping it away
+        #    (the dominant imposter loss is stalling at 3-crew/2-imp; design §10.4).
+        parity_target = parity_closing_vote_target(belief, accusers)
+        if parity_target is not None:
+            self._tentative_vote = parity_target
+            self._deterministic_chatted = True
+            fabricated = fabricate_accusation(belief, parity_target)
+            self._trace_meeting_decision(
+                belief, role="imposter", path="parity_push", target=parity_target,
+                fabricated=fabricated is not None, accusers=accusers,
+            )
+            if fabricated is not None:
+                return self._send_chat_intent(belief, fabricated, reason="imposter parity push: fabricated")
+            return self._submit_vote_intent(belief, reason="imposter parity push vote")
+
+        # 4. No one to deflect onto yet — wait, then skip at the deadline.
         if self._should_auto_submit(belief):
             self._trace_meeting_decision(belief, role="imposter", path="skip", target=None, accusers=accusers)
             return self._submit_vote_intent(belief, reason="imposter deadline: no deflection, skip")
@@ -292,11 +248,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
     # --- LLM call cadence -------------------------------------------------
 
     def _next_llm_trigger(self, belief: Belief) -> str | None:
-        """The reason to call the LLM this tick, or ``None`` to wait. Gated by the min call
-        interval and the latest-safe-start deadline; never fires twice after the one-shot
-        ``deadline`` prompt. In order: first call → ``meeting_start``; near deadline →
-        ``deadline``; new external chat since last call → ``new_chat``; our chat cooldown just
-        cleared → ``chat_cooldown_ready``."""
         tick = belief.last_tick
         if self._last_llm_call_tick is not None and tick - self._last_llm_call_tick < LLM_MIN_CALL_INTERVAL_TICKS:
             return None
@@ -324,11 +275,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return None
 
     def _call_llm(self, context: dict[str, Any], *, trigger: str) -> Any | None:
-        """Make the LLM call for ``trigger`` and return its result, or ``None`` on any
-        exception (traced as ``llm_call_failed``). Records the call tick, snapshots the
-        external-chat signature so ``new_chat`` only fires on genuinely new messages, latches
-        the one-shot deadline prompt, and emits the latency histogram. Mutating bookkeeping
-        happens before the call so a failure still advances cadence."""
         self._last_llm_call_tick = int(context["meeting"]["tick"])
         self._last_external_chat_signature = tuple(
             (event["tick"], event["speaker_color"], event["text"])
@@ -351,9 +297,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return result
 
     def _validate_decision(self, belief: Belief, decision: MeetingDecision) -> MeetingDecision | None:
-        """Validate/normalize an LLM ``MeetingDecision`` against the alive vote targets, our
-        current tentative vote, and the deterministic fallback target. Returns the normalized
-        decision, or ``None`` (traced as ``invalid_meeting_decision``) so the caller falls back."""
         try:
             return validate_meeting_decision(
                 decision,
@@ -369,8 +312,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             return None
 
     def _trace_decision(self, trigger: str, decision: MeetingDecision, result: Any) -> None:
-        """Emit the ``meeting_llm_decision`` trace (trigger, model, latency, usage, decision)
-        and, when present, the raw request/response under ``meeting_llm_debug``."""
         self.emit.event(
             "meeting_llm_decision",
             {
@@ -390,11 +331,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
     # --- decision application --------------------------------------------
 
     def _apply_decision(self, belief: Belief, decision: MeetingDecision) -> Intent:
-        """Turn a validated ``MeetingDecision`` into an intent. Updates the tentative vote if
-        the decision names one, then dispatches on ``decision.action``: ``send_chat`` (emit
-        chat now if the cooldown is ready and it isn't a duplicate, else stash it as pending),
-        ``submit_vote`` (commit and emit the vote), ``set_tentative_vote`` / default (idle and
-        keep deliberating)."""
         if decision.vote_target is not None:
             self._tentative_vote = decision.vote_target
             self.emit.event(
@@ -425,8 +361,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return Intent(kind="idle", reason=decision.reason or "LLM waits")
 
     def _send_chat_intent(self, belief: Belief, text: str, *, reason: str) -> Intent:
-        """Emit a ``chat`` intent: clear any pending text, record the line as sent (dedupe) and
-        stamp the chat tick (starts the chat cooldown), and trace ``meeting_chat_selected``."""
         self._pending_chat_text = None
         self._sent_chat_texts.add(text)
         self._last_chat_tick = belief.last_tick
@@ -434,10 +368,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return Intent(kind="chat", text=text, reason=reason)
 
     def _submit_vote_intent(self, belief: Belief, *, reason: str) -> Intent:
-        """Commit and emit the vote: resolve the target (tentative if still valid, else the
-        fallback), apply the hard self-vote guard (never vote ourselves — coerce to skip),
-        latch it as the active vote so later ticks re-emit it, and trace
-        ``meeting_vote_selected``."""
         vote_target = self._resolved_vote_target(belief)
         # Hard guard: the agent can never vote itself out, whatever suspicion says.
         self_color = belief.self_color or belief.voting.self_marker_color
@@ -449,16 +379,11 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return self._vote_intent(vote_target, reason=reason)
 
     def _vote_intent(self, vote_target: str, *, reason: str) -> Intent:
-        """Build the raw ``vote`` intent: a bare skip when ``vote_target == VOTE_SKIP``, else a
-        vote for that color."""
         if vote_target == VOTE_SKIP:
             return Intent(kind="vote", reason=reason)
         return Intent(kind="vote", target_color=vote_target, reason=reason)
 
     def _decide_after_llm_failure(self, belief: Belief, trigger: str) -> Intent:
-        """Recovery when an LLM call fails or returns an invalid decision: at the ``deadline``
-        trigger force the vote out (safety); at ``meeting_start`` fall through to the
-        deterministic path; otherwise idle and wait for the next trigger."""
         if trigger == "deadline":
             return self._submit_vote_intent(belief, reason=f"LLM fallback after {trigger}")
         if trigger == "meeting_start":
@@ -468,8 +393,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
     # --- state helpers ----------------------------------------------------
 
     def _reset_for_meeting_if_needed(self, belief: Belief) -> None:
-        """Clear all per-meeting state when a new meeting starts (detected by a changed
-        ``phase_start_tick``). Any new per-meeting field must be reset here too."""
         meeting_id = belief.phase_start_tick
         if meeting_id == self._meeting_id:
             return
@@ -491,8 +414,6 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         self._decision_traced = False
 
     def _external_chat_signature(self, belief: Belief) -> tuple[tuple[int, str | None, str], ...]:
-        """A hashable snapshot of all *other players'* chat messages, used to detect new chat
-        since our last LLM call (drives the ``new_chat`` trigger)."""
         self_color = belief.voting.self_marker_color
         return tuple(
             (event.tick, event.speaker_color, event.text)
@@ -501,47 +422,30 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         )
 
     def _is_external_chat(self, event: ChatEvent, self_color: str | None) -> bool:
-        """Whether ``event`` came from another player (not our marker color, and not a line we
-        ourselves sent — text echoed back is filtered against ``_sent_chat_texts``)."""
         if event.speaker_color is not None and event.speaker_color == self_color:
             return False
         return event.text not in self._sent_chat_texts
 
     def _chat_cooldown_ready(self, belief: Belief) -> bool:
-        """Whether enough ticks have passed since our last chat to send another (or we haven't
-        chatted yet)."""
         return self._last_chat_tick is None or belief.last_tick - self._last_chat_tick >= CHAT_COOLDOWN_TICKS
 
     def _remaining_ticks(self, belief: Belief) -> int:
-        """Ticks left on the vote timer (``VOTE_TIMER_TICKS`` minus elapsed since the meeting
-        opened), clamped to ``[0, VOTE_TIMER_TICKS]``."""
         return max(0, VOTE_TIMER_TICKS - max(0, belief.last_tick - belief.phase_start_tick))
 
     def _should_auto_submit(self, belief: Belief) -> bool:
-        """True once we're within the auto-submit window and haven't yet voted — the deadline
-        safety net that guarantees a vote lands."""
         return not self._vote_submitted and self._remaining_ticks(belief) <= AUTO_SUBMIT_REMAINING_TICKS
 
     def _can_start_llm_call(self, belief: Belief) -> bool:
-        """Whether there is still time to start an LLM call that can finish (timeout + margin)
-        before the auto-submit deadline."""
         return self._remaining_ticks(belief) > self._latest_safe_llm_start_remaining_ticks()
 
     def _deadline_prompt_remaining_ticks(self) -> int:
-        """Remaining-ticks threshold for the final ``deadline`` LLM prompt — the larger of the
-        configured ``DEADLINE_LLM_REMAINING_TICKS`` and just above the latest safe start, so
-        the deadline call is never scheduled too late to finish."""
         return max(DEADLINE_LLM_REMAINING_TICKS, self._latest_safe_llm_start_remaining_ticks() + 1)
 
     def _latest_safe_llm_start_remaining_ticks(self) -> int:
-        """The remaining-ticks floor below which starting an LLM call is unsafe: the
-        auto-submit reserve plus the call's timeout (converted to ticks) plus a safety margin."""
         timeout_ticks = math.ceil(self._llm_timeout_seconds() * MEETING_TICKS_PER_SECOND)
         return AUTO_SUBMIT_REMAINING_TICKS + timeout_ticks + LLM_TIMEOUT_MARGIN_TICKS
 
     def _llm_timeout_seconds(self) -> float:
-        """The LLM client's timeout in seconds (>= 0), or ``DEFAULT_LLM_TIMEOUT_SECONDS`` when
-        the client doesn't expose one or it isn't numeric."""
         value = getattr(self._llm_client, "timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         try:
             return max(0.0, float(value))
@@ -549,14 +453,10 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             return DEFAULT_LLM_TIMEOUT_SECONDS
 
     def _resolved_vote_target(self, belief: Belief) -> str:
-        """The color to actually vote: the tentative vote if it is still a valid target (or an
-        explicit skip), otherwise the deterministic fallback."""
         tentative = self._tentative_vote
         if tentative is not None and (tentative == VOTE_SKIP or tentative in valid_vote_targets(belief)):
             return tentative
         return self._fallback_vote_target(belief)
 
     def _fallback_vote_target(self, belief: Belief) -> str:
-        """Last-resort vote target: the current top suspect, or ``VOTE_SKIP`` if the field is
-        flat."""
         return top_suspect(belief) or VOTE_SKIP

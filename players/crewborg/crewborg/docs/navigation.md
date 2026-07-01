@@ -322,7 +322,7 @@ live (and the substrate then builds lazily as before).
 
 ### Producing the asset — `tools/nav_bake.py`
 
-The offline bake is a developer tool, `tools/build/nav_bake.py`, run only
+The offline bake is a developer tool, `tools/nav_bake.py`, run only
 when the league redeploys a changed map. It is two steps:
 
 1. **`extract-walkability`** — pull the authoritative mask crewborg actually sees.
@@ -514,6 +514,6 @@ edge-triggered (or held-B) interaction.
   `ARRIVE_RADIUS = 4`, `WAYPOINT_RADIUS = 8`, `STOP_FACTOR = 1.3`,
   `REPLAN_INTERVAL = 8`, `KILL_RANGE_SQ = 400`, `REPORT_RANGE_SQ = 400`,
   `VENT_RANGE_SQ = 256`.
-- **`tools/build/nav_bake.py`** — `extract-walkability` / `bake` offline
+- **`tools/nav_bake.py`** — `extract-walkability` / `bake` offline
   entry points.
 </content>

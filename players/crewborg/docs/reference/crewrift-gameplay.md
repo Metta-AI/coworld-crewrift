@@ -54,7 +54,7 @@ line number (names survive line drift). Each constant in the table carries a tin
 >    this doc.**
 >
 > The lab toolkit pins the deployed game build as **`CREWRIFT_REF`**
-> (`tools/build/versions.env`; currently `d9f6b30` there, while this repo's
+> (`tools/versions.env`; currently `d9f6b30` there, while this repo's
 > `src/crewrift` is newer at `a3e2859`). To re-derive for the deployed league,
 > read that ref's `sim.nim` and the episode's own config. **When in doubt, read
 > the episode's `game_config`.**
@@ -327,7 +327,7 @@ During `Voting` (`sim.nim:step`, Voting branch):
 >
 > Practical consequence: a body-report meeting hands every imposter a fresh kill on
 > the very next Playing tick; an emergency button does not. (crewborg encodes this:
-> [`crewborg/types.py`](../../crewborg/types.py) only treats a non-`"button"`
+> [`crewrift/crewborg/types.py`](../../crewborg/types.py) only treats a non-`"button"`
 > meeting as a cooldown reset — *"Emergency-button meetings do not reset
 > killCooldown"* — and its imposter play deliberately avoids self-reporting kills,
 > which would open a cooldown-resetting body meeting.)

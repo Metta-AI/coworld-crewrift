@@ -4,7 +4,7 @@ This is the cross-cutting reference for crewborg's **location belief**: where ea
 *other* agent probably is *now*, kept useful after they leave view. It backs the
 imposter's post-kill re-approach by answering "which way do I walk to find crew."
 
-The whole subsystem lives in `crewborg/agent_tracking.py`. It is a pure readout
+The whole subsystem lives in `crewrift/crewborg/agent_tracking.py`. It is a pure readout
 over the finalized perception fold: it observes `Belief` and writes only its own
 `belief.agent_tracking` sub-state, never the roster, suspicion, intents, or trace
 events.

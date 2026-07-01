@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Incrementally scrape Crewrift league episodes (replay + results) into the corpus.
 
-Stage A of the suspicion-learning pipeline (../README.md §3).
+Stage A of the suspicion-learning pipeline (docs/designs/suspicion-learning.md §3).
 Lists completed rounds for a division, then pulls every episode of each round —
 replay.json, results.json, episode.json; no logs — via the lab's fetch_artifacts.py
 (which is idempotent per episode). A per-round ledger (corpus/_rounds_done.json)
 makes re-runs cheap: fully-scraped rounds are skipped without re-listing episodes.
 
-Usage (auth from `softmax login`; run from the player root (players/crewborg)):
+Usage (auth from `softmax login`; run from the player_labs repo root):
 
     uv run python suspicion_lab/tools/scrape_corpus.py            # default: Crewrift/Competition
     uv run python suspicion_lab/tools/scrape_corpus.py --max-rounds 10
@@ -27,10 +27,10 @@ from pathlib import Path
 
 import httpx
 
-# suspicion_lab/tools/ -> players/crewborg (the player root); everything hangs off it.
-PLAYER_ROOT = Path(__file__).resolve().parents[2]
-FETCH_ARTIFACTS = PLAYER_ROOT / "skills/coworld-episode-artifacts/scripts/fetch_artifacts.py"
-DEFAULT_CORPUS = PLAYER_ROOT / "suspicion_lab" / "corpus"
+LAB_ROOT = Path(__file__).resolve().parents[2]          # players/crewborg/
+REPO_ROOT = LAB_ROOT.parent                              # player_labs/
+FETCH_ARTIFACTS = REPO_ROOT / ".claude/skills/coworld-episode-artifacts/scripts/fetch_artifacts.py"
+DEFAULT_CORPUS = LAB_ROOT / "suspicion_lab" / "corpus"
 DEFAULT_LEAGUE = "Crewrift"
 DEFAULT_DIVISION = "Competition"
 

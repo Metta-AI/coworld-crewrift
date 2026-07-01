@@ -1,29 +1,9 @@
-"""Shared geometry + crew helpers for the imposter modes (design §7.2).
+"""Shared geometry + crew helpers for the imposter Pretend FSM (design §7.2).
 
-The imposter stances — Search (the always-on seeking FSM), Hunt, Recon, and Evade —
-lean on the same primitives: self position, squared distance, locating the room a
-point sits in, the starting/spawn room, task-station anchors, snapping a point to a
-reachable nav node, and the set of crewmates visible this tick. They live here so each
-mode stays focused on its own behavior rather than re-deriving map/roster geometry.
-
-(Historical note: these helpers originally backed a single "Pretend" FSM that was
-retired 2026-06-24 and split into Search/Recon/Evade/Hunt — see ``modes/_deprecated/``.
-The helpers survived the split unchanged; only the callers changed.)
-
-Collaborators
--------------
-Relies on:
-  - ``map.types.Room`` — the rect type for room containment tests.
-  - ``types.Belief`` — map / nav graph / roster / tick fields read here.
-  - ``belief.nav`` — ``nearest_reachable_node`` / ``node_point`` / ``task_anchor``
-    (reachability snapping and baked task anchors).
-Used by: ``modes.search`` / ``modes.hunt`` / ``modes.recon`` / ``modes.evade`` (imported
-  as ``ic``).
-Emits: nothing — pure functions, no intents and no side effects.
-
-Modifying this file: these are read-only belief queries. Keep them pure (no mutation of
-belief, no intents); behavioral decisions belong in the mode files, action in
-``action.py``.
+Pretend's follow / recover / wander / fake-task states lean on the same primitives:
+locating the room a point sits in, the starting room, task-station anchors, snapping
+to a reachable nav node, and the set of crewmates visible this tick. They live here
+so the mode stays focused on its state machine.
 """
 
 from __future__ import annotations
@@ -35,19 +15,16 @@ Point = tuple[int, int]
 
 
 def self_xy(belief: Belief) -> Point | None:
-    """Our own world position, or ``None`` until the first self-position signal."""
     if belief.self_world_x is None or belief.self_world_y is None:
         return None
     return belief.self_world_x, belief.self_world_y
 
 
 def dist2(a: Point, b: Point) -> int:
-    """Squared Euclidean distance in world px (cheap; avoids the sqrt for comparisons)."""
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
 
 
 def in_rect(point: Point, rect: Room) -> bool:
-    """Whether ``point`` lies in ``rect`` (half-open: left/top inclusive, right/bottom exclusive)."""
     return rect.x <= point[0] < rect.x + rect.w and rect.y <= point[1] < rect.y + rect.h
 
 

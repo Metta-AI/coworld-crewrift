@@ -18,37 +18,6 @@ voting / evidence sections and builds the nav graph once from the walkability ma
 (design §4-§6). The modes + action layer drive both roles: crewmate tasks,
 meetings, voting, reporting, and fleeing, plus imposter hunting, venting, and
 blending in.
-
-This file owns the early stage of the cognitive stack (perception → belief);
-suspicion / strategy / modes / action read the ``Belief`` it produces but live
-elsewhere.
-
-Collaborators
--------------
-Relies on:
-  - ``perception.resolve.resolve_scene`` — byte→``ResolvedScene`` interpretation that
-    ``perceive`` wraps; ``perception.entities`` (``ResolvedScene`` / ``VotingState``)
-    and ``perception.constants.PLAYER_OBJECT_BASE`` (object-id → joinOrder).
-  - ``nav`` (``NavGraph`` / ``build_nav_graph``) + ``navbake.load_navbake`` — the nav
-    graph built/loaded once inside ``update_belief``.
-  - ``agent_tracking.AgentTrackingState`` — the spatial sub-belief carried on ``Belief``
-    (advanced later by ``update_agent_tracking``, not here).
-  - ``coworld.scene.SceneState`` (the bridge's raw buffers) and ``map.types.MapData``.
-Used by:
-  - ``__init__.build_runtime`` wires ``perceive`` / ``update_belief`` and the six type
-    params into the ``AgentRuntime``.
-  - essentially every mode (``modes.*``), the strategy/suspicion layer, ``action.py``,
-    ``events.py``, and ``agent_tracking.py`` read ``Belief`` / ``Intent`` / the records.
-Emits / touches: ``update_belief`` is the **sole** writer of the core belief sections
-  (self/camera, roster + bodies, tasks, perception tape, phase machine, chat log,
-  teammate colors, and the imposter kill-cooldown timing fields). It records — it
-  never decides; no intents are produced here.
-
-Modifying this file: keep ``update_belief`` a pure *perception fold* — it interprets
-the percept into belief and must not contain strategy/suspicion/targeting logic
-(those layers run afterward and read this belief). Preserve the frozen/mutable model
-split noted above, and keep ``self_color`` learning intact: without it the self-sprite
-leaks into the roster and the agent suspects/tails/votes itself.
 """
 
 from __future__ import annotations
@@ -358,7 +327,8 @@ class Belief(BaseModel):
     camera_ready: bool = False
     camera_x: int = 0
     camera_y: int = 0
-    self_role: str | None = None
+    self_role: str | None = None  # "imposter" / "crewmate" / None (unknown). Fixed for the game.
+    self_alive: bool = True  # cleared on our own death (ghost icon); role is preserved separately.
     self_kill_ready: bool | None = None
     self_world_x: int | None = None
     self_world_y: int | None = None
@@ -595,15 +565,7 @@ SELF_SPRITE_MATCH_SQ = 4**2
 
 
 def update_belief(belief: Belief, percept: Percept) -> None:
-    """Fold one tick's ``percept`` into ``belief`` in place (design §5).
-
-    The single belief mutator, run once per tick before the strategy/modes. In order:
-    loop bookkeeping → camera/self → nav graph (built/loaded once) → tasks → self-color
-    learning → live sightings (roster) + bodies → perception tape → census/ejection
-    deaths → phase machine (a meeting clears chat + in-world bodies) → meeting-caller
-    latch → chat de-dup → role-reveal teammates → self role + imposter kill-cooldown
-    edge tracking. Side effects are confined to ``belief``; returns nothing.
-    """
+    """Fold the percept into belief in place (design §5)."""
 
     resolved = percept.resolved
     previous_phase = belief.phase  # before this tick's phase derivation
@@ -752,50 +714,59 @@ def update_belief(belief: Belief, percept: Percept) -> None:
                     ChatEvent(tick=percept.tick, speaker_color=line.speaker_color, text=line.text)
                 )
 
-    # The role-reveal "IMPS" interstitial confirms we are an imposter and shows
-    # only our teammates' icons; record their colors so Hunt never targets them.
-    if belief.phase == "RoleReveal" and "IMPS" in resolved.phase_texts:
-        belief.self_role = "imposter"
-        belief.teammate_colors |= resolved.reveal_player_colors
+    # Self role — positively latched from the RoleReveal interstitial TEXT. Both
+    # roles are handed to us on-screen ("IMPS" for an imposter, "CREWMATE" for crew),
+    # so there is no CV or inference to get wrong; crew is as solid as imposter. We
+    # re-check on every RoleReveal tick (idempotent) rather than latching once, so a
+    # one-frame parse blip on any single frame cannot lose it. An imposter also records
+    # its teammates from the reveal icons (accumulated across ticks). Until we have
+    # seen one of the two texts, `self_role` stays None — meaning "role not yet known",
+    # NOT crew (we must not fabricate a role from the absence of a signal).
+    if belief.phase == "RoleReveal":
+        if "IMPS" in resolved.phase_texts:
+            belief.self_role = "imposter"
+            belief.self_alive = True  # a fresh reveal means a new game — we are alive again
+            belief.teammate_colors |= resolved.reveal_player_colors
+        elif "CREWMATE" in resolved.phase_texts:
+            belief.self_role = "crewmate"
+            belief.self_alive = True
 
-    # Self role/state (design §4-§5). The HUD shows an imposter/ghost icon for
-    # those roles; an alive crewmate has neither, so once we know we are Playing
-    # and no such marker is present, the role is crewmate. Role is fixed for the
-    # game (a crewmate only changes to "dead" on death, via the ghost icon).
-    if resolved.self_role is not None:
-        # A kill-ready → cooldown edge for an imposter means we just killed
-        # someone (the icon flips to "imposter icon cooldown"); note it to evade.
-        # Gate on continuous Playing: a meeting also resets killCooldown, which
-        # would otherwise look like a kill on the first Playing frame afterward.
+    # Death is a STATE (a flag), not a role — so we keep knowing whether we were crew
+    # or imposter after dying. The ghost icon is the one HUD self-state signal we keep
+    # (the reveal cannot tell us about a mid-game death).
+    if resolved.self_dead:
+        belief.self_alive = False
+
+    # Kill-cooldown tracking (imposter only), from the HUD kill/cooldown icon — kill
+    # *state*, not role (role is already established above). A kill-ready → cooldown
+    # edge during continuous Playing means we just killed (note it to evade); a meeting
+    # also resets killCooldown, hence the continuous-Playing gate.
+    if belief.self_role == "imposter":
         if (
-            resolved.self_role == "imposter"
-            and belief.self_kill_ready is True
+            belief.self_kill_ready is True
             and resolved.self_kill_ready is False
             and previous_phase == "Playing"
             and belief.phase == "Playing"
         ):
             belief.last_kill_tick = percept.tick
-        # Track the cooldown → kill-ready edge (and clear it on the way down) so the
-        # strategy can measure how long we have been able to kill without doing so.
-        if resolved.self_role == "imposter":
-            if resolved.self_kill_ready is True and belief.self_kill_ready is not True:
-                belief.kill_ready_since_tick = percept.tick
-                # Cooldown just ran to ready: learn its duration (for pre-positioning).
-                if belief.kill_cooldown_start_tick is not None:
-                    belief.kill_cooldown_estimate = percept.tick - belief.kill_cooldown_start_tick
-            elif resolved.self_kill_ready is False:
-                belief.kill_ready_since_tick = None
-            # Mark when the current cooldown began. Resetting events are observable:
-            # our own kill (ready → cooldown during continuous play), body-report or
-            # unknown meetings, and the game-start role-reveal. Emergency-button
-            # meetings do not reset killCooldown.
-            if previous_phase != "Playing" and belief.phase == "Playing" and ended_meeting_kind != "button":
-                belief.kill_cooldown_start_tick = percept.tick
-            elif belief.self_kill_ready is True and resolved.self_kill_ready is False:
-                belief.kill_cooldown_start_tick = percept.tick
-        belief.self_role = resolved.self_role
+        if resolved.self_kill_ready is True and belief.self_kill_ready is not True:
+            belief.kill_ready_since_tick = percept.tick
+            # Cooldown just ran to ready: learn its duration (for pre-positioning).
+            if belief.kill_cooldown_start_tick is not None:
+                belief.kill_cooldown_estimate = percept.tick - belief.kill_cooldown_start_tick
+        elif resolved.self_kill_ready is False:
+            belief.kill_ready_since_tick = None
+        # Mark when the current cooldown began. Resetting events are observable: our
+        # own kill (ready → cooldown during continuous play), body-report or unknown
+        # meetings, and the game-start role-reveal. Emergency-button meetings do not
+        # reset killCooldown.
+        if previous_phase != "Playing" and belief.phase == "Playing" and ended_meeting_kind != "button":
+            belief.kill_cooldown_start_tick = percept.tick
+        elif belief.self_kill_ready is True and resolved.self_kill_ready is False:
+            belief.kill_cooldown_start_tick = percept.tick
+    # Refresh kill-ready only when the HUD gave us a reading this frame (keep the last
+    # known value otherwise, as before).
+    if resolved.self_kill_ready is not None:
         belief.self_kill_ready = resolved.self_kill_ready
-    elif belief.self_role is None and belief.phase == "Playing":
-        belief.self_role = "crewmate"
 
     belief.voting = resolved.voting

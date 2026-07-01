@@ -1,28 +1,4 @@
 <!doctype html>
-<!--
-  Kill-ready positioning viewer — the browser front end (drawing layer).
-
-  WHAT THIS IS
-    The canvas + UI for server.py. It fetches the replay list from /api/replays and
-    one episode's positioning payload from /api/replay/<id> (both produced by
-    extract_positions.py), then draws, per imposter kill-ready event: the focal
-    imposter's path P ticks back -> ready -> forward to its next kill (or F ticks),
-    everyone else's recent path, dots at the ready moment, and the kill marker.
-
-  HOW TO USE
-    Served by server.py at http://localhost:<port>. Replay dropdown -> event
-    scroll-list (colour-coded by hunt speed, star = us) -> Past/Future sliders ->
-    "future = until next kill" -> top stat strip. Arrow keys step events.
-
-  HOW TO EDIT (this is the drawing layer — change WHAT IS DRAWN here)
-    - render() is the whole draw. Map background, then for each ready event: footprint,
-      rooms/tasks/vents/button, past/future tracks (meeting ticks broken out via the
-      `playing` flag = track sample[4]), ready-moment dots, kill marker, stat strip.
-    - "us" highlighting (green + star) is data-driven: DATA.us_policy comes from the
-      server (--us-policy). Don't hardcode a policy name here.
-    - The data shape (tracks = [tick,x,y,alive,playing], ready_events, kills, map) is
-      owned by extract_positions.py — read its docstring before adding a field.
--->
 <html>
 <head>
 <meta charset="utf-8">
@@ -73,7 +49,7 @@
       <span><i class="dot" style="background:crimson"></i>focal imposter (ready)</span>
       <span><i class="dot" style="background:darkorange"></i>other imposter</span>
       <span><i class="dot" style="background:#4ea3ff"></i>crewmate</span>
-      <span><i class="dot" style="background:#39d98a"></i>us (any role) ★</span>
+      <span><i class="dot" style="background:#39d98a"></i>us (crewborg, any role) ★</span>
       <span><i class="dot" style="background:#666"></i>dead</span>
       <span>✕ = kill location</span>
       <div style="font-weight:600;margin:7px 0 3px">Map</div>
@@ -91,7 +67,6 @@
 <script>
 const $ = s => document.querySelector(s);
 let DATA=null, EVENTS=[], curEv=0;
-const isUs = p => p && DATA && p.policy === DATA.us_policy;   // data-driven highlight (server --us-policy)
 
 async function loadReplays(){
   const reps = await (await fetch('/api/replays')).json();
@@ -108,7 +83,7 @@ async function loadReplay(eid){
   EVENTS = DATA.ready_events||[];
   const el=$('#evlist'); el.innerHTML='';
   EVENTS.forEach((e,i)=>{
-    const idle=e.idle_ready_ticks, star=e.policy===DATA.us_policy?' ★':'';
+    const idle=e.idle_ready_ticks, star=e.policy==='crewborg'?' ★':'';
     const tail = e.converted ? ('kill +'+idle+'t') : (e.ended_by==='meeting'?'→ meeting':'→ game-end');
     const o=document.createElement('option'); o.value=i;
     o.textContent = `#${i+1}  ${e.label}${star}  ready ${e.tick}  ${tail}`;
@@ -157,7 +132,7 @@ function render(){
   const players = {}; DATA.players.forEach(p=>players[p.slot]=p);
   function colorFor(slot, role){
     if(slot===focal) return 'crimson';
-    if(isUs(players[slot])) return '#39d98a';
+    if(players[slot] && players[slot].policy==='crewborg') return '#39d98a';
     if(role==='imposter') return 'darkorange';
     return '#4ea3ff';
   }
@@ -190,7 +165,7 @@ function render(){
     ctx.fillStyle=col; ctx.beginPath();
     const r=p.slot===focal?7:5; ctx.arc(X(pt[1]),Y(pt[2]),r,0,7); ctx.fill();
     ctx.fillStyle='#dfe6f2'; ctx.font=(p.slot===focal?'bold ':'')+'11px sans-serif';
-    ctx.fillText((isUs(p)?'★':'')+p.label, X(pt[1])+8, Y(pt[2])+3);
+    ctx.fillText((p.policy==='crewborg'?'★':'')+p.label.replace('Us (crewborg)','Us'), X(pt[1])+8, Y(pt[2])+3);
   }
   // kill marker by focal within the window (location = killer's spot at the kill tick)
   for(const k of DATA.kills){
@@ -214,10 +189,10 @@ function render(){
   let nd=null, ndLabel='';
   if(fpos){ for(const p of DATA.players){ if(p.slot===focal||p.role==='imposter') continue;
     const q=at(p.slot,T); if(!q||!q[3]) continue; const d=Math.hypot(q[1]-fpos[1],q[2]-fpos[2]);
-    if(nd===null||d<nd){ nd=d; ndLabel=p.label; } } }
+    if(nd===null||d<nd){ nd=d; ndLabel=p.label.replace('Us (crewborg)','Us'); } } }
   const cell=(k,v,warn)=>`<td><div class="k">${k}</div><div class="v${warn?' warn':''}">${v}</div></td>`;
   $('#info').innerHTML = `<table><tr>`
-    + cell('Imposter', (isUs(ev)?'★ ':'')+ev.label)
+    + cell('Imposter', (ev.policy==='crewborg'?'★ ':'')+ev.label)
     + cell('Event', `#${curEv+1} / ${EVENTS.length}`)
     + cell('Ready tick', T)
     + cell('Hunting ticks (ready→kill, no meetings)', `${idle} <span class="muted">~${(idle/24).toFixed(1)}s</span>`, idle>240)

@@ -201,12 +201,14 @@ colliding — the id range disambiguates:
 slots. The id ranges are assumed disjoint by these range checks.
 
 Three label-only signals are matched without an id range because their object ids
-fall outside the entity ranges — the HUD **self-role** icons, dispatched first and
-`continue`d:
+fall outside the entity ranges — the HUD self-**state** icons, dispatched first and
+`continue`d. These report kill-ready and death **state only**, not role: imposter-vs-crew
+is latched at the belief layer from the RoleReveal interstitial text (see the phase /
+self-role section below), so the kill/cooldown icons set only `self_kill_ready`:
 
-- `LABEL_IMPOSTER_ICON` → `self_role="imposter"`, `self_kill_ready=True`
-- `LABEL_IMPOSTER_ICON_COOLDOWN` → `self_role="imposter"`, `self_kill_ready=False`
-- `LABEL_GHOST_ICON` → `self_role="dead"`
+- `LABEL_IMPOSTER_ICON` → `self_kill_ready=True`
+- `LABEL_IMPOSTER_ICON_COOLDOWN` → `self_kill_ready=False`
+- `LABEL_GHOST_ICON` → `self_dead=True` (our own death — a state; at the belief layer this sets `self_alive=False` and preserves the role)
 
 Phase / HUD text, the voting cursor / skip-cursor / timer, the vote self-marker,
 the progress bar, the crew-task counter, and the `MeetingCall` caller line

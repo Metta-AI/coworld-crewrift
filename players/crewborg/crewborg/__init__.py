@@ -2,27 +2,7 @@
 
 ``build_runtime`` assembles the ``AgentRuntime`` from crewborg's six type
 parameters, three pure functions, modes, and the rule-based strategy. See
-``design.md`` for the full architecture and ``README.md`` for orientation.
-
-This is the composition root — the one place the whole cognitive stack is wired:
-perception (``types.perceive`` / ``update_belief``) → spatial + suspicion belief
-(``agent_tracking`` / ``strategy``) → strategy → modes (``modes.*``) → action
-(``action.resolve_action``), with ``events.CrewborgEventTracer`` hung off the side as
-the ``on_step_complete`` observer and the optional LLM ``commander`` wrapping the
-rule-based strategy.
-
-Collaborators
--------------
-Relies on: ``types`` (the six type params + ``perceive`` / ``update_belief``),
-  ``agent_tracking.update_agent_tracking``, ``action.resolve_action``,
-  ``events.CrewborgEventTracer``, ``map`` (the croatoan bake), ``modes.*`` (the mode
-  registry), ``strategy`` (rule-based + event-log/social/suspicion folds) and
-  ``strategy.commander.*`` (the opt-in LLM layer), plus ``players.player_sdk``.
-Used by: the bridge / entrypoint (``coworld.policy_player``) that instantiates the
-  runtime and drives the per-tick loop.
-Emits / touches: constructs the initial ``Belief`` / ``ActionState`` and the
-  ``AgentRuntime``; it owns no per-tick belief mutation itself (that is the wired
-  ``fold_belief`` chain).
+``design.md`` for the full architecture and ``AGENTS.md`` for orientation.
 """
 
 from __future__ import annotations
@@ -111,7 +91,7 @@ def build_runtime(
     is baked once here (design §6) — ``map_data`` overrides the vendored
     ``croatoan`` bake (tests).
     Registers all modes: idle / normal / attend_meeting / report_body / accuse
-    (crewmate) and evade / hunt / recon / search (imposter). A ``CrewborgEventTracer``
+    (crewmate) and evade / pretend / search / hunt (imposter). A ``CrewborgEventTracer``
     is wired as the runtime's ``on_step_complete`` hook so crewborg emits its
     ``domain.*`` trace events through the configured sinks (design §11): the
     phase / sighting / objective / kill / vote outcomes *and* the knowledge layer

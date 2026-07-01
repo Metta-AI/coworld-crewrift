@@ -112,11 +112,17 @@ skip**.
    crewmate, close via a trajectory-led intercept, strike when in range and **unwitnessed**
    (the witness check is dropped after the *first* kill — the bottleneck is *converting* the
    2nd kill, not stealth).
-3. **Recon** — kill nearly ready and a crewmate has been seen: beeline to the most-recently-seen
-   crewmate so a victim is in hand the instant the kill comes ready.
-4. **Search** — the always-on seeking stance: watch a task room, and when a crewmate leaves,
-   follow them down the hallway (predicting their path) to stay *near crew* until a kill
-   window opens.
+3. **Recon** — kill nearly ready (strictly *pre*-ready — a ready-but-blind imposter goes to
+   Search instead) and a crewmate has been seen: beeline to the most-recently-seen crewmate so
+   a victim is in hand the instant the kill comes ready. Never idles: a reached-but-stale
+   target is abandoned for the expected-crew seek point.
+4. **Search** — the always-on seeking stance, a five-state machine
+   (`PICK_ROOM → GO_TO_ROOM → SEARCH_ROOM → WATCH → FOLLOW`): pick a room by a scored arg-max
+   over all reachable rooms (expected crew occupancy, unvisitedness, recency, travel cost,
+   teammate pressure, task bonus — weights env-tunable via `CREWBORG_PICKROOM_W_*`), sweep the
+   room's interior scan points, watch only with crew confirmed, and when the last crewmate
+   leaves, follow them (predicting their path) to stay *near crew* until a kill window opens.
+   No state can idle indefinitely — every dead end falls back to `PICK_ROOM`.
 
 Imposters **never report bodies** (self-reporting reset the kill cooldown and killed snowball
 kills). At meetings they **deflect onto crewmates** (never a teammate) or **bandwagon** with
@@ -270,6 +276,8 @@ transport tuning never do.
 | `CREWBORG_CHAT_NLP` | **on** | `0` kills the spaCy chat NLP (never imports spaCy); the imposter chat-bandwagon then degrades to vote-only. |
 | `CREWBORG_RECON_WINDOW` | `100` | Recon lead window (ticks before kill-ready) to pre-position on a victim. |
 | `CREWBORG_EVADE_TICKS` | `72` | Evade window (ticks) after our own kill before returning to the kill loop. |
+| `CREWBORG_PICKROOM_W_{OCCUPANCY,UNVISITED,RECENCY,DISTANCE,TEAMMATE,TASKBONUS,COMMANDER}` | see `modes/search.py` | weights of Search's scored `PICK_ROOM` arg-max (expected crew occupancy, unvisitedness, recency penalty, travel cost, teammate pressure, task-room bonus, commander nudge). |
+| `CREWBORG_WATCH_IDLE_TIMEOUT` | `0` (off) | force Search back to `PICK_ROOM` after N consecutive idle ticks held at a WATCH vantage with no kill. |
 | `CREWBORG_SUSPICION_WEIGHTS` | bundled `data/suspicion_weights.json` | path to a fitted weights file; `0` forces the legacy hand-tuned model. Fitting workflow: [`docs/suspicion.md`](./docs/suspicion.md). |
 | `CREWBORG_WEIGHTS_VOTE_P` | `0.9` | vote-probability threshold for the fitted suspicion model. |
 

@@ -38,7 +38,7 @@ could vote as imposters:
 - As an **imposter**, it scores only **non-teammates** — the same number, read as
   "how suspicious this crewmate *looks* on the shared evidence," used to pick the
   most-citable deflection target at a meeting.
-- A **ghost** (`belief.self_role == "dead"`) holds no suspicion: `belief.suspicion`
+- A **ghost** (`not belief.self_alive`) holds no suspicion: `belief.suspicion`
   and `belief.believed_imposters` are cleared.
 
 ### Outputs

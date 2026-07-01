@@ -68,7 +68,7 @@ Two producers write at two cadences; the inner loop only ever *reads* the latest
 ```
 
 `CommanderStrategy` (in `strategy/commander/strategy.py`) wraps the existing
-`RuleBasedStrategy` and is installed by `crewborg/__init__.py:build_runtime` as the runtime's
+`RuleBasedStrategy` and is installed by `crewrift/crewborg/__init__.py:build_runtime` as the runtime's
 strategy, with `strategy/commander/strategy.py:apply_commander_inferences` registered as the
 runtime's `apply_inferences` hook. Mode selection therefore stays per-tick and unchanged.
 
@@ -344,4 +344,4 @@ fallback to the deterministic default.
 `CommanderPriorities` and `belief.commander` / `belief.commander_danger_events` live in
 `types.py`. The priorities are consumed in `modes/{normal,search,recon,hunt}.py` and
 `strategy/rule_based.py` (the `skip_evade` lever), and the whole layer is wired together in
-`crewborg/__init__.py:build_runtime`.
+`crewrift/crewborg/__init__.py:build_runtime`.

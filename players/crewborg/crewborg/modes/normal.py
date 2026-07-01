@@ -23,34 +23,6 @@ Two stall guards (design §5):
 - *Arrows-disabled sweep* — when ``showTaskArrows`` is off, off-screen tasks emit
   no signals, so the signal set can be empty at spawn even with tasks to do. Rather
   than head home immediately, sweep the baked stations to discover assigned ones.
-
-An optional, gated LLM commander can bias targeting (prefer a named task/room, a
-posture that sticks-with or isolates-from crew) and, at ``strength == "hard"``, force
-positioning in a room — but it never overrides the live signal set's notion of what is
-still to do.
-
-Collaborators
--------------
-Relies on:
-  - ``belief.visible_task_indices`` — the live task-signal set (the authoritative list of
-    remaining assigned tasks); plus ``assigned_task_indices`` / ``completed_task_indices`` /
-    ``crew_tasks_remaining`` / ``active_task_progress_pct`` for completion gating and sweep.
-  - ``belief.map`` / ``belief.nav`` — task stations, rooms, home, baked task anchors, and
-    reachability snapping.
-  - ``strategy.commander.bias`` — ``commander_of`` (optional LLM levers) and
-    ``room_crew_count`` (posture scoring).
-  - ``map.types`` — ``Room`` / ``TaskStation``; ``types`` — ``ActionState`` / ``Belief`` / ``Intent``.
-Used by:
-  - ``strategy.rule_based`` selects this mode for a live crewmate (or a ghost finishing its
-    own tasks) in the ``Playing`` phase with no body to report and no tail to accuse (§10).
-  - ``__init__.build_runtime`` registers it in the ``ModeRegistry``.
-Emits: ``complete_task`` (hold on the target task), ``navigate_to`` (sweep / commander
-  room / return-to-start), or ``idle`` intents — executed downstream by ``action.py``.
-
-Modifying this file: it decides *which task to do or where to stand* and emits a symbolic
-Intent only — it never moves the agent or presses A (that is ``action.py``). The
-completion-gating rule (progress gate on a vanished bubble) and the sweep guard are the
-load-bearing logic; change them deliberately and re-read design §5.
 """
 
 from __future__ import annotations
@@ -67,11 +39,6 @@ SWEEP_ARRIVE_RADIUS = 24  # within this of a station center ⇒ count it as chec
 
 
 class NormalMode(Mode[Belief, ActionState, Intent]):
-    """Crewmate task-doing stance. Holds per-tick state across ticks: ``_target`` (the
-    task index we are currently committed to, to avoid re-picking every frame),
-    ``_max_progress`` (peak progress seen for that target — the completion gate), and
-    ``_swept`` (stations already checked during an arrows-disabled sweep)."""
-
     name = "normal"
     params_type = EmptyModeParams
 
@@ -82,12 +49,6 @@ class NormalMode(Mode[Belief, ActionState, Intent]):
         self._swept: set[int] = set()
 
     def decide(self, belief: Belief, action_state: ActionState) -> Intent:
-        """Update/keep the committed task, then return, in priority order: ``complete_task``
-        for the current target if one is held; a ``navigate_to`` for a commander hard-room
-        position; a ``navigate_to`` sweep step (arrows-disabled discovery); else
-        ``_return_to_start`` (all tasks done — head home). ``action_state`` is unused — Normal
-        is pure over belief (and mutates only its own per-tick state plus
-        ``belief.completed_task_indices`` on a confirmed completion)."""
         del action_state
         tasks = belief.map.tasks if belief.map is not None else ()
 
@@ -126,11 +87,6 @@ class NormalMode(Mode[Belief, ActionState, Intent]):
             self._max_progress = 0
 
     def _pick_target(self, belief: Belief, tasks: tuple[TaskStation, ...], signals: set[int]) -> int | None:
-        """Choose the next task index to commit to from the live signal set: prefer
-        reachable (baked-anchor) tasks, apply any commander task/room bias, then pick the
-        nearest (or posture-scored) one. ``None`` when no signalled task remains (every
-        assigned task is done, or a hard commander room directive has no matching task)."""
-
         # The live signal set is the authoritative list of remaining tasks; a task
         # still signalled is still to do (even if we earlier mis-concluded it done).
         candidates = [index for index in signals if index < len(tasks)]
@@ -200,10 +156,6 @@ def _return_to_start(belief: Belief) -> Intent:
 
 
 def _hard_target_room_intent(belief: Belief) -> Intent | None:
-    """A ``navigate_to`` toward a commander-forced (``strength == "hard"``) target room's
-    reachable center, or ``None`` when there is no hard room directive. Used only after no
-    task is held, so a hard room directive parks us there instead of returning home."""
-
     cmd = commander_of(belief)
     if cmd is None or cmd.strength != "hard" or cmd.target_room is None or belief.map is None:
         return None
@@ -219,21 +171,18 @@ def _hard_target_room_intent(belief: Belief) -> Intent | None:
 
 
 def _room_exists(belief: Belief, name: str) -> Room | None:
-    """The room with this exact name, or ``None``."""
     if belief.map is None:
         return None
     return next((room for room in belief.map.rooms if room.name == name), None)
 
 
 def _inside(task: TaskStation, x: int | None, y: int | None) -> bool:
-    """Whether ``(x, y)`` is within the task station's rect (``False`` if position unknown)."""
     if x is None or y is None:
         return False
     return task.x <= x < task.x + task.w and task.y <= y < task.y + task.h
 
 
 def _center(task: TaskStation) -> tuple[int, int]:
-    """The task station's geometric center."""
     return task.center.x, task.center.y
 
 
@@ -248,7 +197,6 @@ def _nav_point(belief: Belief, task: TaskStation, index: int) -> tuple[int, int]
 
 
 def _task_room(belief: Belief, task: TaskStation) -> str | None:
-    """The name of the room containing this task's center, or ``None`` (e.g. a hallway)."""
     if belief.map is None:
         return None
     x, y = task.center.x, task.center.y
@@ -263,9 +211,6 @@ def _posture_key(
     self_xy: tuple[int, int],
     index: int,
 ) -> tuple[int, int]:
-    """Sort key for commander-posture targeting: primary = crew-pressure score (``stick``
-    prefers crowded rooms, ``isolate`` prefers empty ones), secondary = distance. Lower is
-    preferred, so ``stick`` negates the crew count and ``isolate`` keeps it positive."""
     room = _task_room(belief, task)
     crew_count = room_crew_count(belief, room) if room is not None else 0
     posture_score = -crew_count if posture == "stick" else crew_count
@@ -273,12 +218,10 @@ def _posture_key(
 
 
 def _self_xy(belief: Belief) -> tuple[int, int] | None:
-    """Our own world position, or ``None`` until the first self-position signal."""
     if belief.self_world_x is None or belief.self_world_y is None:
         return None
     return belief.self_world_x, belief.self_world_y
 
 
 def _dist2(a: tuple[int, int], b: tuple[int, int]) -> int:
-    """Squared Euclidean distance in world px (cheap nearest comparison)."""
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2

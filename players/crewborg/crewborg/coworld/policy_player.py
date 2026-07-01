@@ -1,4 +1,4 @@
-"""Crewborg's Sprite-v1 websocket bridge (design §3).
+"""Crewborg's Sprite-v1 websocket bridge (design §3, AGENTS.md §Transport).
 
 The bridge connects to the Crewrift engine, maintains a :class:`SceneState` as
 binary messages arrive, drives ``runtime.step`` once per tick, and sends an input
@@ -23,35 +23,6 @@ Environment:
   ``jsonl@stderr`` instead of crashing.
 - ``CREWBORG_METRICS`` / ``CREWBORG_TRACE`` — metric fan-out and trace
   verbosity/filtering (see ``crewborg.trace``).
-- ``CREWBORG_RECONNECT_DEADLINE`` / ``CREWBORG_RECONNECT_INTERVAL`` /
-  ``CREWBORG_MIDGAME_RECONNECTS`` / ``CREWBORG_MIDGAME_RECONNECT_INTERVAL`` — tune the
-  connect-retry and mid-game-reconnect behavior (see the constants below).
-- ``CREWBORG_CAPTURE_WALKABILITY`` — when set, emit the streamed walkability mask once
-  as a single base64 JSON stderr line for ``tools/nav_bake.py capture`` (off by default).
-
-Collaborators
--------------
-Relies on:
-  - ``coworld.scene.SceneState`` — the mutable scene the bridge folds frames into
-    (``apply`` / ``server_tick`` / ``walkability``).
-  - ``__init__.build_runtime`` — builds the SDK ``runtime`` the bridge drives
-    (``runtime.step`` per tick, ``runtime.tick`` seeding, ``runtime.belief.map``,
-    ``runtime.close``).
-  - ``action.encode_input`` / ``encode_chat`` — the only two outbound Sprite-v1 packets.
-  - ``map.walkability_matches`` — validates the baked map against the streamed mask.
-  - ``trace.TraceConfig`` and ``players.player_sdk`` (``TraceOutputs`` / trace-spec parse).
-  - ``types.Observation`` — wraps ``(scene, tick)`` handed to ``runtime.step``.
-Used by:
-  - ``main`` (the container entrypoint) → ``asyncio.run(run_bridge(...))``.
-Emits / touches: outbound input/chat packets on the websocket; ``bridge.loop_gap_ms`` /
-  ``bridge.step_ms`` / ``bridge.tick_drift`` metrics; stderr warnings (wrong-map,
-  connect failure, game-over) and the optional walkability capture line.
-
-Modifying this file: this owns the *transport lifecycle only* — connect/retry, frame
-decode hand-off, per-tick step, send-on-change, and clean exit. It contains no strategy.
-The load-bearing invariant is the reconnect discriminator: ``state.frames_seen`` decides
-whether a closed socket is a startup race (retry) or a real game-over (stop) — never
-reconnect after a legitimate game end. Change the retry logic deliberately.
 """
 
 from __future__ import annotations
@@ -139,7 +110,7 @@ class _BridgeState:
     tick_offset: int | None = None  # (server_tick - scene.tick) when the marker first appears
 
 # The engine pushes one frame per game tick at ~24 Hz and does NOT wait for the
-# player (docs/reference/crewrift-protocol.md). At the hosted 250m-CPU budget that gives
+# player (docs/crewrift-protocol.md). At the hosted 250m-CPU budget that gives
 # runtime.step() ~42 ms per tick; exceeding it makes frames queue and inputs
 # land late.
 #
@@ -382,9 +353,6 @@ async def _run_session(
 
 
 def main() -> None:
-    """Container entrypoint: resolve the player websocket URL from the environment and
-    run the bridge to completion. Exits non-zero (``SystemExit``) if no URL is set."""
-
     # Canonical player-contract var is COWORLD_PLAYER_WS_URL; COGAMES_ENGINE_WS_URL is
     # a legacy alias the runner also sets to the same value. Prefer the canonical one,
     # fall back to the alias (see docs/reference/coworld-platform.md).
@@ -396,9 +364,6 @@ def main() -> None:
 
 
 def _metrics_enabled() -> bool:
-    """Whether to emit metrics: on if ``CREWBORG_TRACE=debug`` or ``CREWBORG_METRICS`` is
-    a truthy flag (``1``/``true``/``yes``/``on``). Off by default to keep the log lean."""
-
     trace_level = os.environ.get("CREWBORG_TRACE", "").strip().lower()
     metrics_flag = os.environ.get(METRICS_ENV, "").strip().lower()
     return trace_level == "debug" or metrics_flag in {"1", "true", "yes", "on"}

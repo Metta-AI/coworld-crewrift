@@ -1,40 +1,8 @@
 """Resolve the scene tables into a structured :class:`ResolvedScene` (design §4).
 
-Second stage of the perception layer (perception → belief → suspicion → strategy →
-modes → action): turns the decoder's raw object/sprite tables into resolved,
-typed entities for the belief fold. Joins each object to its sprite's label,
-converts camera-relative coordinates to world coordinates, and classifies entities
-by ``(label, object-id range)``. No pixels are read; this is structured-scene
-interpretation, not vision.
-
-Classification is two-keyed and both keys must agree: an object's id must fall in
-the expected base..limit range *and* its label must carry the expected prefix.
-That double check is why the same ``"player <color>"`` sprite can appear as a live
-world player (id 1000-band), a vote candidate (9300-band), a chat speaker icon
-(9200-band), and a role-reveal teammate (9500-band) without colliding — the id
-range disambiguates. See ``perception.constants`` for the authoritative bases.
-
-Collaborators
--------------
-Relies on:
-  - ``perception.constants`` — every object-id base/limit, label string, label
-    prefix, the self-world and entity-collision offsets, ``MAX_PLAYERS``, and the
-    phase-text set used to classify objects.
-  - ``perception.entities`` — the frozen models this builds and the
-    ``SKIP_VOTE_TARGET`` sentinel.
-  - ``coworld.scene.SceneState`` (type-only) — the input tables + camera.
-  - ``re`` — the ``MEETING_CALL_TEXT`` caller-line pattern.
-Used by:
-  - ``types.py`` — ``perceive`` calls ``resolve_scene(scene, tick)`` once per tick
-    to build the ``Percept``.
-Emits / touches: returns a new immutable ``ResolvedScene``; mutates nothing (reads
-  the scene tables only).
-
-Modifying this file: ``resolve_scene`` walks ``scene.objects`` exactly once and is
-on the per-tick hot path — keep it single-pass. The id-range + label-prefix pairing
-is the contract that prevents cross-screen label collisions; do not loosen one key
-without the other. World coordinates are valid only when ``camera_ready`` (self
-position is gated on it); never assume a usable camera here.
+Joins each object to its sprite's label, converts camera-relative coordinates to
+world coordinates, and classifies entities by ``(label, object-id range)``. No
+pixels are read.
 """
 
 from __future__ import annotations
@@ -122,22 +90,12 @@ def _parse_trailing_int(text: str) -> int | None:
 
 
 def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
-    """Build the resolved view for this tick from the current scene tables.
-
-    Single pass over ``scene.objects``: each object is joined to its sprite label,
-    converted from camera-relative to world coords (``world = obj.xy + camera``),
-    and classified by ``(id range, label prefix)`` into players / bodies / tasks /
-    vote dots / candidates / chat / phase texts / self-role HUD icons. Chat lines
-    and the cursor slot are paired after the loop (they need cross-object matching
-    by screen-y / position). ``tick`` is stamped onto the result; world positions
-    (and self position) are only meaningful when ``scene.camera_ready``. Returns a
-    fresh immutable ``ResolvedScene``; the scene tables are not mutated.
-    """
+    """Build the resolved view for this tick from the current scene tables."""
 
     camera_x = scene.camera_x
     camera_y = scene.camera_y
 
-    self_role: str | None = None
+    self_dead: bool = False
     self_kill_ready: bool | None = None
     players: list[VisiblePlayer] = []
     bodies: list[VisibleBody] = []
@@ -169,15 +127,20 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
         world_x = obj.x + camera_x
         world_y = obj.y + camera_y
 
-        # HUD self-role icons (their object ids are not in the entity ranges).
+        # HUD icons (their object ids are not in the entity ranges). We read kill
+        # *state* and death here — NOT role. Imposter-vs-crew is established
+        # positively from the RoleReveal interstitial text (see derive_phase /
+        # update_belief in types.py); the kill/cooldown icon only tells us whether a
+        # kill is currently ready, and the ghost icon tells us we have died (a state,
+        # which overrides role once it happens).
         if label == LABEL_IMPOSTER_ICON:
-            self_role, self_kill_ready = "imposter", True
+            self_kill_ready = True
             continue
         if label == LABEL_IMPOSTER_ICON_COOLDOWN:
-            self_role, self_kill_ready = "imposter", False
+            self_kill_ready = False
             continue
         if label == LABEL_GHOST_ICON:
-            self_role = "dead"
+            self_dead = True
             continue
 
         # Social UI on the voting / vote-result screens, dispatched by id range.
@@ -294,7 +257,7 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
         camera_ready=scene.camera_ready,
         camera_x=camera_x,
         camera_y=camera_y,
-        self_role=self_role,
+        self_dead=self_dead,
         self_kill_ready=self_kill_ready,
         self_world_x=self_world_x,
         self_world_y=self_world_y,

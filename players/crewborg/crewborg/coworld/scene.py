@@ -8,26 +8,7 @@ alpha masks are retained (the walkability mask for nav, the line-of-sight mask
 flows on into the perception tape).
 
 Byte-level decoding lives in :mod:`crewborg.perception.decoder`;
-``apply`` delegates to it. (The line-of-sight mask is stored on the ``visible_mask``
-field — decoded from the ``shadow`` vision-overlay sprite, hence the name above.)
-
-Collaborators
--------------
-Relies on:
-  - ``perception.decoder.apply_message`` — the byte-level decode ``apply`` delegates to;
-    it mutates every field below in place.
-  - ``perception.tables`` — ``LayerDef`` / ``ObjectState`` / ``SpriteDef``, the values
-    held in the retained tables.
-Used by:
-  - ``coworld.policy_player`` — constructs one ``SceneState`` per bridge session, calls
-    ``apply`` per frame, reads ``server_tick`` / ``walkability`` / ``tick``.
-  - ``types.Observation`` — carries this scene by pointer into ``runtime.step``;
-    perception reads the tables and the two alpha masks downstream.
-
-Modifying this file: this is a passive container — decoding logic belongs in the decoder,
-not here. ``server_tick`` is the only behavior, and it must keep matching the marker by
-**label prefix** (not sprite id) so an id-offset change in the engine doesn't break tick
-ground truth. Fields are mutated externally by the decoder; keep them plain and public.
+``apply`` delegates to it.
 """
 
 from __future__ import annotations

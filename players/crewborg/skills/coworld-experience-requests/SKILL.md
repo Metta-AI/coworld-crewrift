@@ -1,6 +1,6 @@
 ---
 name: coworld-experience-requests
-description: "Use to create and monitor Coworld experience requests — hosted batches of episodes you define (target, roster, roles, count) for evaluating a policy against a live field. Triggers: 'run crewborg vs the top opponents', 'make an experience request', 'request N hosted games', 'A/B a policy against the league', 'measure the imposter', 'set up an evaluation battery'. Pair with coworld-episode-artifacts to pull the resulting episodes."
+description: "Use to create and monitor Coworld experience requests — hosted batches of episodes you define (target, roster, roles, count) for evaluating a policy against a live field. Triggers: 'run crewborg vs the top opponents', 'make an experience request', 'request N hosted games', 'A/B a policy against the league', 'measure the imposter', 'set up an evaluation battery'. DEFAULT FLOW after create: launch the STREAMING pipeline in the background (step 4) — artifacts download and analysis prep overlap the still-running episodes; don't wait for the batch to drain."
 ---
 
 # Coworld Experience Requests
@@ -12,7 +12,7 @@ roles), and a **count**; POST it; poll the `xreq_…` to completion; then pull t
 currently free — use them liberally, but **target them to the question.**
 
 **Announce at start:** "Setting up a Coworld experience request. I'll frame the question, resolve the
-live IDs, compose the request, validate it against the live schema, POST it, and monitor to completion."
+live IDs, compose the request, validate it against the live schema, POST it, and stream the results in the background."
 
 > **Check `user_preferences.md` for any standing XP-request preferences** before composing
 > (e.g. a preferred opponent set, a default episode count, an always-2-imposter rule). The human may
@@ -82,19 +82,31 @@ uv run python "$S" create /tmp/req.json                  # POST for real -> prin
 **Verify it resolved as intended:** `episode_count` matches `num_episodes`, and the first episodes'
 `participants` seat the policies/versions and roles you intended (the spread you expected).
 
-## Step 4 — monitor, then pull & analyze
+## Step 4 — stream, don't wait (the default)
 
-"Created" ≠ "done":
+"Created" ≠ "done" — but **do not wait for the xreq to drain before starting
+the next stage.** Immediately after `create` returns the `xreq_…`, launch the
+streaming pipeline **in the background** and let all stages overlap:
 
-```bash
-uv run python "$S" monitor xreq_...
-```
-For several requests at once (a sweep / multi-role eval), `scripts/xp_dashboard.py xreq_... [...]`
-serves a self-contained browser dashboard (completion/ETA, win-rate leaderboard overall/crew/imposter,
-heatmap, score strips; ops-filtered — watch the "ops-filtered" count). When every child episode is
-terminal, pull replays/results/logs with the **`coworld-episode-artifacts`** skill
-(`fetch_artifacts.py --xreq xreq_...`) and compute the stats the question needs, **decomposed by role
-and opponent**.
+- **Crewrift deep-dig (warehouse wanted — the common case):** hand the fresh
+  `xreq_…` id(s) to the `crewrift-event-warehouse` skill's `stream_eval.py`
+  (see that SKILL.md). It watches the request, pulls each episode's artifacts
+  as it completes, and folds them into the event warehouse in incremental
+  batches — the warehouse is ready (or nearly) the moment the last episode ends.
+- **Artifacts only:** `fetch_artifacts.py --xreq xreq_… --watch` (the
+  `coworld-episode-artifacts` skill) streams the downloads the same way.
+
+Both are crash-safe: rerun the same command and it resumes from disk.
+
+For a quick status glance (or several requests at once), the old serial tools
+remain: `uv run python "$S" monitor xreq_…` polls one request;
+`scripts/xp_dashboard.py xreq_… [...]` serves the browser dashboard
+(completion/ETA, win-rate leaderboard overall/crew/imposter, heatmap, score
+strips; ops-filtered — watch the "ops-filtered" count). Serial
+monitor → fetch → build is the **fallback**, not the default.
+
+When everything is terminal, compute the stats the question needs,
+**decomposed by role and opponent**.
 
 ## Notes
 

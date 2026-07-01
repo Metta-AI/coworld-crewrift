@@ -41,10 +41,18 @@ DISCOVERY MODES (pick exactly one):
                                   experience-request episodes in a container
     --episode UUID [--episode ..] explicit league episode records by id
 
+WATCH MODE (--watch, with --xreq only): stream a still-running experience
+request — poll it and download each episode's artifacts as it turns terminal,
+exiting once every episode is terminal and fetched. Resume-safe (completeness
+is judged from disk); watch_state.json bounds retries (--max-attempts, default
+3) for episodes whose artifacts keep erroring. This is the streaming half of
+the default eval flow (see the coworld-experience-requests skill, step 4).
+
 Usage (auth comes from `softmax login`; run inside `uv run` so softmax is importable):
 
     uv run python fetch_artifacts.py --policy crewborg -n 10 --out /tmp/eps
     uv run python fetch_artifacts.py --xreq xreq_abc... --out /tmp/eps
+    uv run python fetch_artifacts.py --xreq xreq_abc... --watch --out /tmp/eps
     uv run python fetch_artifacts.py --ereq ereq_abc... --ereq ereq_def... --no-logs
     uv run python fetch_artifacts.py --pool pool_abc... -n 20 --out /tmp/eps
 
@@ -64,6 +72,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -359,6 +368,12 @@ def _write_replay(content: bytes, out_dir: Path) -> None:
     (out_dir / "replay.json").write_bytes(decompressed)
 
 
+def episode_dirname(ref: EpisodeRef) -> str:
+    stamp = ref.created_at.replace(":", "").replace("-", "").replace(".", "")[:15]
+    short = ref.ref_id[:16] if ref.ref_id.startswith("ereq_") else ref.ref_id[:8]
+    return f"{stamp}_{short}"
+
+
 def episode_is_complete(out_dir: Path, want_replay: bool, want_logs: bool) -> bool:
     if not (out_dir / "episode.json").exists():
         return False
@@ -490,6 +505,149 @@ def fetch_episode(
 
 
 # --------------------------------------------------------------------------- #
+# Watch mode: stream artifacts out of a still-running experience request
+# --------------------------------------------------------------------------- #
+
+# Episode-row statuses that mean the episode will never change again. Unknown
+# statuses are treated as still-running (rechecked next pass); once the xreq
+# itself is drained, row status is ignored so a stale row can't strand us.
+TERMINAL_EPISODE_STATUSES = {"completed", "success", "failed", "error", "cancelled", "canceled"}
+
+
+def select_watch_fetches(
+    refs: list[EpisodeRef],
+    out_root: Path,
+    attempts: dict[str, int],
+    *,
+    want_replay: bool,
+    want_logs: bool,
+    max_attempts: int,
+    xreq_drained: bool,
+) -> tuple[list[EpisodeRef], list[EpisodeRef], list[EpisodeRef], list[EpisodeRef]]:
+    """Partition an xreq's episodes into (to_fetch, waiting, exhausted, done).
+
+    Pure disk+status logic so it is unit-testable: an episode is `done` when
+    its dir passes episode_is_complete, `waiting` while non-terminal (unless
+    the whole xreq is drained), `exhausted` after max_attempts error-laden
+    fetches, else `to_fetch`.
+    """
+    to_fetch: list[EpisodeRef] = []
+    waiting: list[EpisodeRef] = []
+    exhausted: list[EpisodeRef] = []
+    done: list[EpisodeRef] = []
+    for ref in refs:
+        if episode_is_complete(out_root / episode_dirname(ref), want_replay, want_logs):
+            done.append(ref)
+            continue
+        status = str(ref.record.get("status") or "").lower()
+        if status not in TERMINAL_EPISODE_STATUSES and not xreq_drained:
+            waiting.append(ref)
+            continue
+        if attempts.get(ref.ref_id, 0) >= max_attempts:
+            exhausted.append(ref)
+            continue
+        to_fetch.append(ref)
+    return to_fetch, waiting, exhausted, done
+
+
+def _xreq_drained(detail: dict[str, Any]) -> bool:
+    total = detail.get("episode_count") or 0
+    finished = (detail.get("completed_count") or 0) + (detail.get("failed_count") or 0)
+    return total > 0 and finished >= total
+
+
+def _write_watch_index(
+    out: Path,
+    xreq: str,
+    server: str,
+    refs: list[EpisodeRef],
+    done: list[EpisodeRef],
+    exhausted: list[EpisodeRef],
+    pending: int,
+    drained: bool,
+) -> None:
+    index = {
+        "server": server,
+        "selection": {"xreq": xreq, "watch": True},
+        "watch": {
+            "total": len(refs),
+            "fetched": len(done),
+            "exhausted": len(exhausted),
+            "pending": pending,
+            "drained": drained,
+        },
+        "episodes": [
+            {"ref_id": r.ref_id, "dir": episode_dirname(r), "label": r.label} for r in done
+        ]
+        + [
+            {"ref_id": r.ref_id, "exhausted": True, "label": r.label} for r in exhausted
+        ],
+    }
+    (out / "index.json").write_text(json.dumps(index, indent=2))
+
+
+def watch_loop(
+    client: Client,
+    args: argparse.Namespace,
+    server: str,
+    *,
+    want_replay: bool,
+    want_results: bool,
+    want_logs: bool,
+) -> int:
+    """Poll the xreq; fetch each episode as it turns terminal; exit when drained.
+
+    Resume-safe by construction: completeness is judged from disk
+    (episode_is_complete), so a killed run just picks up where it left off.
+    watch_state.json bounds retries for episodes that fetch with errors
+    (e.g. ops-failed episodes with no artifacts).
+    """
+    args.out.mkdir(parents=True, exist_ok=True)
+    state_path = args.out / "watch_state.json"
+    attempts: dict[str, int] = {}
+    if state_path.exists():
+        attempts = json.loads(state_path.read_text())
+
+    while True:
+        detail = client.get_json(f"/v2/experience-requests/{args.xreq}")
+        drained = _xreq_drained(detail)
+        refs = discover_by_xreq(client, args.xreq, args.num)
+        to_fetch, waiting, exhausted, done = select_watch_fetches(
+            refs, args.out, attempts,
+            want_replay=want_replay, want_logs=want_logs,
+            max_attempts=args.max_attempts, xreq_drained=drained,
+        )
+        for ref in to_fetch:
+            ep_dir = args.out / episode_dirname(ref)
+            log(f"  [watch] fetching {ref.ref_id[:16]} {ref.label}")
+            s = fetch_episode(
+                client, ref, ep_dir,
+                want_replay=want_replay, want_results=want_results, want_logs=want_logs,
+            )
+            for err in s["errors"]:
+                log(f"      ! {err}")
+            if episode_is_complete(ep_dir, want_replay, want_logs):
+                attempts.pop(ref.ref_id, None)
+                done.append(ref)
+            else:
+                attempts[ref.ref_id] = attempts.get(ref.ref_id, 0) + 1
+                if attempts[ref.ref_id] >= args.max_attempts:
+                    log(f"      ! {ref.ref_id[:16]}: giving up after {args.max_attempts} attempts")
+                    exhausted.append(ref)
+        state_path.write_text(json.dumps(attempts, indent=2))
+
+        total = detail.get("episode_count") or len(refs)
+        pending = max(0, total - len(done) - len(exhausted))
+        _write_watch_index(args.out, args.xreq, server, refs, done, exhausted, pending, drained)
+        log(f"[watch] fetched {len(done)}/{total} "
+            f"(pending {pending}, exhausted {len(exhausted)}, drained={drained})")
+        if drained and pending == 0:
+            log(f"[watch] done: xreq drained; {len(done)} fetched, {len(exhausted)} without artifacts.")
+            return 0
+        time.sleep(args.interval)
+
+
+# --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
 
@@ -511,8 +669,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     sel.add_argument("--episode", action="append", default=[],
                      help="League episode uuid. Repeatable.")
 
-    parser.add_argument("-n", "--num", type=int, default=10,
-                        help="Max episodes for policy/xreq/pool/round/division modes.")
+    parser.add_argument("-n", "--num", type=int, default=None,
+                        help="Max episodes for policy/xreq/pool/round/division modes (default 10; "
+                             "unlimited in --watch mode).")
     parser.add_argument("-o", "--out", type=Path, default=Path("episode_data"),
                         help="Output directory (one subdir per episode + index.json).")
     parser.add_argument("--server", default=None,
@@ -522,6 +681,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-logs", action="store_true", help="Skip per-agent policy-log downloads.")
     parser.add_argument("--force", action="store_true",
                         help="Re-download episodes whose directory already looks complete.")
+    parser.add_argument("--watch", action="store_true",
+                        help="With --xreq: poll the experience request and download each episode's "
+                             "artifacts as it completes; exit when all episodes are terminal and fetched.")
+    parser.add_argument("--interval", type=float, default=15.0,
+                        help="Watch mode: seconds between polls.")
+    parser.add_argument("--max-attempts", type=int, default=3,
+                        help="Watch mode: fetch attempts per episode whose artifacts keep erroring.")
     return parser.parse_args(argv)
 
 
@@ -554,11 +720,22 @@ def resolve_refs(client: Client, args: argparse.Namespace) -> list[EpisodeRef]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.num is None:
+        args.num = 10**9 if args.watch else 10
+    if args.watch and not args.xreq:
+        sys.exit("--watch requires --xreq (streaming is per experience request).")
     want_replay = not args.no_replay
     want_results = not args.no_results
     want_logs = not args.no_logs
     server = args.server or default_server()
     args.out.mkdir(parents=True, exist_ok=True)
+
+    if args.watch:
+        with Client(server, load_token()) as client:
+            return watch_loop(
+                client, args, server,
+                want_replay=want_replay, want_results=want_results, want_logs=want_logs,
+            )
 
     with Client(server, load_token()) as client:
         refs = resolve_refs(client, args)
@@ -569,9 +746,8 @@ def main(argv: list[str] | None = None) -> int:
 
         summaries: list[dict[str, Any]] = []
         for i, ref in enumerate(refs, 1):
-            stamp = ref.created_at.replace(":", "").replace("-", "").replace(".", "")[:15]
             short = ref.ref_id[:16] if ref.ref_id.startswith("ereq_") else ref.ref_id[:8]
-            ep_dir = args.out / f"{stamp}_{short}"
+            ep_dir = args.out / episode_dirname(ref)
             if not args.force and episode_is_complete(ep_dir, want_replay, want_logs):
                 log(f"  [{i}/{len(refs)}] {short} {ref.label} — already present, skipping")
                 summaries.append({"ref_id": ref.ref_id, "dir": ep_dir.name, "skipped": True})

@@ -6,24 +6,6 @@ functions means new region/predicate questions cost a function, not a belief
 schema change. A frame's ``players``/``bodies`` are the entities we actually saw,
 and ``rect_observed`` answers whether a region was inside the viewport — i.e.
 whether an *absence* from ``players`` is meaningful ("clear") or just unobserved.
-
-Collaborators
--------------
-Relies on:
-  - ``perception.constants.SCREEN_WIDTH`` / ``SCREEN_HEIGHT`` — the viewport extent
-    for the containment test.
-  - ``types.PerceptionFrame`` — the single frame argument (its ``players`` /
-    ``camera_x/y`` / ``visible_mask`` line-of-sight overlay). Reads only; nothing stored.
-Used by:
-  - ``strategy.suspicion`` — ``neighbors_within`` (witnessed-kill neighbours),
-    ``players_in_rect`` + ``rect_visible`` (witnessed-vent emergence/submersion gates).
-Emits / touches: nothing — these are pure, side-effect-free predicates over one frame.
-
-Modifying this file: keep these functions PURE and frame-local (no belief, no history,
-no caching) — that is what lets new spatial questions be a one-line function instead of
-a belief-schema change. ``rect_visible`` is the real visibility gate (uses the LOS
-mask); ``rect_observed`` is only a viewport proxy that ignores occlusion — don't swap
-one for the other casually.
 """
 
 from __future__ import annotations

@@ -16,26 +16,6 @@ together.
 Target preference: the densest crew *room* (stable, and it subtracts teammate pressure
 so two imposters don't pile onto the same room) → the hottest occupancy *cell* if no room
 target → the most-recently-seen crewmate (cold start, before occupancy has mass) → idle.
-
-Collaborators
--------------
-Relies on:
-  - ``agent_tracking`` (``at``) — ``best_pretend_room_target`` (densest expected-crew room,
-    teammate-pressure-adjusted) and ``best_seek_point`` (hottest occupancy cell).
-  - ``strategy.opportunity.most_recent_victim`` — the cold-start fallback target.
-  - ``modes.imposter_common`` (``ic``) — ``self_xy``.
-  - ``types`` — ``ActionState`` / ``Belief`` / ``Intent``.
-Used by:
-  - ``strategy.rule_based`` selects this mode for ``EVADE_TICKS`` after our own kill
-    (§10), then hands back to Search/Recon/Hunt.
-  - ``__init__.build_runtime`` registers it in the ``ModeRegistry``.
-Emits: a ``navigate_to`` intent (toward the crew area / cell / last-seen crewmate), or
-  ``idle`` when nothing to approach.
-
-Modifying this file: it only chooses *where to head after a kill* — it never moves the
-agent (that is ``action.py``). The post-kill window length (``EVADE_TICKS``) and the
-selector gate live in ``strategy.rule_based``, not here. NOTE the name inversion: despite
-"Evade", this mode RE-APPROACHES the crowd — it does not flee.
 """
 
 from __future__ import annotations
@@ -48,18 +28,10 @@ from players.player_sdk import EmptyModeParams, Mode
 
 
 class EvadeMode(Mode[Belief, ActionState, Intent]):
-    """Post-kill re-approach of the densest crew area (see module docstring). Stateless —
-    the target is re-derived each tick from the occupancy estimate."""
-
     name = "evade"
     params_type = EmptyModeParams
 
     def decide(self, belief: Belief, action_state: ActionState) -> Intent:
-        """Return a ``navigate_to`` intent toward, in preference order, the densest crew
-        room → the hottest occupancy cell → the most-recently-seen crewmate; ``idle`` if none
-        is available. (When our self position is unknown the room/cell steps are skipped and
-        we go straight to the last-seen crewmate.) ``action_state`` is unused — pure over
-        belief."""
         del action_state
         self_xy = ic.self_xy(belief)
         if self_xy is not None:

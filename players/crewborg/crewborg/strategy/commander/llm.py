@@ -1,40 +1,4 @@
-"""LLM client seam for gameplay-commander priority decisions (backend selection + call).
-
-Builds the client the worker uses to turn serialized belief into raw priority JSON, and
-decides *which* backend that client talks to. Two backends are possible — Anthropic direct
-(``ANTHROPIC_API_KEY``) or AWS Bedrock — both reached through the player SDK helpers behind
-the ``CommanderLLMClient`` protocol so the worker is backend-agnostic.
-
-Gating / "off = inert": ``build_commander_client_from_env`` returns a
-``DisabledCommanderClient`` (which raises if ``decide`` is ever called) unless
-``CREWBORG_LLM_COMMANDER`` is truthy AND a usable backend is configured. Any construction
-error also degrades to disabled rather than raising — so a missing key, missing SDK, or bad
-config can never crash the agent; it just falls back to deterministic play.
-
-Bedrock sidecar gotcha (see ``_sidecar_bedrock`` and the inline comment in
-``build_commander_client_from_env``): in sidecar mode the runner strips ``USE_BEDROCK`` and
-injects a loopback proxy endpoint instead, so the SDK's ``bedrock_enabled()`` under-reports.
-We additionally treat the presence of ``AWS_ENDPOINT_URL_BEDROCK_RUNTIME`` as a Bedrock
-signal so ``select_client(use_bedrock=True)`` reaches the SDK's sidecar-routing path.
-
-Collaborators
--------------
-Relies on:
-  - ``players.player_sdk`` helpers (lazily imported in ``_load_sdk_helpers``): ``bedrock_enabled``,
-    ``select_client``, ``resolve_model``, ``call_json``, ``extract_json_object``, and the default
-    model constants — the SDK owns the actual transport, retries, and JSON extraction.
-  - ``prompts.system_prompt_for_role`` — role-specific system prompt for each call.
-Used by:
-  - ``worker.CommanderWorker`` — calls ``build_commander_client_from_env`` (its client factory)
-    and invokes ``client.decide(context)`` on the daemon thread.
-  - ``__init__.build_runtime`` / ``CommanderStrategy`` — ``commander_feature_enabled`` is the
-    master on/off check.
-
-Modifying this file: the disabled-by-default contract is load-bearing — every error and
-every "no flag / no backend" case must return a ``DisabledCommanderClient``, never raise.
-``decide`` reads untrusted model text; it stays a thin wrapper and leaves validation to
-``schema.sanitize_priorities`` downstream.
-"""
+"""LLM client seam for gameplay commander priority decisions."""
 
 from __future__ import annotations
 
@@ -47,21 +11,11 @@ from pydantic import BaseModel, ConfigDict
 
 from crewborg.strategy.commander.prompts import PROMPT_DIR_ENV, system_prompt_for_role
 
-#: Fallback model id if the SDK's ``resolve_model`` is not given an explicit override.
-#: A small, fast Claude model — the commander runs every few seconds and only needs to
-#: emit a tiny JSON object, so latency matters more than peak reasoning.
 DEFAULT_COMMANDER_MODEL = "claude-haiku-4-5-20251001"
 
 
 @dataclass(frozen=True)
 class CommanderLLMConfig:
-    """Immutable per-call LLM settings, resolved once from env at client-build time.
-
-    ``use_bedrock`` selects the backend (incl. the sidecar path); ``temperature`` is kept low
-    for stable, near-deterministic priority choices; ``timeout_seconds`` bounds how long the
-    daemon waits on a call; ``trace_raw`` opts the raw request/response into the trace (verbose
-    debugging only); ``prompt_dir`` overrides where role doctrine Markdown is loaded from."""
-
     model: str = DEFAULT_COMMANDER_MODEL
     use_bedrock: bool = False
     max_tokens: int = 512
@@ -72,11 +26,7 @@ class CommanderLLMConfig:
 
 
 class CommanderLLMResult(BaseModel):
-    """Raw commander priorities plus call metadata for tracing.
-
-    ``priorities`` is the *unvalidated* JSON object from the model (sanitized later by
-    ``schema.py``); the rest is telemetry — ``model``/``latency_ms``/``usage`` always present,
-    and ``raw_request``/``raw_response`` populated only when ``trace_raw`` is on."""
+    """Raw commander priorities plus call metadata for tracing."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -89,12 +39,6 @@ class CommanderLLMResult(BaseModel):
 
 
 class CommanderLLMClient(Protocol):
-    """Structural contract every commander client satisfies.
-
-    ``enabled`` tells the worker whether ``decide`` may be called; ``disabled_reason`` carries a
-    human-readable cause when not (also used by the worker to decide whether a build is worth
-    retrying — see ``_missing_backend``). ``decide`` maps a serialized context to a result."""
-
     enabled: bool
     disabled_reason: str | None
 
@@ -103,11 +47,6 @@ class CommanderLLMClient(Protocol):
 
 @dataclass(frozen=True)
 class DisabledCommanderClient:
-    """The inert client returned whenever the commander is off or unconfigured.
-
-    ``enabled`` is ``False`` so the worker never calls ``decide``; if something does, it raises
-    with ``disabled_reason`` rather than silently producing priorities."""
-
     disabled_reason: str = "disabled"
     enabled: bool = False
 
@@ -117,11 +56,7 @@ class DisabledCommanderClient:
 
 
 class AnthropicCommanderClient:
-    """Live client: builds the request, calls the SDK, parses model text into raw priorities.
-
-    Holds the resolved ``config`` and the SDK callables injected at construction (``client``
-    transport, ``call_json`` request helper, ``extract_json_object`` text→JSON extractor) — so
-    this class stays a thin, testable adapter with no direct SDK import. Always ``enabled``."""
+    """Anthropic Messages API adapter, kept behind the commander-client protocol."""
 
     enabled = True
     disabled_reason = None
@@ -141,22 +76,9 @@ class AnthropicCommanderClient:
 
     @property
     def timeout_seconds(self) -> float:
-        """Per-call timeout (seconds) from config; exposed for the worker/transport."""
         return self.config.timeout_seconds
 
     def decide(self, context: dict[str, Any]) -> CommanderLLMResult:
-        """Call the model once and return the parsed (still-unvalidated) priorities + telemetry.
-
-        Wraps ``context`` and an inline ``response_schema`` (the field menu the model fills in)
-        into the user message, selects the system prompt from ``context["self"]["role"]``, calls
-        the SDK, and parses the first JSON object out of the reply text. The returned
-        ``priorities`` are NOT validated here — ``schema.sanitize_priorities`` enforces legality
-        downstream. Side effects: one network/LLM round-trip. Raises if the call or JSON parse
-        fails (the worker catches and traces it as a ``commander_call`` error)."""
-        # The field menu shown to the model. By design ``strength`` (soft/hard) is NOT listed
-        # here, so the LLM cannot set it — LLM priorities are always "soft" (bias only); "hard"
-        # forcing is a test/QA path reachable only via CREWBORG_COMMANDER_FORCE (see schema.py).
-        # DANGER fields require a ``danger_reason``.
         request = {
             "context": context,
             "response_schema": {
@@ -194,13 +116,6 @@ class AnthropicCommanderClient:
 
 
 def build_commander_client_from_env(env: dict[str, str] | None = None) -> CommanderLLMClient:
-    """Construct the commander client from environment, or a ``DisabledCommanderClient``.
-
-    The single gated entry point (defaults to ``os.environ``; ``env`` injectable for tests).
-    Returns a disabled client when the feature flag is off, when no backend (Bedrock/sidecar or
-    ``ANTHROPIC_API_KEY``) is configured, or when construction raises — so callers can rely on a
-    client object always coming back and never crashing the agent. On success, resolves the
-    model/backend, builds an SDK client, and wraps it in an ``AnthropicCommanderClient``."""
     env = os.environ if env is None else env
     if not _truthy(env.get("CREWBORG_LLM_COMMANDER", "")):
         return DisabledCommanderClient("CREWBORG_LLM_COMMANDER is not enabled")
@@ -212,7 +127,7 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
         # checks USE_BEDROCK / CLAUDE_CODE_USE_BEDROCK, so it wrongly reports no backend in-pod.
         # Gate on what we actually receive: treat the sidecar endpoint as a Bedrock signal, so
         # select_client(use_bedrock=True) reaches the SDK's sidecar-routing path. See
-        # docs/reference/coworld-platform.md (Bedrock section) (platform/SDK fix tracked there).
+        # docs/reference/coworld-platform.md (platform/SDK fix tracked there).
         use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
         if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledCommanderClient("no LLM backend configured")
@@ -244,25 +159,15 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
         return DisabledCommanderClient(f"commander LLM client construction failed: {exc!r}")
 
 
-#: Backward-compatible alias for the env-based builder (the worker's client factory).
 build_commander_client = build_commander_client_from_env
 
 
 def commander_feature_enabled(env: dict[str, str] | None = None) -> bool:
-    """Whether the commander master flag (``CREWBORG_LLM_COMMANDER``) is truthy.
-
-    The cheap top-level on/off check used by ``CommanderStrategy`` before any worker is started;
-    distinct from ``build_commander_client_from_env``, which also requires a configured backend."""
     env = os.environ if env is None else env
     return _truthy(env.get("CREWBORG_LLM_COMMANDER", ""))
 
 
 class _SDKHelpers(NamedTuple):
-    """Bundle of the player-SDK callables/constants the client needs, captured at import time.
-
-    Lets ``build_commander_client_from_env`` depend on a single struct instead of importing the
-    SDK at module load — so importing this module never hard-requires the SDK to be installed."""
-
     bedrock_enabled: Callable[..., bool]
     select_client: Callable[..., Any]
     resolve_model: Callable[..., str]
@@ -273,10 +178,6 @@ class _SDKHelpers(NamedTuple):
 
 
 def _load_sdk_helpers() -> _SDKHelpers:
-    """Lazily import the player-SDK helpers/constants and bundle them into an ``_SDKHelpers``.
-
-    Deferred to call time so a missing SDK only fails the (already error-trapped) client build,
-    not module import."""
     from players.player_sdk import (
         DEFAULT_BEDROCK_MODEL,
         DEFAULT_DIRECT_MODEL,
@@ -299,7 +200,6 @@ def _load_sdk_helpers() -> _SDKHelpers:
 
 
 def _env_int(env: dict[str, str], name: str, default: int) -> int:
-    """Read an int env var, falling back to ``default`` on absence or non-integer text."""
     try:
         return int(env.get(name, default))
     except (TypeError, ValueError):
@@ -307,7 +207,6 @@ def _env_int(env: dict[str, str], name: str, default: int) -> int:
 
 
 def _env_float(env: dict[str, str], name: str, default: float) -> float:
-    """Read a float env var, falling back to ``default`` on absence or non-numeric text."""
     try:
         return float(env.get(name, default))
     except (TypeError, ValueError):
@@ -326,5 +225,4 @@ def _sidecar_bedrock(env: dict[str, str]) -> bool:
 
 
 def _truthy(value: str) -> bool:
-    """Parse a flag-style string as boolean: true for 1/true/yes/on (case/space-insensitive)."""
     return value.strip().lower() in {"1", "true", "yes", "on"}

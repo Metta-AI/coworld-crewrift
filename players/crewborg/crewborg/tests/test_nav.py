@@ -6,10 +6,41 @@ import numpy as np
 
 from crewborg.map.types import MapData, MapPoint, MapRect, TaskStation, Vent
 from crewborg.nav import (
+    CLEARANCE_RADIUS,
+    _segment_clear,
     build_nav_graph,
     plan_route,
     plan_route_via_vents,
 )
+
+
+def test_partially_blocked_cell_is_still_a_node() -> None:
+    # With 1x1 point collision, one blocked pixel must NOT discard the whole cell
+    # (the old conservative rule did exactly that). The cell stays routable.
+    mask = np.ones((16, 16), dtype=bool)
+    mask[0, 0] = False
+    graph = build_nav_graph(mask, cell_size=8)
+    assert (0, 0) in graph.node_point  # cell survives despite the blocked pixel
+
+
+def test_fully_blocked_cell_is_not_a_node() -> None:
+    mask = np.ones((16, 16), dtype=bool)
+    mask[0:8, 0:8] = False  # top-left cell has no walkable pixel
+    graph = build_nav_graph(mask, cell_size=8)
+    assert (0, 0) not in graph.node_point
+    assert (1, 1) in graph.node_point
+
+
+def test_node_points_keep_clearance_from_walls() -> None:
+    # A wall on the left third; the node in the adjacent cell sits CLEARANCE_RADIUS
+    # off the wall (corridor-centered), not flush against it.
+    mask = np.ones((24, 24), dtype=bool)
+    mask[:, 0:8] = False
+    graph = build_nav_graph(mask, cell_size=8)
+    pt = graph.node_point.get((1, 1))  # cell x8..15, y8..15 — adjacent to the wall
+    assert pt is not None
+    assert bool(graph.clearance[pt[1], pt[0]])  # the node point keeps clearance
+    assert pt[0] >= 8 + CLEARANCE_RADIUS  # off the wall edge at x=8
 
 
 def test_route_keeps_clearance_around_a_wall() -> None:
@@ -43,6 +74,35 @@ def test_unreachable_goal_returns_empty() -> None:
     assert plan_route(graph, (8, 12), (40, 12)) == []
 
 
+def test_clear_shot_collapses_to_a_single_waypoint() -> None:
+    mask = np.ones((64, 64), dtype=bool)
+    graph = build_nav_graph(mask, cell_size=8)
+    assert plan_route(graph, (4, 4), (60, 60)) == [(60, 60)]
+
+
+def test_smoothed_route_segments_never_cross_a_wall() -> None:
+    mask = np.ones((24, 80), dtype=bool)
+    mask[8:, 32:40] = False
+    graph = build_nav_graph(mask, cell_size=8)
+
+    start = (8, 16)
+    route = plan_route(graph, start, (72, 16))
+    assert route and route[-1] == (72, 16)
+    # Every leg up to (but excluding) the final exact-goal hop is occlusion-free.
+    legs = [start] + route
+    for a, b in zip(legs[:-2], legs[1:-1]):
+        assert _segment_clear(graph.walkability, a, b), f"leg {a}->{b} crosses the wall"
+
+
+def test_line_of_sight_blocks_a_diagonal_corner_squeeze() -> None:
+    mask = np.ones((16, 16), dtype=bool)
+    mask[0:8, 8:16] = False  # top-right pixels blocked
+    mask[8:16, 0:8] = False  # bottom-left pixels blocked
+    graph = build_nav_graph(mask, cell_size=8)
+    # (4,4) -> (12,12) grazes the shared corner of the two blocked quadrants.
+    assert not _segment_clear(graph.walkability, (4, 4), (12, 12))
+
+
 # --------------------------------------------------------------------------- #
 # Destination anchors                                                         #
 # --------------------------------------------------------------------------- #
@@ -68,6 +128,27 @@ def test_task_anchor_is_a_reachable_walkable_pixel_in_the_rect() -> None:
     assert not (10 <= ax < 14)  # not in the wall band
 
 
+def test_unreachable_task_has_no_anchor_and_is_reported() -> None:
+    mask = np.ones((24, 48), dtype=bool)
+    mask[:, 24:32] = False  # wall splits the map; home is on the left
+    task = TaskStation(name="far", x=40, y=10, w=4, h=4)  # right of the wall
+    graph = build_nav_graph(mask, map_data=_map(tasks=[task], home=MapPoint(x=4, y=12)))
+
+    assert graph.task_anchor(0) is None
+    assert any("task[0]" in w for w in graph.unreachable)
+
+
+def test_vent_anchor_lands_within_reach_of_the_vent_center() -> None:
+    mask = np.ones((24, 48), dtype=bool)
+    vent = Vent(x=18, y=8, w=8, h=8, group="1", group_index=1)  # center (22, 12)
+    graph = build_nav_graph(mask, map_data=_map(vents=[vent]))
+
+    anchor = graph.vent_anchor(0)
+    assert anchor is not None
+    (ax, ay), (cx, cy) = anchor, (22, 12)
+    assert (ax - cx) ** 2 + (ay - cy) ** 2 <= 16**2  # within VentRange of the center
+
+
 # --------------------------------------------------------------------------- #
 # Vent teleport edges + vent-aware routing (imposter flee)                    #
 # --------------------------------------------------------------------------- #
@@ -82,6 +163,13 @@ def test_vent_edges_connect_same_group_reachable_vents() -> None:
     graph = build_nav_graph(mask, map_data=_map(vents=vents))
     pairs = {(e.from_vent, e.to_vent) for edges in graph.vent_edges.values() for e in edges}
     assert pairs == {(0, 1), (1, 0)}  # a teleport edge each way
+
+
+def test_a_solitary_vent_has_no_teleport_edge() -> None:
+    mask = np.ones((48, 48), dtype=bool)
+    vent = Vent(x=8, y=8, w=8, h=8, group="lonely", group_index=1)
+    graph = build_nav_graph(mask, map_data=_map(vents=[vent]))
+    assert graph.vent_edges == {}  # nowhere to teleport to
 
 
 def _detour_map_with_linking_vents() -> tuple[np.ndarray, MapData]:
@@ -112,3 +200,12 @@ def test_plan_route_via_vents_takes_the_teleport_shortcut() -> None:
     for index in teleports:
         wx, wy = waypoints[index]
         assert any((wx - cx) ** 2 + (wy - cy) ** 2 <= 16**2 for cx, cy in centers)
+
+
+def test_plain_plan_route_never_teleports() -> None:
+    # The vent-free planner must detour up through the gap, not jump the wall.
+    mask, map_data = _detour_map_with_linking_vents()
+    graph = build_nav_graph(mask, map_data=map_data)
+    route = plan_route(graph, (10, 110), (190, 110))
+    assert route and route[-1] == (190, 110)
+    assert any(y < 20 for _, y in route)  # routed up through the top gap

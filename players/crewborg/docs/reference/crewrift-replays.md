@@ -36,7 +36,7 @@ if something looks off, because the source moves.
 >
 > So the *deployed ref matters*: league/Observatory replays are recorded by the
 > current crewrift upload, so you must build `expand_replay` from that same ref.
-> The lab toolkit pins it as **`CREWRIFT_REF`** (`tools/build/versions.env`);
+> The lab toolkit pins it as **`CREWRIFT_REF`** (`tools/versions.env`);
 > keep that pin tracking the deployed upload, and pass `--ref <sha>` for any other
 > recording build. See [§B](#b-the-replay-as-events-expand_replay-objective-ground-truth).
 

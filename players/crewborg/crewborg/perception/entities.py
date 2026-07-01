@@ -1,27 +1,8 @@
 """Resolved per-tick entities produced by :mod:`.resolve` (design §4).
 
-The output data shapes of the perception layer (perception → belief → suspicion →
-strategy → modes → action): the structured, vision-free view of one scene tick that
-the belief fold reads. Pure data — no logic. Frozen pydantic models, each carrying
-a stable object id, world coordinates (valid when ``camera_ready``), and the
-classified label fields. ``ResolvedScene`` is the aggregate; ``Percept`` (in
-``types.py``) embeds it.
-
-Collaborators
--------------
-Relies on: ``pydantic`` only (frozen ``BaseModel``); no other crewborg modules,
-  so this stays an import-leaf.
-Used by:
-  - ``perception.resolve.resolve_scene`` — constructs every model here.
-  - ``types.py`` — embeds ``ResolvedScene`` / ``VotingState`` in ``Percept`` and
-    re-exports the entity types the belief fold and modes consume.
-Emits / touches: nothing — these are immutable value objects.
-
-Modifying this file: every model is ``frozen=True, extra="forbid"`` on purpose —
-the resolved scene is an immutable snapshot, and ``extra="forbid"`` makes a
-field-name drift between here and ``resolve.py`` fail loudly instead of silently
-dropping data. Keep both invariants. Coordinate units: ``world_*`` are world pixels
-(collision point for players/bodies); ``screen`` is camera-relative screen pixels.
+Frozen pydantic models. These are the structured, vision-free view of the scene:
+each carries a stable object id, world coordinates (valid when ``camera_ready``),
+and the classified label fields. ``Percept`` (in ``types.py``) embeds these.
 """
 
 from __future__ import annotations
@@ -31,16 +12,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Facing = Literal["left", "right"]
-SelfRole = Literal["crewmate", "imposter", "dead"]
 
 
 class VisiblePlayer(BaseModel):
-    """A live (non-body) player sprite on screen: color, facing, world collision point.
-
-    ``world_x``/``world_y`` are the recovered collision point (world pixels), so
-    they match the server's report/kill range checks.
-    """
-
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     object_id: int
@@ -51,8 +25,6 @@ class VisiblePlayer(BaseModel):
 
 
 class VisibleBody(BaseModel):
-    """A killed player's body sprite on screen: color + world collision point (reportable)."""
-
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     object_id: int
@@ -109,13 +81,6 @@ SKIP_VOTE_TARGET = -2
 
 
 class VoteDot(BaseModel):
-    """One cast vote on the voting screen: ``voter`` slot → ``target`` slot.
-
-    ``target`` is a player slot index, or ``SKIP_VOTE_TARGET`` (−2) for a skip vote.
-    Slots are the candidate-grid order, not colors — callers map via the candidate
-    grid. Resolved from the vote-dot object-id ranges (normal vs. skip).
-    """
-
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     voter: int
@@ -123,7 +88,6 @@ class VoteDot(BaseModel):
 
     @property
     def is_skip(self) -> bool:
-        """True if this dot is a skip vote (``target == SKIP_VOTE_TARGET``)."""
         return self.target == SKIP_VOTE_TARGET
 
 
@@ -159,7 +123,6 @@ class VotingState(BaseModel):
 
     @property
     def active(self) -> bool:
-        """True when a voting UI is on screen — any cursor, the timer, or cast dots."""
         return self.cursor_present or self.skip_cursor_present or self.timer_present or bool(self.dots)
 
 
@@ -173,7 +136,7 @@ class ResolvedScene(BaseModel):
     camera_x: int
     camera_y: int
 
-    self_role: SelfRole | None = None
+    self_dead: bool = False  # ghost icon present this frame (our own death); a STATE, not a role
     self_kill_ready: bool | None = None
     # Self is the camera center, not an object; world position is the camera plus
     # a fixed offset (design §3.2). Valid only when ``camera_ready``.

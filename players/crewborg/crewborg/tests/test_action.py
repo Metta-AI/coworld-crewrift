@@ -11,7 +11,9 @@ from crewborg.action import (
     BTN_LEFT,
     BTN_RIGHT,
     BTN_UP,
+    CHAT_HEADER,
     INPUT_HEADER,
+    encode_chat,
     encode_input,
     resolve_action,
 )
@@ -60,10 +62,89 @@ def test_escape_presses_b_to_vent_when_a_teleport_leg_is_next() -> None:
     assert command.held_mask == BTN_B  # at the vent entry: press B to vanish
 
 
+def test_periodic_replan_reroots_the_route_on_interval() -> None:
+    from crewborg.action import REPLAN_INTERVAL
+
+    nav = build_nav_graph(np.ones((40, 40), dtype=bool), cell_size=8)
+    belief = Belief(nav=nav, self_world_x=4, self_world_y=4)
+    action_state = ActionState()
+    intent = Intent(kind="navigate_to", point=(36, 36))  # fixed goal throughout
+
+    resolve_action(intent, belief, action_state)  # initial plan
+    assert action_state.ticks_since_plan == 0
+    # A few more ticks with the goal unchanged: the counter climbs...
+    for _ in range(REPLAN_INTERVAL - 1):
+        resolve_action(intent, belief, action_state)
+    assert action_state.ticks_since_plan == REPLAN_INTERVAL - 1
+    # ...and the next tick triggers a periodic re-plan (counter resets), with no goal change.
+    resolve_action(intent, belief, action_state)
+    assert action_state.ticks_since_plan == 0
+
+
+def test_escape_resumes_walking_after_the_teleport() -> None:
+    # Mid-route: cursor sits on the teleport target and the hop has dropped us next
+    # to it. We must advance past it and walk onward, not vent back to the entry.
+    goal = (190, 110)
+    intent = Intent(kind="escape", point=goal)
+    action_state = ActionState(
+        current_intent=intent,
+        route=[(90, 60), (110, 60), goal],  # entry anchor, exit anchor, goal
+        route_cursor=1,
+        route_goal=goal,
+        route_teleports={1: 0},
+    )
+    # Standing on the exit anchor (just teleported there).
+    belief = Belief(map=_detour_map_with_linking_vents(), self_world_x=110, self_world_y=60)
+    command = resolve_action(intent, belief, action_state)
+    assert action_state.route_cursor == 2  # advanced past the teleport target
+    assert not (command.held_mask & BTN_B)  # walking onward, not venting back
+
+
+def test_escape_walks_before_reaching_the_vent() -> None:
+    mask = np.ones((120, 200), dtype=bool)
+    mask[20:120, 98:102] = False
+    map_data = _detour_map_with_linking_vents()
+    nav = build_nav_graph(mask, map_data=map_data)
+
+    # Far from any vent: the first move is a walk toward the route, not a B press.
+    belief = Belief(map=map_data, nav=nav, self_world_x=10, self_world_y=110)
+    command = resolve_action(Intent(kind="escape", point=(190, 110)), belief, ActionState())
+    assert command.held_mask != 0 and not (command.held_mask & BTN_B)
+
+
 def test_encode_input_emits_header_and_masked_byte() -> None:
     assert encode_input(0) == bytes([INPUT_HEADER, 0x00])
     assert encode_input(BTN_UP | BTN_A) == bytes([INPUT_HEADER, 0x21])
     assert encode_input(BTN_DOWN | BTN_LEFT | BTN_RIGHT) == bytes([INPUT_HEADER, 0x0E])
+
+
+def test_encode_input_masks_reserved_bit_7() -> None:
+    # Bit 7 is reserved and must never reach the wire.
+    assert encode_input(0xFF) == bytes([INPUT_HEADER, 0x7F])
+
+
+def test_resolve_idle_holds_nothing() -> None:
+    action_state = ActionState(held_mask=BTN_UP)
+    command = resolve_action(Intent(kind="idle"), Belief(), action_state)
+    assert command.held_mask == 0
+    assert command.chat is None
+    assert action_state.held_mask == 0
+
+
+def test_navigate_presses_dpad_toward_target() -> None:
+    belief = Belief(self_world_x=0, self_world_y=0)
+    command = resolve_action(Intent(kind="navigate_to", point=(100, 0)), belief, ActionState())
+    assert command.held_mask == BTN_RIGHT
+
+    belief = Belief(self_world_x=0, self_world_y=0)
+    command = resolve_action(Intent(kind="navigate_to", point=(0, 100)), belief, ActionState())
+    assert command.held_mask == BTN_DOWN
+
+
+def test_navigate_releases_within_arrive_deadband() -> None:
+    belief = Belief(self_world_x=0, self_world_y=0)
+    command = resolve_action(Intent(kind="navigate_to", point=(3, 0)), belief, ActionState())
+    assert command.held_mask == 0
 
 
 def test_navigate_predictive_stop_coasts_when_close_and_moving() -> None:
@@ -74,6 +155,11 @@ def test_navigate_predictive_stop_coasts_when_close_and_moving() -> None:
     action_state.last_self_x, action_state.last_self_y = -5, 0
     command = resolve_action(intent, belief, action_state)
     # Remaining 5px is within ~1.3*5 stopping distance, so release and coast.
+    assert command.held_mask == 0
+
+
+def test_navigate_without_self_position_holds_still() -> None:
+    command = resolve_action(Intent(kind="navigate_to", point=(100, 0)), Belief(), ActionState())
     assert command.held_mask == 0
 
 
@@ -88,6 +174,15 @@ def test_navigate_holds_still_when_nav_route_unreachable() -> None:
     assert command.held_mask == 0
 
 
+def test_intent_change_resets_the_route() -> None:
+    belief = Belief(self_world_x=0, self_world_y=0)
+    action_state = ActionState()
+    resolve_action(Intent(kind="navigate_to", point=(100, 0)), belief, action_state)
+    assert action_state.route_goal == (100, 0)
+    resolve_action(Intent(kind="navigate_to", point=(0, 100)), belief, action_state)
+    assert action_state.route_goal == (0, 100)
+
+
 def test_complete_task_holds_a_inside_rect_and_navigates_outside() -> None:
     belief_inside = Belief(map=_one_task_map(), self_world_x=105, self_world_y=105)
     command = resolve_action(Intent(kind="complete_task", task_index=0), belief_inside, ActionState())
@@ -96,6 +191,13 @@ def test_complete_task_holds_a_inside_rect_and_navigates_outside() -> None:
     belief_outside = Belief(map=_one_task_map(), self_world_x=0, self_world_y=0)
     command = resolve_action(Intent(kind="complete_task", task_index=0), belief_outside, ActionState())
     assert command.held_mask == BTN_RIGHT | BTN_DOWN  # drive toward center (110, 110)
+
+
+def test_encode_chat_wire_format() -> None:
+    assert encode_chat("hi") == bytes([CHAT_HEADER, 0x02, 0x00]) + b"hi"
+    # Non-ASCII is dropped; length is the ASCII byte count.
+    packet = encode_chat("héllo")
+    assert packet == bytes([CHAT_HEADER, 0x04, 0x00]) + b"hllo"
 
 
 def _belief_with_body(self_xy: tuple[int, int], body_xy: tuple[int, int]) -> Belief:
@@ -114,6 +216,12 @@ def test_report_in_range_edge_presses_a_refiring_requires_release() -> None:
     assert resolve_action(intent, belief, action_state).held_mask == BTN_A  # fresh press
     assert resolve_action(intent, belief, action_state).held_mask == 0  # release to reset edge
     assert resolve_action(intent, belief, action_state).held_mask == BTN_A  # re-press
+
+
+def test_report_out_of_range_navigates_to_body() -> None:
+    belief = _belief_with_body((200, 200), (10, 10))
+    command = resolve_action(Intent(kind="report", target_id=2003), belief, ActionState())
+    assert command.held_mask == BTN_UP | BTN_LEFT  # toward (10, 10) from (200, 200)
 
 
 def test_vote_skip_steps_to_skip_then_confirms_once() -> None:
@@ -158,12 +266,34 @@ def test_targeted_vote_steps_to_the_target_then_confirms() -> None:
     assert resolve_action(intent, belief, action_state).held_mask == 0  # cast: no further input
 
 
+def test_targeted_vote_confirms_immediately_when_already_on_target() -> None:
+    belief = Belief()
+    belief.voting = _vote_grid()  # cursor already on slot 0 = red
+    command = resolve_action(Intent(kind="vote", target_color="red"), belief, ActionState())
+    assert command.held_mask == BTN_A
+
+
 def test_unresolvable_target_falls_back_to_skip() -> None:
     belief = Belief()
     # Target not among the live candidates (gone / grid not up) ⇒ skip instead.
     belief.voting = VotingState(skip_cursor_present=True, candidates=(VoteCandidate(slot=0, color="red", alive=True),))
     command = resolve_action(Intent(kind="vote", target_color="purple"), belief, ActionState())
     assert command.held_mask == BTN_A  # confirms the skip, not a spin
+
+
+def test_chat_emitted_once() -> None:
+    action_state = ActionState()
+    intent = Intent(kind="chat", text="gg")
+    first = resolve_action(intent, Belief(), action_state)
+    assert first.chat == "gg" and first.held_mask == 0
+    assert resolve_action(intent, Belief(), action_state).chat is None  # not resent
+
+
+def test_distinct_chat_intents_can_emit_after_an_intent_change() -> None:
+    action_state = ActionState()
+    assert resolve_action(Intent(kind="chat", text="first"), Belief(), action_state).chat == "first"
+    assert resolve_action(Intent(kind="idle"), Belief(), action_state).chat is None
+    assert resolve_action(Intent(kind="chat", text="second"), Belief(), action_state).chat == "second"
 
 
 def _map_with_button(x: int, y: int, w: int = 8, h: int = 8) -> MapData:
@@ -177,6 +307,12 @@ def test_call_meeting_presses_a_inside_the_button_rect() -> None:
     belief = Belief(self_world_x=100, self_world_y=100, map=_map_with_button(96, 96))  # self inside [96,104)
     command = resolve_action(Intent(kind="call_meeting"), belief, ActionState())
     assert command.held_mask == BTN_A  # standing on the button ⇒ a fresh A press calls a meeting
+
+
+def test_call_meeting_navigates_toward_the_button_when_away() -> None:
+    belief = Belief(self_world_x=100, self_world_y=100, map=_map_with_button(200, 96))  # button to our right
+    command = resolve_action(Intent(kind="call_meeting"), belief, ActionState())
+    assert command.held_mask == BTN_RIGHT  # no nav graph ⇒ steer straight at the button
 
 
 def _belief_with_target(self_xy: tuple[int, int], target_xy: tuple[int, int]) -> Belief:
