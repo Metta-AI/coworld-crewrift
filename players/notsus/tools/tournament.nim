@@ -33,6 +33,8 @@ const
   HeatRightLabelWidth = HeatLeftLabelWidth
   HeatTopLabelHeight = 130
   HeatPadding = 12
+  HeatLowColor = [255, 255, 248]
+  HeatHighColor = [17, 17, 17]
   WinRatePlotWidth = 738
   WinRateLeftPadding = 80
   WinRateRightPadding = 80
@@ -122,6 +124,11 @@ type
     wins: int
     losses: int
     ties: int
+
+  HeatScale = object
+    found: bool
+    minValue: float
+    maxValue: float
 
   WinRatePoint = object
     id: string
@@ -2803,9 +2810,28 @@ proc computeHeat(games: openArray[Game]): Table[string, HeatStats] =
         stats.addHeatResult(entries[i].score - entries[j].score)
         result[key] = stats
 
-proc heatShade(rate: float): int =
-  ## Returns one gray shade for a heat-map win rate.
-  255 - int(rate * 255.0 + 0.5)
+proc heatRatio(value: float, scale: HeatScale): float =
+  ## Returns a normalized heat-map value within a local chart scale.
+  if not scale.found:
+    return 0.0
+  if scale.maxValue <= scale.minValue + ScoreEpsilon:
+    return 1.0
+  result = (value - scale.minValue) / (scale.maxValue - scale.minValue)
+  if result < 0.0:
+    result = 0.0
+  elif result > 1.0:
+    result = 1.0
+
+proc heatColor(value: float, scale: HeatScale): string =
+  ## Returns one locally scaled heat-map fill color.
+  let ratio = value.heatRatio(scale)
+  var colors: array[3, int]
+  for i in 0 ..< colors.len:
+    colors[i] = int(
+      HeatLowColor[i].float +
+        (HeatHighColor[i] - HeatLowColor[i]).float * ratio + 0.5
+    )
+  "rgb(" & $colors[0] & "," & $colors[1] & "," & $colors[2] & ")"
 
 proc heatTitle(row, column: HeatPolicy, stats: HeatStats): string =
   ## Returns the tooltip text for one heat-map cell.
@@ -2814,38 +2840,54 @@ proc heatTitle(row, column: HeatPolicy, stats: HeatStats): string =
     $stats.wins & "-" & $stats.losses & "-" & $stats.ties &
     ", " & text
 
-proc heatTextColor(rate: float): string =
+proc heatTextColor(ratio: float): string =
   ## Returns a readable text color for one heat-map tile.
-  if rate >= 0.25:
+  if ratio >= 0.55:
     "#fff"
   else:
     "#111"
 
-proc maxHeatGames(
+proc heatRateScale(
   heat: Table[string, HeatStats],
   rows: openArray[HeatPolicy]
-): int =
-  ## Returns the largest matchup count in a heat-map matrix.
+): HeatScale =
+  ## Returns the local min and max win rate for one heat-map matrix.
+  for row in rows:
+    for column in rows:
+      if row.id == column.id:
+        continue
+      let stats = heat.getOrDefault(heatKey(row.id, column.id))
+      if stats.heatGames() == 0:
+        continue
+      let rate = stats.heatRate()
+      if not result.found:
+        result = HeatScale(found: true, minValue: rate, maxValue: rate)
+      else:
+        result.minValue = min(result.minValue, rate)
+        result.maxValue = max(result.maxValue, rate)
+
+proc heatGameScale(
+  heat: Table[string, HeatStats],
+  rows: openArray[HeatPolicy]
+): HeatScale =
+  ## Returns the local min and max nonzero game count for a heat map.
   for row in rows:
     for column in rows:
       if row.id == column.id:
         continue
       let games = heat.getOrDefault(heatKey(row.id, column.id)).heatGames()
-      result = max(result, games)
+      if games == 0:
+        continue
+      let value = games.float
+      if not result.found:
+        result = HeatScale(found: true, minValue: value, maxValue: value)
+      else:
+        result.minValue = min(result.minValue, value)
+        result.maxValue = max(result.maxValue, value)
 
-proc heatCountShade(games, maxGames: int): int =
-  ## Returns one gray shade for a matchup-count heat-map tile.
-  if maxGames <= 0:
-    return 255
-  let rate = games.float / maxGames.float
-  255 - int(rate * 255.0 + 0.5)
-
-proc heatCountTextColor(games, maxGames: int): string =
+proc heatCountTextColor(games: int, scale: HeatScale): string =
   ## Returns a readable text color for one count heat-map tile.
-  if maxGames > 0 and games.float / maxGames.float >= 0.45:
-    "#fff"
-  else:
-    "#111"
+  games.float.heatRatio(scale).heatTextColor()
 
 proc heatCountTitle(row, column: HeatPolicy, games: int): string =
   ## Returns tooltip text for one matchup-count heat-map cell.
@@ -2860,6 +2902,7 @@ proc heatRectSvg(
   row: HeatPolicy,
   column: HeatPolicy,
   heat: Table[string, HeatStats],
+  scale: HeatScale,
   x,
   y: int
 ): string =
@@ -2872,27 +2915,25 @@ proc heatRectSvg(
     return
   let
     rate = stats.heatRate()
-    shade = rate.heatShade()
     percent = numberText(rate * 100.0, 0) & "%"
     textX = x + HeatCellSize div 2
     textY = y + HeatCellSize div 2 + 4
   result.add "<rect x=\"" & $x & "\" y=\"" & $y
   result.add "\" width=\"" & $HeatCellSize
   result.add "\" height=\"" & $HeatCellSize
-  result.add "\" fill=\"rgb(" & $shade & "," & $shade
-  result.add "," & $shade & ")\"><title>"
+  result.add "\" fill=\"" & rate.heatColor(scale) & "\"><title>"
   result.add heatTitle(row, column, stats).htmlEscape()
   result.add "</title></rect>\n"
   result.add "<text class=\"heat-rate\" x=\"" & $textX
-  result.add "\" y=\"" & $textY
-  result.add "\" text-anchor=\"middle\" fill=\"" & rate.heatTextColor()
+  result.add "\" y=\"" & $textY & "\" text-anchor=\"middle\" fill=\""
+  result.add rate.heatRatio(scale).heatTextColor()
   result.add "\">" & percent.htmlEscape() & "</text>\n"
 
 proc heatCountRectSvg(
   row: HeatPolicy,
   column: HeatPolicy,
   heat: Table[string, HeatStats],
-  maxGames: int,
+  scale: HeatScale,
   x,
   y: int
 ): string =
@@ -2901,21 +2942,24 @@ proc heatCountRectSvg(
     return
   let
     games = heat.getOrDefault(heatKey(row.id, column.id)).heatGames()
-    shade = heatCountShade(games, maxGames)
+    color =
+      if games == 0:
+        "rgb(255,255,255)"
+      else:
+        games.float.heatColor(scale)
     textX = x + HeatCellSize div 2
     textY = y + HeatCellSize div 2 + 4
   result.add "<rect x=\"" & $x & "\" y=\"" & $y
   result.add "\" width=\"" & $HeatCellSize
   result.add "\" height=\"" & $HeatCellSize
-  result.add "\" fill=\"rgb(" & $shade & "," & $shade
-  result.add "," & $shade & ")\"><title>"
+  result.add "\" fill=\"" & color & "\"><title>"
   result.add heatCountTitle(row, column, games).htmlEscape()
   result.add "</title></rect>\n"
   if games > 0:
     result.add "<text class=\"heat-rate\" x=\"" & $textX
     result.add "\" y=\"" & $textY
     result.add "\" text-anchor=\"middle\" fill=\""
-    result.add heatCountTextColor(games, maxGames)
+    result.add heatCountTextColor(games, scale)
     result.add "\">" & $games & "</text>\n"
 
 proc renderHeatMap(
@@ -2929,6 +2973,7 @@ proc renderHeatMap(
     labels = heatFamilyLabels(policies, games, includeMissing)
     scores = heatFamilyScoreStats(games)
     heatRows = heatPolicies(labels, scores)
+    scale = heat.heatRateScale(heatRows)
   if heatRows.len == 0:
     return "<p>No completed matchup data yet.</p>\n"
   let
@@ -2963,7 +3008,7 @@ proc renderHeatMap(
       let
         x = gridX + j * HeatCellSize
         y = gridY + i * HeatCellSize
-      result.add heatRectSvg(row, column, heat, x, y)
+      result.add heatRectSvg(row, column, heat, scale, x, y)
   result.add "</svg>\n</div>\n"
 
 proc renderHeatCountMap(
@@ -2977,7 +3022,7 @@ proc renderHeatCountMap(
     labels = heatFamilyLabels(policies, games, includeMissing)
     scores = heatFamilyScoreStats(games)
     heatRows = heatPolicies(labels, scores)
-    maxGames = heat.maxHeatGames(heatRows)
+    scale = heat.heatGameScale(heatRows)
   if heatRows.len == 0:
     return "<p>No completed matchup game-count data yet.</p>\n"
   let
@@ -3012,7 +3057,7 @@ proc renderHeatCountMap(
       let
         x = gridX + j * HeatCellSize
         y = gridY + i * HeatCellSize
-      result.add heatCountRectSvg(row, column, heat, maxGames, x, y)
+      result.add heatCountRectSvg(row, column, heat, scale, x, y)
   result.add "</svg>\n</div>\n"
 
 proc chartOutcome(resultText: string): ScoreChartOutcome =
