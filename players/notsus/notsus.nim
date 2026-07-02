@@ -7732,7 +7732,7 @@ proc fallbackVotingTarget(
       result.reason = "recent body-context sighting against " &
         bot.voteTargetName(result.target)
       return
-    if not bot.criticalCrewVote():
+    if not bot.urgentCrewVote() and not bot.criticalCrewVote():
       return
   result.target = bot.seenVotingTargetFrom(bot.lastSeenTicks)
   if result.target != VoteUnknown:
@@ -7856,6 +7856,14 @@ proc desiredVotingDecision(
   if bot.role == RoleCrewmate and
       urgent and
       listenedTicks >= VoteListenBaseTicks:
+    let direct = bot.bestLegalDirectVoteTarget()
+    if direct.found and direct.score >= EmergencyButtonStrongSusScore:
+      return (
+        direct.target,
+        "urgent crew vote, direct evidence against " &
+          bot.voteTargetName(direct.target),
+        false
+      )
     let effective = bot.bestLegalEffectiveVoteTarget()
     if effective.found and
         effective.score >= UrgentCrewEffectiveMinScore and
@@ -7871,6 +7879,13 @@ proc desiredVotingDecision(
         decision.reason.startsWith("top effective sus") and
         not bot.crewTopEffectiveVotePlausible(decision.target):
       if forced:
+        let fallback = bot.fallbackVotingTarget()
+        if fallback.found:
+          return (
+            fallback.target,
+            "blocked weak top effective, " & fallback.reason,
+            true
+          )
         return (
           bot.votePlayerCount,
           "weak top effective evidence, skipping",
@@ -7896,6 +7911,13 @@ proc desiredVotingDecision(
             effective.target,
             "blocked weak pile, top effective sus " &
               bot.voteTargetName(effective.target),
+            true
+          )
+        let fallback = bot.fallbackVotingTarget()
+        if fallback.found:
+          return (
+            fallback.target,
+            "blocked weak pile, " & fallback.reason,
             true
           )
         return (
