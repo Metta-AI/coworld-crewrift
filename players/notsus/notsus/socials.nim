@@ -268,11 +268,19 @@ proc socialQuestionMention(words: openArray[string], index: int): bool =
   let
     first = max(0, index - 5)
     last = min(words.len - 1, index + 5)
-  var hasQuestion = false
+  var
+    hasQuestion = false
+    hasRequest = false
+    hasInfo = false
   for i in first .. last:
     if words[i] in ["who", "where", "when", "what"]:
       hasQuestion = true
-      break
+    if words[i] in ["give", "list", "explain", "say"]:
+      hasRequest = true
+    if words[i] in ["route", "routes", "room", "rooms", "task", "tasks", "path"]:
+      hasInfo = true
+  if hasRequest and hasInfo:
+    return true
   if not hasQuestion:
     return false
   for i in first .. last:

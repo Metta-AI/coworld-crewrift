@@ -76,8 +76,8 @@ const
   FollowingCloseRadius = 16
   StalkerOverlapRadius = 16
   KillerEvidenceRadius = 64
-  BodyProximitySusWeight = 4
-  BodyProximityPlainMin = 24
+  BodyProximitySusWeight = 2
+  BodyProximityPlainMin = 56
   TimeTogetherRadius = 96
   TimeTogetherCreditTicks = sim.TargetFps
   TimeTogetherMaxScore = 90
@@ -520,6 +520,7 @@ type
     seenRoomHistory: array[PlayerColorCount, seq[string]]
     bedrockConfigLogged: bool
     lastMask: uint8
+    forceActionTap: bool
     lastThought: string
     pendingChat: string
     lastVotingChatSentTick: int
@@ -3569,11 +3570,10 @@ proc voteTargetCanBeSus(bot: Bot, target: int): bool =
     bot.voteSlots[target].alive
 
 proc directVoteSusScore(bot: Bot, colorIndex: int): int =
-  ## Returns direct private evidence that is not just body proximity.
+  ## Returns direct private evidence that is not body proximity.
   if colorIndex < 0 or colorIndex >= PlayerColorCount:
     return 0
-  bot.killerScores[colorIndex] * BodyProximitySusWeight +
-    bot.ventScores[colorIndex] +
+  bot.ventScores[colorIndex] +
     bot.stalkerScores[colorIndex] +
     bot.standingAroundScores[colorIndex]
 
@@ -4840,12 +4840,9 @@ proc emergencyEvidenceColor(bot: Bot): int =
       continue
     if bot.knownImposterColor(colorIndex):
       continue
-    if bot.killerScores[colorIndex] <= 0 and
-        bot.ventScores[colorIndex] <= 0:
+    if bot.ventScores[colorIndex] <= 0:
       continue
-    let score =
-      bot.killerScores[colorIndex] * BodyProximitySusWeight +
-        bot.ventScores[colorIndex]
+    let score = bot.ventScores[colorIndex]
     if score > bestScore:
       bestScore = score
       result = colorIndex
@@ -5806,11 +5803,15 @@ proc plainVotingEvidenceText(bot: Bot): string =
     "I saw these players following others:",
     bot.sanitizedScores(bot.stalkerScores)
   ))
-  addLine(plainEvidenceLine(
-    "I saw these players near a kill:",
-    bot.sanitizedScores(bot.killerScores),
-    BodyProximityPlainMin
-  ))
+  if bot.meetingCallKind == VoteCalledBody and
+      bot.meetingCallCallerColor == bot.selfColorIndex and
+      bot.lastBodyReportX != low(int) and
+      bot.lastBodyReportY != low(int):
+    addLine(plainEvidenceLine(
+      "I need routes from these players near my body report:",
+      bot.sanitizedScores(bot.killerScores),
+      BodyProximityPlainMin
+    ))
   addLine(plainEvidenceLine(
     "I saw these players doing tasks:",
     bot.sanitizedScores(bot.taskerScores)
@@ -6677,6 +6678,23 @@ proc fallbackSuspectLine(bot: Bot, colorIndex: int, reason: string): string =
     "Pressure on " & lowerName & ". I saw " & lowerName & " " &
       reason & "; explain."
 
+proc fallbackRouteProbeLine(bot: Bot, colorIndex: int): string =
+  ## Returns a varied route question for weak body-area evidence.
+  let name = playerColorLogName(colorIndex)
+  case bot.fallbackVariantIndex(6, colorIndex * 17 + 89)
+  of 0:
+    name & ", give your route before the report."
+  of 1:
+    name & ", who saw you before the body was called?"
+  of 2:
+    name & ", list rooms and tasks this round."
+  of 3:
+    name & ", explain your path before meeting."
+  of 4:
+    "Need " & name & "'s route before we vote."
+  else:
+    name & ", what rooms did you cross this round?"
+
 proc fallbackButtonQuestion(bot: Bot): string =
   ## Returns a varied fallback question for a button meeting.
   let caller = playerColorLogName(bot.meetingCallCallerColor)
@@ -6749,7 +6767,10 @@ proc fallbackVotingChatCandidates(bot: Bot): seq[string] =
   if target.found:
     let
       reason = bot.fallbackTargetReason(target.colorIndex)
-    result.add bot.fallbackSuspectLine(target.colorIndex, reason)
+    if reason == "near a body" and not bot.urgentCrewVote():
+      result.add bot.fallbackRouteProbeLine(target.colorIndex)
+    else:
+      result.add bot.fallbackSuspectLine(target.colorIndex, reason)
   if bot.externalChatAsksSelf() and selfInfo.len > 0 and
       bot.urgentCrewVote():
     result.add selfInfo
@@ -8036,9 +8057,10 @@ proc killChaseMask(bot: Bot, track: PlayerTrack): uint8 =
       (bot.frameTick div UnstuckPulseTicks) mod UnstuckMasks.len
     ]
 
-proc killTapMask(bot: Bot, moveMask: uint8): uint8 =
-  ## Returns movement plus an edge-triggered kill button tap.
-  moveMask or bot.actionTapMask()
+proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
+  ## Returns movement plus a forced kill button tap.
+  bot.forceActionTap = true
+  moveMask or ButtonA
 
 proc killCrewmateAction(
   bot: var Bot,
@@ -8539,6 +8561,7 @@ proc decideImposterMask(bot: var Bot): uint8 {.measure.} =
 
 proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   ## Updates perception and chooses the next input mask.
+  bot.forceActionTap = false
   bot.pollVotingLlm()
   let centerStart = getMonoTime()
   bot.updateLocation()
@@ -9572,12 +9595,18 @@ when not defined(italkalotLibrary):
           if not gui and profileShouldDump(bot.frameTick):
             finishProfileTrace()
           bot.lastMask = nextMask
-          if nextMask != lastMask:
+          if nextMask != lastMask or bot.forceActionTap:
             if gui:
-              ws.send(inputBlob(nextMask), BinaryMessage)
+              if bot.forceActionTap:
+                ws.send(actionTapBlob(nextMask), BinaryMessage)
+              else:
+                ws.send(inputBlob(nextMask), BinaryMessage)
             else:
               profileBlock "send input":
-                ws.send(inputBlob(nextMask), BinaryMessage)
+                if bot.forceActionTap:
+                  ws.send(actionTapBlob(nextMask), BinaryMessage)
+                else:
+                  ws.send(inputBlob(nextMask), BinaryMessage)
             lastMask = nextMask
           if bot.pendingChatReady():
             if gui:

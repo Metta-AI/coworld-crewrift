@@ -43,6 +43,8 @@ Rules:
 - If self_reported_body is true, say where the body was and who you sus.
 - If self_reported_body is false, do not invent a body location.
 - If someone else reported a body, ask who was near that body.
+- If someone was merely near a body someone else reported, ask for their route.
+  Do not call them sus from that alone.
 - If a meeting has no body, ask what happened unless you have direct kill,
   vent, or clear vote evidence.
 - In a no-body button meeting, ask why it was called.
@@ -67,6 +69,8 @@ Rules:
 - If you saw a dead player earlier, say where you saw them and when they left.
 - Only say someone was near a kill when private observations explicitly say
   that. If you only saw them earlier or nearby, say that softer fact and ask.
+- Treat body-area proximity as a question cue, not proof. It becomes a push only
+  when you reported the body yourself or also have kill, vent, or vote evidence.
 - Use private observations only to decide who sounds suspicious.
 - Prefer the strongest legal suspicion target over one isolated clue.
 - Do not call following suspicious when your broader read says they look safe.
@@ -84,8 +88,8 @@ Rules:
 - Do not accuse a button caller only for calling a button after many deaths.
 - Following alone is weak suspicion. If they also did tasks, say both facts.
 - Prefer voting strong kill, vent, body, or broad vote evidence over following.
-- When you have strong near-kill or near-body evidence, say the target clearly
-  before asking follow-up questions.
+- When you have strong kill or vent evidence, say the target clearly before
+  asking follow-up questions. Body proximity alone should ask for a route first.
 - If players near the danger accuse someone else, treat that as possible
   deflection until their route is explained.
 - Voted-against evidence means other players already suspect that target.

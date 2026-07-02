@@ -196,6 +196,10 @@ proc inputBlob*(mask: uint8): string =
   ## Builds one sprite player input packet.
   blobFromSpriteMask(mask)
 
+proc actionTapBlob*(mask: uint8): string =
+  ## Builds input packets that release and press the action button.
+  inputBlob(mask and not ButtonA) & inputBlob(mask)
+
 proc chatBlob*(text: string): string =
   ## Builds one sprite player chat packet.
   blobFromSpriteChat(text)

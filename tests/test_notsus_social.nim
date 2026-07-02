@@ -89,6 +89,13 @@ suite "notsus social reasoning":
     )
     check claims.len == 0
 
+  test "route probes before reports are not accusations":
+    let claims = parsePlainSocialClaims(
+      0,
+      "Green, give your route before the report. Blue, list rooms and tasks."
+    )
+    check claims.len == 0
+
   test "dead player context does not eat real target":
     let claims = parsePlainSocialClaims(
       2,
