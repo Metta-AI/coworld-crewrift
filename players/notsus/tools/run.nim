@@ -61,10 +61,10 @@ Options:
                              No bot means current checkout vs seven notsus:v1
                              players. One bot means current checkout vs seven
                              copies of that opponent.
-      --vs BOT               Direct versus mode. With no MY_BOT, uploads the
-                             current checkout. With MY_BOT, runs that policy.
-                             Half the games give MY_BOT fixed imposter roles
-                             in slots G-H; half give BOT fixed imposter roles.
+      --vs BOT               Direct versus mode. May be repeated. With no
+                             MY_BOT, uploads the current checkout. With MY_BOT,
+                             runs that policy. Games split evenly across every
+                             target and both fixed role sides.
   -n, --games N              Number of hosted eight-player games. Default: 10.
       --name NAME            Human run name.
       --out-dir PATH         Static report root.
@@ -168,7 +168,7 @@ type
     focusIndex: int
     slotRoles: seq[string]
     vsMode: bool
-    vsOpponent: BotRef
+    vsOpponents: seq[BotRef]
     pollMs: int
     waitSeconds: int
     downloadReplays: bool
@@ -247,6 +247,8 @@ type
 
   VersusSegment = object
     side: VersusSide
+    opponentIndex: int
+    opponent: BotRef
     label: string
     config: ToolConfig
     requestPath: string
@@ -724,6 +726,19 @@ proc rosterTitle(bots: openArray[BotRef]): string =
       result.add " vs "
     result.add botTitle(bot)
 
+proc versusTitle(bots: openArray[BotRef]): string =
+  ## Returns a display title for one or more versus targets.
+  if bots.len == 0:
+    return "versus"
+  result = botTitle(bots[0]) & " vs "
+  if bots.len == 1:
+    result.add "opponent"
+    return
+  for i in 1 ..< bots.len:
+    if i > 1:
+      result.add ", "
+    result.add botTitle(bots[i])
+
 proc splitLongOption(arg: string): tuple[key, value: string] =
   ## Splits a long option into name and inline value.
   let body = arg[2 .. ^1]
@@ -772,7 +787,7 @@ proc readConfig(): ToolConfig =
         )
       of "vs":
         result.vsMode = true
-        result.vsOpponent = resolveBot(
+        result.vsOpponents.add resolveBot(
           optionValue(params, i, name, pair.value)
         )
       of "bota", "bot-a", "botb", "bot-b":
@@ -860,8 +875,11 @@ proc readConfig(): ToolConfig =
   if result.vsMode:
     if result.requestId.len > 0:
       fail("--vs cannot be used with --request-id.")
-    if result.vsOpponent.isCurrentBot():
-      fail("--vs opponent cannot be the current checkout.")
+    if result.vsOpponents.len == 0:
+      fail("--vs requires at least one opponent.")
+    for opponent in result.vsOpponents:
+      if opponent.isCurrentBot():
+        fail("--vs opponent cannot be the current checkout.")
     if result.bots.len == 0:
       result.bots = @[currentBotRef()]
     elif result.bots.len > 1:
@@ -872,10 +890,15 @@ proc readConfig(): ToolConfig =
     else:
       result.uploadCurrent = false
       result.uploadCurrentIndex = -1
-    result.bots.add result.vsOpponent
+    for opponent in result.vsOpponents:
+      result.bots.add opponent
     result.focusIndex = 0
-    if result.games mod 2 != 0:
-      fail("--vs requires an even --games value.")
+    let divisor = result.vsOpponents.len * 2
+    if result.games mod divisor != 0:
+      fail(
+        "--vs with " & $result.vsOpponents.len &
+          " opponents requires --games divisible by " & $divisor & "."
+      )
     if result.games <= 0:
       fail("--games must be positive.")
     if result.pollMs <= 0:
@@ -887,8 +910,7 @@ proc readConfig(): ToolConfig =
     if not fileExists(result.tufteDir / "tufte.css"):
       fail("--tufte-dir is missing tufte.css: " & result.tufteDir)
     if result.name.len == 0:
-      result.name = botTitle(result.bots[0]) & " vs " &
-        botTitle(result.vsOpponent)
+      result.name = result.bots.versusTitle()
     return
 
   if result.bots.len == 0:
@@ -3937,13 +3959,18 @@ proc configForVersusRunMeta(
   result = base
   result.outDir = runRoot.parentDir()
   result.name = meta.strField("name")
-  result.bots = botsFromMeta(meta, 2)
+  result.bots = botsFromMeta(meta, meta.arrayField("bots").len)
   result.uploadCurrent = false
   result.games = meta.intField("games")
   result.focusIndex = meta.intField("focus_index", 0)
+  result.vsMode = true
+  result.vsOpponents.setLen(0)
+  if result.bots.len < 2:
+    fail("Stored versus run metadata must contain at least two bots.")
+  for i in 1 ..< result.bots.len:
+    result.vsOpponents.add result.bots[i]
   if result.name.len == 0:
-    result.name = botTitle(result.bots[0]) & " vs " &
-      botTitle(result.bots[1])
+    result.name = result.bots.versusTitle()
   if result.games <= 0:
     fail("Stored versus run metadata is missing games.")
 
@@ -3978,7 +4005,8 @@ proc printVersusStatus(segments: openArray[VersusSegment])
 
 proc printVersusTable(
   episodes: openArray[Episode],
-  bots: openArray[BotRef]
+  config: ToolConfig,
+  segments: openArray[VersusSegment]
 )
 
 proc repairVersusRun(
@@ -4011,7 +4039,7 @@ proc repairVersusRun(
     durationSeconds
   )
   printVersusStatus(segments)
-  printVersusTable(episodes, repairConfig.bots)
+  printVersusTable(episodes, repairConfig, segments)
   echo "Report: " & paths.root / "index.html"
 
 proc repairRun(config: ToolConfig, runPath: string) =
@@ -4156,13 +4184,16 @@ proc versusSideRoleText(side: VersusSide): string =
   of OpponentImposters:
     "crew"
 
-proc versusRequestFileName(side: VersusSide): string =
+proc versusRequestFileName(opponentIndex: int, side: VersusSide): string =
   ## Returns the request JSON filename for one versus half.
-  case side
-  of CandidateImposters:
-    "request-candidate-imposters.json"
-  of OpponentImposters:
-    "request-opponent-imposters.json"
+  let prefix = "request-vs-" & $opponentIndex & "-"
+  prefix & (
+    case side
+    of CandidateImposters:
+      "candidate-imposters.json"
+    of OpponentImposters:
+      "opponent-imposters.json"
+  )
 
 proc versusRoster(
   candidate,
@@ -4224,30 +4255,34 @@ proc versusSegmentConfig(
   result.vsMode = false
 
 proc versusSegments(config: ToolConfig, paths: RunPaths): seq[VersusSegment] =
-  ## Builds both versus request segments.
+  ## Builds every versus request segment.
+  if config.bots.len < 2:
+    return
   let
     candidate = config.bots[0]
-    opponent = config.bots[1]
-    halfGames = config.games div 2
-  for side in [CandidateImposters, OpponentImposters]:
-    let offset =
-      if side == CandidateImposters:
-        0
-      else:
-        halfGames
-    result.add VersusSegment(
-      side: side,
-      label: side.versusSideText(),
-      config: versusSegmentConfig(
-        config,
-        candidate,
-        opponent,
-        side,
-        halfGames
-      ),
-      requestPath: paths.root / side.versusRequestFileName(),
-      gameOffset: offset
-    )
+    opponentCount = config.bots.len - 1
+    halfGames = config.games div (opponentCount * 2)
+  var offset = 0
+  for opponentIndex in 1 ..< config.bots.len:
+    let opponent = config.bots[opponentIndex]
+    for side in [CandidateImposters, OpponentImposters]:
+      let label = botTitle(opponent) & " " & side.versusSideText()
+      result.add VersusSegment(
+        side: side,
+        opponentIndex: opponentIndex,
+        opponent: opponent,
+        label: label,
+        config: versusSegmentConfig(
+          config,
+          candidate,
+          opponent,
+          side,
+          halfGames
+        ),
+        requestPath: paths.root / opponentIndex.versusRequestFileName(side),
+        gameOffset: offset
+      )
+      offset += halfGames
 
 proc offsetEpisodes(
   episodes: openArray[Episode],
@@ -4270,6 +4305,132 @@ proc episodesForSegment(
   for episode in episodes:
     if episode.index >= first and episode.index <= last:
       result.add episode
+
+proc segmentOpponentLabel(segment: VersusSegment): string =
+  ## Returns the display label for a segment opponent.
+  if segment.opponent.label.len > 0 or segment.opponent.policyId.len > 0:
+    return botTitle(segment.opponent)
+  "opponent"
+
+proc segmentCandidateScore(
+  episode: Episode,
+  segment: VersusSegment
+): tuple[found: bool, score: float] =
+  ## Returns the candidate score for one segment episode.
+  let groups = groupedBots(segment.config.bots)
+  episode.scoreForGroup(groups, segment.side.versusFocusIndex())
+
+proc segmentOpponentScore(
+  episode: Episode,
+  segment: VersusSegment
+): tuple[found: bool, score: float] =
+  ## Returns the opponent score for one segment episode.
+  let
+    groups = groupedBots(segment.config.bots)
+    focusIndex = segment.side.versusFocusIndex()
+    opponentIndex =
+      if focusIndex == 0:
+        1
+      else:
+        0
+  episode.scoreForGroup(groups, opponentIndex)
+
+proc segmentScores(
+  episode: Episode,
+  segment: VersusSegment
+): tuple[
+  candidate: tuple[found: bool, score: float],
+  opponent: tuple[found: bool, score: float]
+] =
+  ## Returns candidate and current-opponent scores for one segment row.
+  (
+    candidate: episode.segmentCandidateScore(segment),
+    opponent: episode.segmentOpponentScore(segment)
+  )
+
+proc addVersusOutcome(
+  summary: var Summary,
+  episode: Episode,
+  segment: VersusSegment
+) =
+  ## Adds one segment episode to aggregate versus scoring.
+  let scores = episode.segmentScores(segment)
+  if not scores.candidate.found or not scores.opponent.found:
+    return
+  let values = @[scores.candidate.score, scores.opponent.score]
+  case scores.candidate.score.recordOutcome(values)
+  of OutcomeWin:
+    inc summary.wins
+  of OutcomeLoss:
+    inc summary.losses
+  of OutcomeTie:
+    inc summary.ties
+  of OutcomeMissing:
+    return
+  summary.totalA += scores.candidate.score
+  summary.totalB += scores.opponent.score
+
+proc finishSummary(summary: var Summary) =
+  ## Finalizes average scores after record counters have been filled.
+  let scored = summary.scoredGames()
+  summary.margin = summary.totalA - summary.totalB
+  if scored > 0:
+    summary.avgA = summary.totalA / scored.float
+    summary.avgB = summary.totalB / scored.float
+    summary.avgMargin = summary.margin / scored.float
+
+proc versusSummaryFor(
+  episodes: openArray[Episode],
+  segments: openArray[VersusSegment]
+): Summary =
+  ## Summarizes aggregate versus rows from segment-local scores.
+  for segment in segments:
+    let segmentEpisodes = episodes.episodesForSegment(segment)
+    for episode in segmentEpisodes:
+      case episode.status
+      of "completed":
+        inc result.completed
+      of "failed":
+        inc result.failed
+      of "running":
+        inc result.running
+      else:
+        inc result.pending
+      if episode.excluded:
+        inc result.excluded
+        continue
+      result.addVersusOutcome(episode, segment)
+  result.finishSummary()
+
+proc versusFocusFor(
+  config: ToolConfig,
+  episodes: openArray[Episode],
+  segments: openArray[VersusSegment]
+): RunFocus =
+  ## Returns the aggregate focus summary for multi-target versus runs.
+  result = RunFocus(
+    found: true,
+    groupIndex: 0,
+    label:
+      if config.bots.len > 0:
+        botTitle(config.bots[0])
+      else:
+        "candidate",
+    abbr: "N",
+    opponentLabel:
+      if config.bots.len == 2:
+        botTitle(config.bots[1])
+      else:
+        "best opponent"
+  )
+  let summary = episodes.versusSummaryFor(segments)
+  result.scored = summary.scoredGames()
+  result.wins = summary.wins
+  result.losses = summary.losses
+  result.ties = summary.ties
+  result.avg = summary.avgA
+  result.opponentAvg = summary.avgB
+  result.avgMargin = summary.avgMargin
 
 proc requestsTerminal(segments: openArray[VersusSegment]): bool =
   ## Returns true when every versus request has reached a terminal state.
@@ -4334,6 +4495,13 @@ proc combinedVersusDetail(
   result["running_count"] = %running
   result["pending_count"] = %pending
 
+proc versusWinnerText(
+  candidate,
+  opponent: tuple[found: bool, score: float],
+  candidateLabel,
+  opponentLabel: string
+): string
+
 proc writeVersusMeta(
   config: ToolConfig,
   paths: RunPaths,
@@ -4344,16 +4512,79 @@ proc writeVersusMeta(
   durationSeconds = -1.0
 ) =
   ## Writes aggregate versus metadata for the run index.
-  let detail = combinedVersusDetail(segments, episodes)
-  var meta = runMetaJson(
-    config,
-    paths,
-    detail,
-    episodes,
-    runNo,
-    created,
-    durationSeconds
-  )
+  let
+    detail = combinedVersusDetail(segments, episodes)
+    summary = episodes.versusSummaryFor(segments)
+    scored = summary.scoredGames()
+  var meta = newJObject()
+  meta["run_number"] = %runNo
+  meta["name"] = %config.name
+  meta["slug"] = %extractFilename(paths.root)
+  meta["created_at"] = %created
+  if durationSeconds >= 0.0:
+    meta["duration_seconds"] = %durationSeconds
+    meta["duration"] = %durationText(durationSeconds)
+  meta["request_id"] = %detail.strField("id")
+  meta["status"] = %detail.strField("status")
+  if config.focusIndex >= 0:
+    meta["focus_index"] = %config.focusIndex
+  meta["games"] = %config.games
+  meta["completed"] = %summary.completed
+  meta["failed"] = %summary.failed
+  meta["running"] = %summary.running
+  meta["pending"] = %summary.pending
+  meta["excluded"] = %summary.excluded
+  meta["valid_games"] = %scored
+  meta["wins"] = %summary.wins
+  meta["losses"] = %summary.losses
+  meta["ties"] = %summary.ties
+  meta["win_rate"] = %winRate(summary.wins, scored)
+  meta["avg_a"] = %summary.avgA
+  meta["avg_b"] = %summary.avgB
+  meta["avg_margin"] = %summary.avgMargin
+  meta["bots"] = newJArray()
+  for bot in config.bots:
+    meta["bots"].add %*{
+      "input": bot.input,
+      "key": bot.key,
+      "label": bot.label,
+      "policy_id": bot.policyId
+    }
+  meta["episodes"] = newJArray()
+  for segment in segments:
+    let segmentEpisodes = episodes.episodesForSegment(segment)
+    for episode in segmentEpisodes:
+      let scores = episode.segmentScores(segment)
+      var row = %*{
+        "index": episode.index,
+        "id": episode.id,
+        "status": episode.status,
+        "episode_id": episode.episodeId,
+        "replay_url": episode.replayUrl,
+        "live_url": episode.liveUrl,
+        "error_type": episode.errorType,
+        "error": episode.error,
+        "excluded": episode.excluded,
+        "exclusion_reason": episode.exclusionReason,
+        "opponent_index": segment.opponentIndex,
+        "opponent_label": segment.segmentOpponentLabel(),
+        "side": segment.side.versusSideRoleText()
+      }
+      if not episode.excluded and scores.candidate.found and
+          scores.opponent.found:
+        row["scores"] = %[
+          scores.candidate.score,
+          scores.opponent.score
+        ]
+        row["winner"] = %versusWinnerText(
+          scores.candidate,
+          scores.opponent,
+          botTitle(config.bots[0]),
+          segment.segmentOpponentLabel()
+        )
+      else:
+        row["winner"] = %"-"
+      meta["episodes"].add row
   meta["mode"] = %"vs"
   meta["request_ids"] = newJArray()
   meta["requests"] = newJArray()
@@ -4365,6 +4596,9 @@ proc writeVersusMeta(
       "label": segment.label,
       "status": segment.detail.strField("status"),
       "games": segment.config.games,
+      "opponent_index": segment.opponentIndex,
+      "opponent_label": segment.segmentOpponentLabel(),
+      "side": segment.side.versusSideRoleText(),
       "game_offset": segment.gameOffset
     }
   writeFile(paths.meta, meta.pretty() & "\n")
@@ -4410,12 +4644,10 @@ proc renderVersusIndex(
 ) =
   ## Writes the aggregate versus report page.
   let
-    groups = groupedBots(config.bots)
-    focusIndex = config.configuredFocusIndex(groups)
-    focus = episodes.focusSummaryFor(groups, focusIndex)
-    summary = summaryFor(episodes, config.bots)
+    focus = config.versusFocusFor(episodes, segments)
+    summary = episodes.versusSummaryFor(segments)
     candidateLabel = botTitle(config.bots[0])
-    opponentLabel = botTitle(config.bots[1])
+    opponentLabel = focus.opponentLabel
     status = combinedStatus(segments)
   var html = pageStart(config.name, config.assetHref(1))
   html.add "<section>\n"
@@ -4440,18 +4672,20 @@ proc renderVersusIndex(
     html.add "<li>Run time: " & durationText(durationSeconds) & "</li>\n"
   html.add "</ul>\n"
   html.add "<table class=\"wide no-sort name-key\">\n"
-  html.add "<thead><tr><th>Request</th><th>Games</th>"
+  html.add "<thead><tr><th>Target</th><th>Request</th><th>Games</th>"
   html.add "<th>Status</th><th>Roster</th></tr></thead>\n"
   html.add "<tbody>\n"
   for segment in segments:
     let
       id = segment.detail.strField("id")
+      targetLabel = segment.segmentOpponentLabel()
       roster =
         if segment.side == CandidateImposters:
-          opponentLabel & " A-F, " & candidateLabel & " G-H"
+          targetLabel & " A-F, " & candidateLabel & " G-H"
         else:
-          candidateLabel & " A-F, " & opponentLabel & " G-H"
+          candidateLabel & " A-F, " & targetLabel & " G-H"
     html.add "<tr>"
+    html.add targetLabel.tableCell()
     html.add linkHtml(
       softmaxDetailUrl("experience-request", id),
       segment.side.versusSideRoleText()
@@ -4471,45 +4705,50 @@ proc renderVersusIndex(
   for segment in segments:
     let
       segmentEpisodes = episodes.episodesForSegment(segment)
-      segmentFocus = segmentEpisodes.focusSummaryFor(groups, focusIndex)
-      segmentSummary = segmentEpisodes.summaryFor(config.bots)
+      segmentSummary = segmentEpisodes.versusSummaryFor([segment])
     html.add "<tr>"
-    html.add segment.side.versusSideRoleText().tableCell()
+    html.add (
+      segment.segmentOpponentLabel() & " " &
+        segment.side.versusSideRoleText()
+    ).tableCell()
     html.add ($segmentEpisodes.len).tableCell(numeric = true)
-    html.add ($segmentFocus.scored).tableCell(numeric = true)
+    html.add ($segmentSummary.scoredGames()).tableCell(numeric = true)
     html.add ($segmentSummary.excluded).tableCell(numeric = true)
-    html.add numberText(segmentFocus.avg, 2).tableCell(numeric = true)
-    html.add numberText(segmentFocus.opponentAvg, 2).tableCell(numeric = true)
-    html.add numberText(segmentFocus.avgMargin, 2).tableCell(numeric = true)
+    html.add numberText(segmentSummary.avgA, 2).tableCell(numeric = true)
+    html.add numberText(segmentSummary.avgB, 2).tableCell(numeric = true)
+    html.add numberText(segmentSummary.avgMargin, 2).tableCell(numeric = true)
     html.add "</tr>\n"
   html.add "</tbody></table>\n"
   html.add "<table class=\"wide games-table\">\n"
-  html.add "<colgroup><col class=\"game-col\"><col class=\"side-col\">"
+  html.add "<colgroup><col class=\"game-col\"><col class=\"name-col\">"
+  html.add "<col class=\"side-col\">"
   html.add "<col class=\"score-col\"><col class=\"score-col\">"
   html.add "<col class=\"name-col\">"
   html.add "<col class=\"reason-col\"></colgroup>\n"
-  html.add "<thead><tr><th>Game</th><th>Side</th>"
+  html.add "<thead><tr><th>Game</th><th>Target</th><th>Side</th>"
   html.add "<th>" & candidateLabel.htmlEscape() & "</th>"
-  html.add "<th>" & opponentLabel.htmlEscape() & "</th>"
+  html.add "<th>Opponent</th>"
   html.add "<th>Winner</th><th>Note</th></tr></thead>\n<tbody>\n"
   for segment in segments:
     let segmentEpisodes = episodes.episodesForSegment(segment)
     for episode in segmentEpisodes:
       let
         gameIndex = episode.index
-        candidateScore = episode.scoreForGroup(groups, 0)
-        opponentScore = episode.scoreForGroup(groups, 1)
-        scores = @[candidateScore.score, opponentScore.score]
+        rowScores = episode.segmentScores(segment)
+        candidateScore = rowScores.candidate
+        opponentScore = rowScores.opponent
+        targetLabel = segment.segmentOpponentLabel()
+        scoreValues = @[candidateScore.score, opponentScore.score]
         candidateOutcome =
           if not episode.excluded and candidateScore.found and
             opponentScore.found:
-              candidateScore.score.recordOutcome(scores)
+              candidateScore.score.recordOutcome(scoreValues)
           else:
             OutcomeMissing
         opponentOutcome =
           if not episode.excluded and candidateScore.found and
             opponentScore.found:
-              opponentScore.score.recordOutcome(scores)
+              opponentScore.score.recordOutcome(scoreValues)
           else:
             OutcomeMissing
         candidateWon = candidateOutcome == OutcomeWin
@@ -4532,7 +4771,7 @@ proc renderVersusIndex(
               candidateScore,
               opponentScore,
               candidateLabel,
-              opponentLabel
+              targetLabel
             )
       html.add "<tr" & episode.gameRowClass() & ">"
       html.add clipHtmlCell(
@@ -4540,6 +4779,7 @@ proc renderVersusIndex(
         gameTitle,
         "game-cell"
       )
+      html.add targetLabel.tableCell()
       html.add segment.side.versusSideRoleText().tableCell()
       html.add candidateScore.versusScoreCell(candidateWon)
       html.add opponentScore.versusScoreCell(opponentWon)
@@ -4646,24 +4886,39 @@ proc pollVersusRequests(
 
 proc printVersusTable(
   episodes: openArray[Episode],
-  bots: openArray[BotRef]
+  config: ToolConfig,
+  segments: openArray[VersusSegment]
 ) =
   ## Prints the final command-line versus summary.
-  let groups = groupedBots(bots)
-  if groups.len < 2:
+  if config.bots.len < 2:
     return
   let
-    focus = episodes.focusSummaryFor(groups, 0)
-    summary = episodes.summaryFor(bots)
-  echo "versus " & botTitle(bots[0]) &
+    focus = config.versusFocusFor(episodes, segments)
+    summary = episodes.versusSummaryFor(segments)
+  echo "versus " & botTitle(config.bots[0]) &
     " wins=" & $focus.wins &
     " losses=" & $focus.losses &
     " ties=" & $focus.ties &
     " avg=" & numberText(focus.avg, 2) &
-    " vs " & botTitle(bots[1]) & "=" &
+    " vs " & focus.opponentLabel & "=" &
     numberText(focus.opponentAvg, 2) &
     " avg_margin=" & numberText(focus.avgMargin, 2) &
     " excluded=" & $summary.excluded
+  for opponentIndex in 1 ..< config.bots.len:
+    var targetSegments: seq[VersusSegment]
+    for segment in segments:
+      if segment.opponentIndex == opponentIndex:
+        targetSegments.add segment
+    if targetSegments.len == 0:
+      continue
+    let targetSummary = episodes.versusSummaryFor(targetSegments)
+    echo "  vs " & botTitle(config.bots[opponentIndex]) &
+      " wins=" & $targetSummary.wins &
+      " losses=" & $targetSummary.losses &
+      " ties=" & $targetSummary.ties &
+      " avg=" & numberText(targetSummary.avgA, 2) &
+      " opp=" & numberText(targetSummary.avgB, 2) &
+      " excluded=" & $targetSummary.excluded
 
 proc runVersus(initialConfig: ToolConfig) =
   ## Runs direct two-policy versus mode.
@@ -4675,12 +4930,10 @@ proc runVersus(initialConfig: ToolConfig) =
     let current = uploadCurrentPolicy(config)
     config.bots.replaceCurrentBots(current)
     if not config.nameSet:
-      config.name = botTitle(config.bots[0]) & " vs " &
-        botTitle(config.bots[1])
+      config.name = config.bots.versusTitle()
   ensureUserToken(config)
   if not config.nameSet:
-    config.name = botTitle(config.bots[0]) & " vs " &
-      botTitle(config.bots[1])
+    config.name = config.bots.versusTitle()
 
   let
     paths = pathsFor(config)
@@ -4711,7 +4964,7 @@ proc runVersus(initialConfig: ToolConfig) =
     created,
     durationSeconds
   )
-  printVersusTable(episodes, config.bots)
+  printVersusTable(episodes, config, segments)
   echo "duration=" & durationText(durationSeconds)
   echo ""
   echo "Report: " & paths.root / "index.html"
