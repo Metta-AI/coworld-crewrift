@@ -113,10 +113,12 @@ from commissioners.common.utils import (
 from game_results_loader import coerce_results_schema, has_results_schema_arrays
 from decision import (
     DECISION_LOG_TAG,
+    EXCLUDE_VOID_GAMES,
     SKILL_GATE_EVIDENCE_TYPE,
     SKILL_GATE_STAGE_ID,
     build_competition_report,
     count_competition_wins,
+    episode_is_void,
     evaluate_combined_game_with_interview,
 )
 from interview import (
@@ -891,6 +893,15 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         The configured filler policy ids this round are surfaced explicitly in the
         decision log, ``round_display["filler_policy_version_ids"]``, and the
         observability notes so they are always labeled as fillers and never counted.
+
+        VOID/DISCONNECTED games are also excluded: an episode in which every real
+        (non-filler) player seat scored 0 (nobody won) is treated as a disconnected
+        game and dropped from BOTH the win-rate numerator (wins) and denominator
+        (episodes played), so broken games never drag down players' win %. This is
+        on by default (``EXCLUDE_VOID_GAMES``; disable with
+        ``CREWRIFT_PRIME_COUNT_VOID_GAMES=1``) and, because it reduces the shared
+        ``episodes_played`` metadata that both publishing paths consume, it applies
+        identically to ``rank_division`` and this round-complete board.
         """
         rule = select_rule(self._config(), view.current_division, view.memberships)
         entries = view.entries(rule)
@@ -907,7 +918,18 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
 
         # Per episode: coerced game_results, the policy at each seat, and the seat
         # indices that are filler/duplicate top-up (excluded from scoring).
+        #
+        # VOID/DISCONNECTED games (see ``episode_is_void``) are dropped here so they
+        # count toward NEITHER the win-rate numerator (wins) NOR its denominator
+        # (episodes played): a disconnected episode in which every real player seat
+        # scored 0 was no real contest and must not drag down players' win %. This
+        # single filter feeds every downstream count (``episodes_with_seats`` and
+        # ``completed_counts``, which becomes ``episodes_played``), so BOTH the
+        # ``rank_division`` and ``_complete_competition_round`` publishing paths see
+        # the same reduced episode set and stay in lockstep. Filler seats never
+        # count, so an episode won only by fillers is still void for real players.
         games: list[tuple[dict, list[str], set[int]]] = []
+        void_games = 0
         for result in episode_results:
             if result.game_results is None:
                 continue
@@ -921,6 +943,13 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             filler_seats |= {
                 i for i, sp in enumerate(seat_policies) if sp in filler_policy_ids
             }
+            if EXCLUDE_VOID_GAMES:
+                player_seats = [
+                    i for i in range(len(seat_policies)) if i not in filler_seats
+                ]
+                if episode_is_void(game_results, player_seats):
+                    void_games += 1
+                    continue
             games.append((game_results, seat_policies, filler_seats))
 
         records = {}
@@ -1007,6 +1036,30 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             if filler_ids_sorted
             else "No filler policies were used this round."
         )
+        if EXCLUDE_VOID_GAMES and void_games:
+            _emit_decision_log(
+                {
+                    "round_id": str(round_start.round_id),
+                    "round_number": round_start.round_number,
+                    "division": "Competition",
+                    "decision": "VOID_GAMES_EXCLUDED",
+                    "void_games": void_games,
+                    "note": (
+                        "Disconnected/void games in which every real player seat scored 0 "
+                        "were EXCLUDED from both the win-rate numerator (wins) and denominator "
+                        "(episodes played)."
+                    ),
+                }
+            )
+        void_note = (
+            f"Excluded {void_games} void/disconnected game(s) (all player policies scored 0) "
+            "from both wins and episodes played."
+            if EXCLUDE_VOID_GAMES and void_games
+            else None
+        )
+        round_notes = [f"Scored {len(games)} completed game(s) this round.", filler_note]
+        if void_note:
+            round_notes.append(void_note)
         leaderboards, next_state = self._competition_win_leaderboards(
             incoming_state=round_start.state,
             division_id=view.current_division.id,
@@ -1031,7 +1084,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             observability=CommissionerRoundReport.model_validate(
                 build_competition_report(
                     breakdown,
-                    notes=[f"Scored {len(games)} completed game(s) this round.", filler_note],
+                    notes=round_notes,
                 )
             ),
         )
@@ -1177,7 +1230,9 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "this round (capped at 1 per episode, role-agnostic; filler seats "
                 f"never count). The leaderboard score is the player's WIN RATE = "
                 f"episodes won / episodes played over {window}, always between 0 and "
-                "1. The commissioner computes the ranking and the platform serves it."
+                "1. Void/disconnected games in which every player policy scored 0 are "
+                "not counted toward wins or episodes played. The commissioner computes "
+                "the ranking and the platform serves it."
             )
         return description
 

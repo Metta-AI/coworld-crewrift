@@ -182,7 +182,8 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
         "(capped at 1 per episode, role-agnostic; filler seats never count). The "
         "leaderboard ranks by win rate over the last 6 hours (episodes won / episodes "
         "played within the window), so players are graded on their current form rather "
-        "than stale results."
+        "than stale results. Void/disconnected games in which every player policy "
+        "scored 0 are not counted toward wins or episodes played."
     ),
 }
 
@@ -683,6 +684,9 @@ def evaluate_combined_game_with_interview(
 # the score past 1 per episode. The round score is the count of won episodes; the
 # leaderboard ranks by WIN RATE over the last 6 hours (episodes won / episodes
 # played within the window; see ``STANDINGS_WINDOW_HOURS`` in the commissioner).
+# VOID/DISCONNECTED episodes (every non-filler player seat scored 0) are dropped
+# by the commissioner BEFORE this scoring (see ``episode_is_void``), so they never
+# reach the win-rate numerator or denominator.
 # ============================================================================
 
 
@@ -739,6 +743,42 @@ class CompetitionWinRecord:
 
 def _seat_flag(arr: Any, seat: int) -> bool:
     return isinstance(arr, list) and 0 <= seat < len(arr) and bool(arr[seat])
+
+
+# --- void / disconnected game exclusion (2026-07-02) --------------------------
+# Many Competition episodes get disconnected mid-game; in those broken episodes
+# the game emits no winner and EVERY player policy scores 0. Such episodes are
+# not a real contest — nobody could have won — so counting them as "played" only
+# dilutes every player's win rate (episodes won / episodes played) through no
+# fault of their own. We therefore treat an episode in which NO participating
+# (non-filler) player seat won as VOID and drop it from BOTH the win-rate
+# numerator (wins) AND denominator (episodes played), consistent with how filler
+# seats are already excluded from scoring.
+#
+# The operational definition (per the league owner) is "all player policies
+# scored 0" — i.e. no non-filler seat has its per-slot ``win`` flag set. Filler
+# seats never count either way, so an episode in which only filler seats won is
+# still void for the real players. Enabled by default; set
+# ``CREWRIFT_PRIME_COUNT_VOID_GAMES=1`` (or true/yes/on) to revert to counting
+# all-zero games (e.g. to debug a scoring discrepancy).
+EXCLUDE_VOID_GAMES = os.getenv(
+    "CREWRIFT_PRIME_COUNT_VOID_GAMES", "0"
+).strip().lower() not in ("1", "true", "yes", "on")
+
+
+def episode_is_void(
+    game_results: dict[str, Any], player_seats: list[int] | set[int]
+) -> bool:
+    """True when an episode is a VOID/disconnected game: no player seat won.
+
+    ``player_seats`` are the non-filler seat indices held by real entrants in the
+    episode (fillers are excluded upstream). The episode is void iff NONE of those
+    seats has its per-slot ``win`` flag set — the "all player policies scored 0"
+    signal of a disconnected game. An episode with no real player seats at all is
+    also void (there was no real contest to count).
+    """
+    win = game_results.get("win")
+    return not any(_seat_flag(win, seat) for seat in player_seats)
 
 
 def count_competition_wins(
@@ -1031,7 +1071,8 @@ def build_competition_report(
         "Competition scores by WINS: one point per episode the entrant won this round "
         "(capped at 1 per episode, role-agnostic; filler seats never count). The "
         "leaderboard ranks by win rate over the last 6 hours (episodes won / episodes "
-        "played within the window)."
+        "played within the window). Void/disconnected games in which every player "
+        "policy scored 0 are not counted toward wins or episodes played."
     )
     return {
         "rule_id": "competition_wins",

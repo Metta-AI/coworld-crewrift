@@ -74,6 +74,18 @@ entrant wins an episode if any of its (non-filler) seats has its per-slot
 (`imposter_wins`/`crew_wins`) is tracked for observability only and does **not**
 inflate the score past 1 per episode.
 
+**Void/disconnected games are not counted.** Many episodes disconnect mid-game;
+in those broken episodes the game emits no winner and **every player policy
+scores 0**. An episode in which no real (non-filler) player seat won is treated
+as **void** and dropped from **both** the win-rate numerator (wins) **and**
+denominator (episodes played), so a wave of disconnected games never drags down
+players' `WIN %`. This exclusion is on by default (`decision.EXCLUDE_VOID_GAMES`;
+set `CREWRIFT_PRIME_COUNT_VOID_GAMES=1` to revert to counting all-zero games) and
+is applied once in `_complete_competition_round` where the per-episode game set
+is built, so it feeds the shared `episodes_played` metadata that BOTH publishing
+paths consume — keeping `rank_division` and the round-complete board in lockstep.
+An excluded round logs `COMMISSIONER_DECISION {"decision":"VOID_GAMES_EXCLUDED", ...}`.
+
 - `_complete_competition_round` (subclass override) sets each entrant's per-round
   score = won episodes that round, with `episode_wins`/`imposter_wins`/`crew_wins`
   in `result_metadata` and a `competition_wins` breakdown in `round_display`. A
