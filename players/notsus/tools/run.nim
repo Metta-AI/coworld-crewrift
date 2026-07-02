@@ -3721,56 +3721,56 @@ proc groupScoreVector(
       return
     result[i] = score.score
 
-proc replayGroupAverages(
+proc replayGroupWinScores(
   replayPath: string,
   groups: openArray[BotGroup]
-): seq[tuple[found: bool, score: float]] =
-  ## Returns per-group average replay scores from one replay.
-  result.setLen(groups.len)
+): seq[float] =
+  ## Returns binary group scores from explicit replay win flags.
   let players = replayPlayerResultsForPath(replayPath)
-  var slots: seq[SeatScore]
+  var slots: seq[tuple[found: bool, won: bool]]
   for player in players:
     if player.slot < 0:
       continue
+    if not player.hasResult:
+      continue
     while slots.len <= player.slot:
-      slots.add SeatScore()
-    slots[player.slot] = SeatScore(found: true, score: player.score.float)
+      slots.add (found: false, won: false)
+    slots[player.slot] = (found: true, won: player.won)
+
+  result.setLen(groups.len)
+  var
+    hasZero = false
+    hasOne = false
   for i, group in groups:
     var
-      total = 0.0
+      wins = 0
       count = 0
     for slot in group.slots:
       if slot >= 0 and slot < slots.len and slots[slot].found:
-        total += slots[slot].score
+        if slots[slot].won:
+          inc wins
         inc count
-    if count > 0:
-      result[i] = (found: true, score: total / count.float)
+    if count == 0:
+      result.setLen(0)
+      return
+    if wins == 0:
+      result[i] = 0.0
+      hasZero = true
+    elif wins == count:
+      result[i] = 1.0
+      hasOne = true
+    else:
+      result.setLen(0)
+      return
+  if not (hasZero and hasOne):
+    result.setLen(0)
 
 proc replayBinaryScores(
   replayPath: string,
   groups: openArray[BotGroup]
 ): seq[float] =
-  ## Returns binary scores recovered from replay group averages.
-  let averages = replayGroupAverages(replayPath, groups)
-  if averages.len == 0:
-    return
-  var best = -1.0e300
-  for average in averages:
-    if not average.found:
-      return
-    best = max(best, average.score)
-  var bestCount = 0
-  for average in averages:
-    if average.score.nearScore(best):
-      inc bestCount
-  if bestCount == averages.len:
-    return
-  result.setLen(averages.len)
-  for i, average in averages:
-    if average.score.nearScore(best):
-      result[i] = 1.0
-    else:
-      result[i] = 0.0
+  ## Returns binary scores recovered from explicit replay win flags.
+  replayGroupWinScores(replayPath, groups)
 
 proc setGroupScores(episode: var Episode, scores: openArray[float]) =
   ## Replaces episode scores with group-level scores.
