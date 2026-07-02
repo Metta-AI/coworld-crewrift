@@ -43,12 +43,20 @@ class RoundExecutionBackend(StrEnum):
     dispatch = "dispatch"
 
 
+class CommissionerChangelogEntry(BaseModel):
+    date: str
+    title: str
+    detail: str | None = None
+    category: str | None = None
+
+
 class DivisionCommissionerDescriptionPublic(BaseModel):
     round_schedule: str | None = None
     next_round: str | None = None
     round_structure: str | None = None
     leaderboard_rules: str | None = None
     scoring_mechanics: str | None = None
+    changelog: list[CommissionerChangelogEntry] = Field(default_factory=list)
 
 
 class LeaderboardRecentRoundPublic(BaseModel):

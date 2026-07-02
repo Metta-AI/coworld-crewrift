@@ -92,6 +92,7 @@ from commissioners.common.protocol import (
 )
 from commissioners.common.commissioners import register_commissioner
 from commissioners.common.models import (
+    CommissionerChangelogEntry,
     DivisionCommissionerDescriptionPublic,
     DivisionDescriptionContext,
     DivisionLeaderboardContext,
@@ -167,6 +168,57 @@ def _standings_window_hours() -> float:
 
 
 STANDINGS_WINDOW_HOURS = _standings_window_hours()
+
+# --- Commissioner changelog ---------------------------------------------------
+# The Prime commissioner is a black box to the platform: operators and players
+# can only learn HOW it works and WHAT changed if it tells them. It publishes
+# this list (newest first) on every division description; the Observatory renders
+# it verbatim in the League Overview. Add a new entry at the TOP whenever the
+# commissioner's observable behavior (scoring, scheduling, matchmaking,
+# eligibility, filler handling, void-game handling, ...) changes. Keep entries
+# player-legible: describe the behavior change, not the code.
+PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
+    CommissionerChangelogEntry(
+        date="2026-07-02",
+        category="scoring",
+        title="Standings grade recent form only",
+        detail=(
+            "Competition standings now rank players by their win rate over the last "
+            f"{STANDINGS_WINDOW_HOURS:g} hours of gameplay instead of all-time, so a "
+            "player is judged on how its current policy performs rather than stale wins."
+        ),
+    ),
+    CommissionerChangelogEntry(
+        date="2026-07-02",
+        category="scoring",
+        title="Void games no longer count",
+        detail=(
+            "Disconnected or void games in which every player policy scored 0 are "
+            "excluded from wins and episodes played, so an infrastructure failure can "
+            "no longer drag down a player's win rate."
+        ),
+    ),
+    CommissionerChangelogEntry(
+        date="2026-06-28",
+        category="matchmaking",
+        title="Filler seats excluded from scoring",
+        detail=(
+            "When the closed 8-seat roster is topped up with filler policies, those "
+            "seats — and any policy that only ever appears as filler — are excluded "
+            "from scoring and never represented as a real entrant."
+        ),
+    ),
+    CommissionerChangelogEntry(
+        date="2026-06-24",
+        category="eligibility",
+        title="Lowered skill-gate qualification thresholds",
+        detail=(
+            "Submission qualification thresholds were lowered so more submitted "
+            "policies clear the skill gate and reach the Competition division."
+        ),
+    ),
+]
+
 # ISO-8601 timestamp recorded on each per-round win-history row so the
 # round-complete publishing path can apply the SAME recency window as
 # ``rank_division`` (which reads the round snapshots' real timestamps). Rows
@@ -1328,6 +1380,9 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "not counted toward wins or episodes played. The commissioner computes "
                 "the ranking and the platform serves it."
             )
+        # Publish the commissioner changelog on every division so operators and
+        # players can see how the commissioner works and what functionality changed.
+        description.changelog = list(PRIME_COMMISSIONER_CHANGELOG)
         return description
 
     def rank_division(self, ctx: DivisionLeaderboardContext) -> list[DivisionLeaderboardSnapshot]:
