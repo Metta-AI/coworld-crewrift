@@ -81,8 +81,9 @@ Options:
                            Cached rounds are merged automatically.
       --rebuild            Refresh all cached report rounds in the scan window.
       --auto MINUTES       Rebuild repeatedly, starting every MINUTES minutes.
-      --with-replays       Download replay artifacts. Off by default.
-      --no-replays         Do not download replay artifacts.
+      --with-replays       Download replay artifacts for game pages.
+                           Off by default except score recovery.
+      --no-replays         Do not download replay artifacts or recover ties.
       --no-s3-sync         Do not publish the report to S3.
       --s3-bucket NAME     S3 bucket to sync. Extra objects are preserved.
                            Default: crewrift-prime-tournament.
@@ -221,6 +222,7 @@ type
     renderRound: string
     autoMinutes: int
     downloadReplays: bool
+    recoverReplayScores: bool
     syncS3: bool
     s3Bucket: string
     s3Prefix: string
@@ -260,6 +262,7 @@ proc defaultConfig(): ToolConfig =
     tufteDir: workspaceDir() / "offstream" / "tufte",
     roundLimit: DefaultRoundLimit,
     downloadReplays: false,
+    recoverReplayScores: true,
     syncS3: true,
     s3Bucket: DefaultS3Bucket,
     s3Prefix: DefaultS3Prefix,
@@ -351,8 +354,10 @@ proc parseConfig(): ToolConfig =
       )
     of "no-replays":
       result.downloadReplays = false
+      result.recoverReplayScores = false
     of "with-replays":
       result.downloadReplays = true
+      result.recoverReplayScores = true
     of "no-s3-sync":
       result.syncS3 = false
     of "s3-bucket":
@@ -1263,6 +1268,8 @@ proc noResultBinaryScores(scores: openArray[Score]): bool =
 
 proc replayPath(config: ToolConfig, game: Game): string
 
+proc downloadReplay(game: Game, path: string): string
+
 proc replayPolicyAverages(
   config: ToolConfig,
   game: Game
@@ -1320,11 +1327,37 @@ proc replayBinaryScores(
     else:
       result[score.policyId] = 0.0
 
-proc fillReplayScores(config: ToolConfig, games: var seq[Game]) =
+proc fillReplayScores(
+  config: ToolConfig,
+  games: var seq[Game],
+  freshIds: HashSet[string]
+) =
   ## Recovers no-signal binary tournament rows from replay score tables.
+  var
+    checked = 0
+    downloaded = 0
+    failed = 0
+    recoveredCount = 0
   for game in games.mitems:
     if game.status != "completed" or not game.scores.noResultBinaryScores():
       continue
+    let path = config.replayPath(game)
+    let canDownload =
+      config.recoverReplayScores and (
+        config.downloadReplays or freshIds.contains(game.id)
+      )
+    if not fileExists(path) and not canDownload:
+      continue
+    inc checked
+    echo "Recovering replay score ", checked, " for ", game.id.shortId()
+    if not fileExists(path) and canDownload:
+      let replayError = game.downloadReplay(path)
+      if replayError.len > 0:
+        inc failed
+        echo "Replay score recovery download skipped for ",
+          game.id.shortId(), ": ", replayError.shortCommandError()
+      elif fileExists(path):
+        inc downloaded
     try:
       let recovered = config.replayBinaryScores(game)
       if recovered.len == 0:
@@ -1332,9 +1365,13 @@ proc fillReplayScores(config: ToolConfig, games: var seq[Game]) =
       for score in game.scores.mitems:
         if recovered.hasKey(score.policyId):
           score.score = recovered[score.policyId]
+      inc recoveredCount
     except CatchableError as e:
       echo "Replay score recovery skipped for ", game.id.shortId(),
         ": ", e.msg.shortCommandError()
+  if checked > 0 or downloaded > 0 or failed > 0:
+    echo "Replay score recovery checked ", checked, " games, recovered ",
+      recoveredCount, ", downloaded ", downloaded, ", failed ", failed, "."
 
 proc stripVersionSuffix(label: string): string =
   ## Returns a display label without a trailing version suffix.
@@ -3868,8 +3905,11 @@ proc writeReport(
   let strategyDocs = readStrategyDocs()
   writeStrategyPage(config, strategyDocs)
   renderGamePages(config, games, freshGames)
+  var freshIds: HashSet[string]
+  for game in freshGames:
+    freshIds.incl game.id
   var scoredGames = @games
-  config.fillReplayScores(scoredGames)
+  config.fillReplayScores(scoredGames, freshIds)
   echo "Writing tournament metadata..."
   writeMetadata(config, scoredGames)
   echo "Computing tournament stats..."
