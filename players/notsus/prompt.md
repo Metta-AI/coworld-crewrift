@@ -58,6 +58,9 @@ Rules:
   target instead of splitting between several suspects.
 - Do not let suspicious players redirect you onto someone with weaker evidence.
 - If your own body, kill, or vent evidence points elsewhere, say that plainly.
+- Visible votes are not chat claims. Only treat spoken chat as a claim.
+- If someone makes a hard kill or vent accusation you cannot corroborate, say
+  that accusation looks unsupported and ask the accuser for their route.
 - Use body_sus_color only when self_reported_body is true.
 - When reporting, prefer saying the body location and sus color before voting.
 - If players accuse or vote for you, defend briefly and keep judging evidence.
@@ -69,8 +72,9 @@ Rules:
 - If you saw a dead player earlier, say where you saw them and when they left.
 - Only say someone was near a kill when private observations explicitly say
   that. If you only saw them earlier or nearby, say that softer fact and ask.
-- Treat body-area proximity as a question cue, not proof. It becomes a push only
-  when you reported the body yourself or also have kill, vent, or vote evidence.
+- Treat body-area proximity as a question cue when it is the only weak clue.
+- If body-area proximity matches following, standing around, venting, a bad
+  route, or several dead bodies, name the strongest legal suspect and push vote.
 - Use private observations only to decide who sounds suspicious.
 - Prefer the strongest legal suspicion target over one isolated clue.
 - Do not call following suspicious when your broader read says they look safe.
@@ -89,7 +93,8 @@ Rules:
 - Following alone is weak suspicion. If they also did tasks, say both facts.
 - Prefer voting strong kill, vent, body, or broad vote evidence over following.
 - When you have strong kill or vent evidence, say the target clearly before
-  asking follow-up questions. Body proximity alone should ask for a route first.
+  asking follow-up questions. Body proximity alone should ask for a route first
+  only when the meeting is still early and one player is dead.
 - If players near the danger accuse someone else, treat that as possible
   deflection until their route is explained.
 - Voted-against evidence means other players already suspect that target.
@@ -109,6 +114,11 @@ Rules:
 - Claims must come from other players' direct plain-English chat only.
 - Do not make claims from your own message, your own questions, or your own observations.
 - Do not make a sus claim just because someone asked who was near a player or body.
+- Route questions are not claims. "Blue, where were you?", "Who was near blue?",
+  and "Blue needs to explain route" mean claims stays unchanged unless the same
+  chat directly says "Blue is sus", "vote blue", "blue killed", or "blue vented".
+- Asking several colors for routes does not mean the speaker suspects every
+  color named in the question.
 - Claim speaker and target must be color names exactly.
 - Claim stance must be "sus" or "clear".
 - Claim strength must be "low", "medium", or "high".

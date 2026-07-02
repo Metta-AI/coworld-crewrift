@@ -64,7 +64,7 @@ proc testHeldRetap() =
   doAssert (pressedMask and ButtonA) == ButtonA
 
 proc testActionTapBlob() =
-  ## Tests that action tap packets retap a held action button.
+  ## Tests that action tap packets press and release the action button.
   var
     state = initPlayerViewerState()
     downMask = ButtonA
@@ -80,7 +80,7 @@ proc testActionTapBlob() =
     debugSprites
   )
 
-  doAssert downMask == (ButtonRight or ButtonA)
+  doAssert downMask == ButtonRight
   doAssert (pressedMask and ButtonA) == ButtonA
 
 proc testDebugSpritePackets() =

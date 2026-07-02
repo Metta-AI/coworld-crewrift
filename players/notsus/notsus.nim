@@ -97,6 +97,8 @@ const
   EscapeLoopArrivalRadius = 20
   EscapeLoopSearchRadius = 48
   EmergencyButtonCooldownPercent = 95
+  EmergencyButtonFollowingTicks = sim.TargetFps div 2
+  EmergencyButtonStalkerScore = StalkerMaxScore div 2
   ImposterHuntCooldownPercent = 70
   VoteDeadlineTicks = sim.VoteTimerTicks
   VoteListenBaseTicks = VoteDeadlineTicks div 4
@@ -118,7 +120,11 @@ const
   VoteCursorConfirmTicks = sim.TargetFps div 2
   VoteMoveAckTicks = sim.TargetFps div 2
   SusVoteMinScore = 75
+  CrewPileMinSusScore = 45
+  UrgentCrewEffectiveMinScore = CrewPileMinSusScore
   VotedAgainstSusWeight = 10
+  UnsupportedClaimSusScore = 60
+  UnsupportedClaimMaxScore = 120
   ReporterEarlyClearScore = 45
   ReporterMidClearScore = 15
   TaskerStationaryVelocity = 1
@@ -546,6 +552,7 @@ type
     killerScores: array[PlayerColorCount, int]
     taskerScores: array[PlayerColorCount, int]
     votedAgainstScores: array[PlayerColorCount, int]
+    unsupportedClaimScores: array[PlayerColorCount, int]
     timeTogetherScores: array[PlayerColorCount, int]
     standingAroundScores: array[PlayerColorCount, int]
     ventScores: array[PlayerColorCount, int]
@@ -2164,6 +2171,7 @@ proc resetRoundState(bot: var Bot) =
     bot.killerScores[i] = 0
     bot.taskerScores[i] = 0
     bot.votedAgainstScores[i] = 0
+    bot.unsupportedClaimScores[i] = 0
     bot.timeTogetherScores[i] = 0
     bot.standingAroundScores[i] = 0
     bot.ventScores[i] = 0
@@ -3570,12 +3578,15 @@ proc voteTargetCanBeSus(bot: Bot, target: int): bool =
     bot.voteSlots[target].alive
 
 proc directVoteSusScore(bot: Bot, colorIndex: int): int =
-  ## Returns direct private evidence that is not body proximity.
+  ## Returns private evidence strong enough to drive a direct vote.
   if colorIndex < 0 or colorIndex >= PlayerColorCount:
     return 0
-  bot.ventScores[colorIndex] +
+  result =
+    bot.ventScores[colorIndex] +
     bot.stalkerScores[colorIndex] +
     bot.standingAroundScores[colorIndex]
+  if bot.role == RoleCrewmate and bot.voting and bot.knownDeadVoteCount() > 0:
+    result += bot.killerScores[colorIndex] * BodyProximitySusWeight
 
 proc selfVotingDead(bot: Bot): bool =
   ## Returns true when the local player is known dead in voting.
@@ -4847,6 +4858,30 @@ proc emergencyEvidenceColor(bot: Bot): int =
       bestScore = score
       result = colorIndex
 
+proc emergencyRunawayColor(bot: Bot): int =
+  ## Returns a close late-round hunter worth calling a button for.
+  if bot.activeHunterColor < 0 or
+      bot.activeHunterColor >= PlayerColorCount:
+    return VoteUnknown
+  let colorIndex = bot.activeHunterColor
+  if colorIndex == bot.selfColorIndex or bot.knownImposterColor(colorIndex):
+    return VoteUnknown
+  let evasionActive =
+    (
+      bot.moveAwayUntilTick >= 0 and
+      bot.frameTick < bot.moveAwayUntilTick
+    ) or (
+      bot.runawayUntilTick >= 0 and
+      bot.frameTick < bot.runawayUntilTick
+    )
+  if not evasionActive:
+    return VoteUnknown
+  if bot.followingTicks[colorIndex] >= EmergencyButtonFollowingTicks:
+    return colorIndex
+  if bot.stalkerScores[colorIndex] >= EmergencyButtonStalkerScore:
+    return colorIndex
+  VoteUnknown
+
 proc emergencyButtonThreatColor(bot: Bot): int =
   ## Returns the current hunter that should trigger the button.
   if bot.role != RoleCrewmate or
@@ -4854,7 +4889,10 @@ proc emergencyButtonThreatColor(bot: Bot): int =
       bot.emergencyButtonUsed or
       not bot.cooldownPastPercent(EmergencyButtonCooldownPercent):
     return VoteUnknown
-  bot.emergencyEvidenceColor()
+  result = bot.emergencyEvidenceColor()
+  if result != VoteUnknown:
+    return
+  return bot.emergencyRunawayColor()
 
 proc callEmergencyButtonAction(
   bot: var Bot,
@@ -4872,9 +4910,14 @@ proc callEmergencyButtonAction(
   bot.clearPath()
   if result == ButtonA:
     bot.emergencyButtonUsed = true
+    let reason =
+      if colorIndex == bot.activeHunterColor:
+        "late close chase"
+      else:
+        "strong direct evidence"
     bot.logEvent(
       "notsus emergency button: calling because " &
-        playerColorName(colorIndex) & " has strong direct evidence"
+        playerColorName(colorIndex) & " has " & reason
     )
   bot.thought(bot.intent)
 
@@ -5633,6 +5676,25 @@ proc voteSummary(bot: Bot): string =
   if result.len == 0:
     result = "none"
 
+proc sanitizedVoteSummary(bot: Bot): string =
+  ## Returns parsed votes after hidden teammate sanitization.
+  for voterColor, choice in bot.voteChoices:
+    if choice == VoteUnknown:
+      continue
+    if bot.role == RoleImposter and bot.knownImposterColor(voterColor):
+      continue
+    if choice >= 0 and choice < bot.votePlayerCount:
+      let targetColor = bot.voteSlots[choice].colorIndex
+      if bot.role == RoleImposter and bot.knownImposterColor(targetColor):
+        continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(playerColorName(voterColor))
+    result.add("->")
+    result.add(bot.voteTargetName(choice))
+  if result.len == 0:
+    result = "none"
+
 proc compareEvidence(a, b: EvidenceEntry): int =
   ## Sorts evidence entries by score, then by color order.
   result = cmp(b.score, a.score)
@@ -5717,7 +5779,8 @@ proc susScores(bot: Bot): array[PlayerColorCount, int] =
         bot.standingAroundScores[colorIndex] +
         bot.ventScores[colorIndex] -
         bot.reporterClearScore(colorIndex) +
-        bot.votedAgainstScores[colorIndex] * VotedAgainstSusWeight
+        bot.votedAgainstScores[colorIndex] * VotedAgainstSusWeight +
+        bot.unsupportedClaimScores[colorIndex]
     else:
       result[colorIndex] =
         bot.stalkerScores[colorIndex] div 2 +
@@ -5727,7 +5790,8 @@ proc susScores(bot: Bot): array[PlayerColorCount, int] =
         bot.standingAroundScores[colorIndex] +
         bot.ventScores[colorIndex] -
         bot.reporterClearScore(colorIndex) +
-        bot.votedAgainstScores[colorIndex] * VotedAgainstSusWeight
+        bot.votedAgainstScores[colorIndex] * VotedAgainstSusWeight +
+        bot.unsupportedClaimScores[colorIndex]
 
 proc sanitizedScores(
   bot: Bot,
@@ -5767,6 +5831,10 @@ proc votingEvidenceText(bot: Bot): string =
   addLine(evidenceSummary(
     "voted against",
     bot.sanitizedScores(bot.votedAgainstScores)
+  ))
+  addLine(evidenceSummary(
+    "unsupported claims",
+    bot.sanitizedScores(bot.unsupportedClaimScores)
   ))
   addLine(evidenceSummary("sus", bot.sanitizedSusScores(), SusVoteMinScore))
 
@@ -5835,6 +5903,10 @@ proc plainVotingEvidenceText(bot: Bot): string =
   addLine(plainEvidenceLine(
     "Other players are pushing these players:",
     bot.sanitizedScores(bot.votedAgainstScores)
+  ))
+  addLine(plainEvidenceLine(
+    "These players made strong claims I could not corroborate:",
+    bot.sanitizedScores(bot.unsupportedClaimScores)
   ))
 
 proc printVotingEvidence(bot: var Bot) =
@@ -6054,6 +6126,23 @@ proc bestLegalEffectiveScore(bot: Bot): int =
       continue
     result = max(result, scores[colorIndex])
 
+proc bestLegalEffectiveVoteTarget(
+  bot: Bot
+): tuple[found: bool, target: int, score: int] =
+  ## Returns the strongest legal target from effective sus evidence.
+  let scores = bot.effectiveSusScores()
+  result.target = VoteUnknown
+  result.score = low(int)
+  for target in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetSafeForRole(target):
+      continue
+    let colorIndex = bot.voteSlots[target].colorIndex
+    if colorIndex < 0 or colorIndex >= scores.len:
+      continue
+    let score = scores[colorIndex]
+    if not result.found or score > result.score:
+      result = (true, target, score)
+
 proc targetDirectVoteSusScore(bot: Bot, target: int): int =
   ## Returns direct sus evidence for one legal voting target.
   if not bot.voteTargetSafeForRole(target):
@@ -6093,9 +6182,19 @@ proc socialClaimTargetPlausible(bot: Bot, target: int): bool =
 
 proc votePileTargetPlausible(bot: Bot, target: int): bool =
   ## Returns true when a vote pile does not contradict direct evidence.
+  if target < 0 or target >= bot.votePlayerCount:
+    return false
   let
     targetDirect = bot.targetDirectVoteSusScore(target)
     bestDirect = bot.bestLegalDirectVoteTarget()
+  if bot.role == RoleCrewmate:
+    let targetColor = bot.voteSlots[target].colorIndex
+    if targetColor < 0 or targetColor >= PlayerColorCount:
+      return false
+    let scores = bot.effectiveSusScores()
+    if targetDirect < SusVoteMinScore and
+        scores[targetColor] < CrewPileMinSusScore:
+      return false
   if not bestDirect.found or bestDirect.score < SusVoteMinScore:
     return true
   if target == bestDirect.target:
@@ -6106,6 +6205,22 @@ proc votePileTargetPlausible(bot: Bot, target: int): bool =
       targetDirect + SusVoteMinScore < bestDirect.score:
     return false
   true
+
+proc socialSpeakerPlausible(bot: Bot, speakerSlot: int): bool =
+  ## Returns true when one accuser is not privately suspicious.
+  if speakerSlot < 0 or speakerSlot >= bot.votePlayerCount:
+    return false
+  let speakerColor = bot.voteSlots[speakerSlot].colorIndex
+  if bot.role == RoleImposter and bot.knownImposterColor(speakerColor):
+    return false
+  if speakerColor == bot.selfColorIndex:
+    return true
+  if not bot.voteSlots[speakerSlot].alive:
+    return false
+  let scores = bot.susScores()
+  if speakerColor < 0 or speakerColor >= scores.len:
+    return false
+  scores[speakerColor] < SusVoteMinScore
 
 proc socialSusClaimCountFor(bot: Bot, target: int): int =
   ## Counts living players who accuse one legal vote target in chat.
@@ -6123,6 +6238,8 @@ proc socialSusClaimCountFor(bot: Bot, target: int): int =
     if speakerSlot < 0 or
         speakerSlot >= bot.votePlayerCount or
         not bot.voteSlots[speakerSlot].alive:
+      continue
+    if not bot.socialSpeakerPlausible(speakerSlot):
       continue
     if bot.socialGraph[speakerColor][targetColor] > 0:
       inc result
@@ -6163,6 +6280,8 @@ proc socialGraphJson(bot: Bot): JsonNode =
   ## Builds plain social graph edges for the LLM.
   result = newJArray()
   for speaker in 0 ..< bot.socialGraph.len:
+    if bot.role == RoleImposter and bot.knownImposterColor(speaker):
+      continue
     for target in 0 ..< bot.socialGraph[speaker].len:
       if bot.role == RoleImposter and bot.knownImposterColor(target):
         continue
@@ -6184,14 +6303,95 @@ proc hasConcreteKillOrVentClaim(text: string): bool =
   for word in text.normalizeSocialText().splitWhitespace():
     if word in [
       "kill", "kills", "killed", "killer",
-      "murder", "murdered", "vented"
+      "murder", "murdered", "vent", "vents", "vented"
     ]:
       return true
+
+proc hasVoteOnlyClaim(text: string): bool =
+  ## Returns true when a claim only restates a visible vote.
+  var hasVote = false
+  for word in text.normalizeSocialText().splitWhitespace():
+    if word in ["vote", "votes", "voted", "voting"]:
+      hasVote = true
+    elif word in [
+      "body", "bodies", "kill", "kills", "killed", "killer",
+      "vent", "vents", "vented", "follow", "follows", "followed",
+      "following", "standing", "task", "tasks", "route", "rooms"
+    ]:
+      return false
+  hasVote
+
+proc hasQuestionProbeClaim(text: string): bool =
+  ## Returns true when a claim is only a route or body question.
+  if text.hasConcreteKillOrVentClaim():
+    return false
+  var asks = false
+  for word in text.normalizeSocialText().splitWhitespace():
+    if word in [
+      "ask", "asks", "asked", "asking", "question", "questions",
+      "where", "route", "routes", "explain", "who", "closest"
+    ]:
+      asks = true
+    elif word in [
+      "follow", "follows", "followed", "following",
+      "standing", "lurking", "taskless"
+    ]:
+      return false
+  asks
+
+proc unsupportedConcreteClaim(bot: Bot, claim: SocialClaim): bool =
+  ## Returns true when a strong accusation lacks private corroboration.
+  if bot.role != RoleCrewmate:
+    return false
+  if claim.stance != SocialSus:
+    return false
+  if claim.speaker == bot.selfColorIndex:
+    return false
+  if not claim.reason.hasConcreteKillOrVentClaim():
+    return false
+  if claim.target < 0 or claim.target >= PlayerColorCount:
+    return false
+  bot.directVoteSusScore(claim.target) < SusVoteMinScore
+
+proc addUnsupportedClaimScore(bot: var Bot, colorIndex: int) =
+  ## Adds suspicion to a player making an unsupported hard claim.
+  if colorIndex < 0 or colorIndex >= bot.unsupportedClaimScores.len:
+    return
+  bot.unsupportedClaimScores[colorIndex] = min(
+    UnsupportedClaimMaxScore,
+    bot.unsupportedClaimScores[colorIndex] + UnsupportedClaimSusScore
+  )
 
 proc rememberSocialClaim(bot: var Bot, claim: SocialClaim): bool =
   ## Stores one new social graph claim if it has not been seen.
   if claim.speaker == bot.selfColorIndex:
     return false
+  let key = claim.socialClaimKey()
+  if key in bot.socialClaimKeys:
+    return false
+  if claim.stance == SocialSus and claim.reason.hasVoteOnlyClaim():
+    bot.logEvent(
+      "notsus social claim ignored: vote-only " &
+        playerColorName(claim.speaker) & " -> " &
+        playerColorName(claim.target)
+    )
+    return false
+  if claim.stance == SocialSus and claim.reason.hasQuestionProbeClaim():
+    bot.logEvent(
+      "notsus social claim ignored: question-probe " &
+        playerColorName(claim.speaker) & " -> " &
+        playerColorName(claim.target)
+    )
+    return false
+  if bot.unsupportedConcreteClaim(claim):
+    bot.socialClaimKeys.add key
+    bot.addUnsupportedClaimScore(claim.speaker)
+    bot.logEvent(
+      "notsus social claim reflected: unsupported hard claim " &
+        playerColorName(claim.speaker) & " -> " &
+        playerColorName(claim.target)
+    )
+    return true
   if bot.meetingCallKind == VoteCalledBody and
       claim.stance == SocialSus and
       claim.target == bot.meetingCallCallerColor and
@@ -6201,9 +6401,6 @@ proc rememberSocialClaim(bot: var Bot, claim: SocialClaim): bool =
         playerColorName(claim.speaker) & " -> " &
         playerColorName(claim.target)
     )
-    return false
-  let key = claim.socialClaimKey()
-  if key in bot.socialClaimKeys:
     return false
   bot.socialClaimKeys.add key
   bot.socialGraph.applySocialClaim(claim)
@@ -6235,11 +6432,46 @@ proc chatLinesJson(lines: openArray[VoteChatLine]): JsonNode =
     item["text"] = %line.text
     result.add item
 
+proc votingChatLinesJson(bot: Bot): JsonNode =
+  ## Builds JSON for voting chat after hidden teammate sanitization.
+  result = newJArray()
+  for line in bot.voteChatLines:
+    if bot.role == RoleImposter and bot.knownImposterColor(line.speakerColor):
+      continue
+    var item = newJObject()
+    item["speaker"] = %playerColorName(line.speakerColor)
+    item["text"] = %line.text
+    result.add item
+
+proc sanitizedVotingChatText(bot: Bot): string =
+  ## Returns visible chat text after hidden teammate sanitization.
+  for line in bot.voteChatLines:
+    if bot.role == RoleImposter and bot.knownImposterColor(line.speakerColor):
+      continue
+    if result.len > 0:
+      result.add(' ')
+    result.add(line.text)
+
+proc mentionsKnownTeammate(bot: Bot, text: string): bool =
+  ## Returns true when text names a hidden imposter teammate.
+  if bot.role != RoleImposter:
+    return false
+  let normalized = text.normalizeSocialText()
+  for colorIndex in 0 ..< PlayerColorCount:
+    if not bot.knownImposterColor(colorIndex):
+      continue
+    let colorName = playerColorName(colorIndex)
+    for word in normalized.splitWhitespace():
+      if word == colorName:
+        return true
+
 proc playersJson(bot: Bot): JsonNode =
   ## Builds JSON for current voting slots.
   result = newJArray()
   for i in 0 ..< bot.votePlayerCount:
     let colorIndex = bot.voteSlots[i].colorIndex
+    if bot.role == RoleImposter and bot.knownImposterColor(colorIndex):
+      continue
     var item = newJObject()
     item["slot"] = %i
     item["color"] = %playerColorName(colorIndex)
@@ -6275,6 +6507,8 @@ proc seenRoomHistoryJson(bot: Bot): JsonNode =
   ## Builds JSON for rooms where this bot saw each player.
   result = newJObject()
   for colorIndex, rooms in bot.seenRoomHistory:
+    if bot.role == RoleImposter and bot.knownImposterColor(colorIndex):
+      continue
     if rooms.len == 0:
       continue
     result[playerColorName(colorIndex)] = stringListJson(rooms)
@@ -6325,10 +6559,15 @@ proc votingObservationJson(bot: Bot): JsonNode =
   if bot.role != RoleImposter:
     result["known_imposters"] = bot.knownImpostersJson()
   result["players"] = bot.playersJson()
-  result["visible_votes"] = %bot.voteSummary()
-  result["chat_lines"] = chatLinesJson(bot.voteChatLines)
-  result["current_chat_text"] = %bot.voteChatText
-  result["previous_chat_text"] = %bot.voteLlmPreviousChatText
+  result["visible_votes"] = %bot.sanitizedVoteSummary()
+  result["chat_lines"] = bot.votingChatLinesJson()
+  result["current_chat_text"] = %bot.sanitizedVotingChatText()
+  let previousChat =
+    if bot.mentionsKnownTeammate(bot.voteLlmPreviousChatText):
+      ""
+    else:
+      bot.voteLlmPreviousChatText
+  result["previous_chat_text"] = %previousChat
   result["private_observations"] = %bot.plainVotingEvidenceText()
   result["pending_chat"] = %bot.pendingChat
   result["social_graph"] = bot.socialGraphJson()
@@ -6998,6 +7237,21 @@ proc finishVotingLlm(
         "notsus voting llm duplicate chat suppressed: " & message
       )
       return true
+    if bot.mentionsKnownTeammate(message):
+      bot.logEvent(
+        "notsus voting llm sanitized teammate chat: " & message
+      )
+      if bot.queueFallbackVotingChat("teammate chat sanitized", false):
+        bot.voteLlmWaiting = true
+      else:
+        bot.voteLlmAction = VoteLlmAction(
+          kind: VoteLlmFallback,
+          targetColor: VoteUnknown,
+          reason: "teammate chat suppressed"
+        )
+        bot.pendingChat = ""
+        bot.voteLlmWaiting = false
+      return true
     bot.voteLlmAction = VoteLlmAction(
       kind: VoteLlmSay,
       targetColor: VoteUnknown,
@@ -7184,8 +7438,10 @@ proc shouldSwitchCrewVote(
     nextPile = bot.visibleVoteCountFor(nextVote)
     isPile = reason.startsWith("joining social vote pile")
   if ownVote == VoteSkip:
-    return nextPile >= SocialCrewBrigadeVotes or
-      nextDirect >= SusVoteMinScore
+    if isPile:
+      return nextPile >= SocialCrewBrigadeVotes and
+        bot.votePileTargetPlausible(nextVote)
+    return nextDirect >= SusVoteMinScore
   if nextDirect >= EmergencyButtonStrongSusScore and
       nextDirect >= ownDirect:
     return true
@@ -7401,8 +7657,19 @@ proc desiredVotingDecision(
       socialTarget.target,
       "joining plausible social claims against " &
       bot.voteTargetName(socialTarget.target),
-      false
-    )
+        false
+      )
+  if bot.role == RoleCrewmate and
+      urgent and
+      listenedTicks >= VoteListenBaseTicks:
+    let effective = bot.bestLegalEffectiveVoteTarget()
+    if effective.found and effective.score >= UrgentCrewEffectiveMinScore:
+      return (
+        effective.target,
+        "urgent crew vote, top effective sus " &
+          bot.voteTargetName(effective.target),
+        false
+      )
   if bot.socialDecisionSafe(decision):
     if bot.role == RoleCrewmate and
         decision.reason.startsWith("joining social vote pile") and
@@ -7412,6 +7679,20 @@ proc desiredVotingDecision(
         return (
           direct.target,
           "direct evidence against " & bot.voteTargetName(direct.target),
+          true
+        )
+      if forced:
+        let effective = bot.bestLegalEffectiveVoteTarget()
+        if effective.found and effective.score >= CrewPileMinSusScore:
+          return (
+            effective.target,
+            "blocked weak pile, top effective sus " &
+              bot.voteTargetName(effective.target),
+            true
+          )
+        return (
+          bot.votePlayerCount,
+          "blocked weak pile, skipping",
           true
         )
       return (VoteUnknown, "waiting instead of weak vote pile", false)
@@ -8091,8 +8372,12 @@ proc killReadyCrewmateAction(
     return
   if hunted.track.colorIndex == deadColor:
     return
-  if not bot.inKillTapRange(hunted.track.x, hunted.track.y):
-    return
+  if bot.reportableBodyVisible():
+    if not bot.inKillRange(hunted.track.x, hunted.track.y):
+      return
+  else:
+    if not bot.inKillTapRange(hunted.track.x, hunted.track.y):
+      return
   (
     true,
     bot.killCrewmateAction(
@@ -8409,11 +8694,15 @@ proc attackTrackedCrewmate(
   ## Chases a tracked crewmate and kills as soon as possible.
   let chase = bot.predictedTrackWorld(track)
   if bot.imposterKillReady:
-    if bot.inKillRange(track.x, track.y) or
-        bot.inKillTapRange(track.x, track.y) or
-        bot.inKillTapRange(chase.x, chase.y):
-      return bot.killCrewmateAction(track, name)
-    if not bot.reportableBodyVisible():
+    let bodyVisible = bot.reportableBodyVisible()
+    if bodyVisible:
+      if bot.inKillRange(track.x, track.y):
+        return bot.killCrewmateAction(track, name)
+    else:
+      if bot.inKillRange(track.x, track.y) or
+          bot.inKillTapRange(track.x, track.y) or
+          bot.inKillTapRange(chase.x, chase.y):
+        return bot.killCrewmateAction(track, name)
       return bot.pathKillCrewmateAction(chase.x, chase.y, name)
   bot.goalIndex = -2
   bot.navigateToPoint(chase.x, chase.y, name, 0)
@@ -8612,13 +8901,13 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   bot.updateRunawayState()
   if bot.role == RoleImposter and not bot.isGhost:
     return bot.decideImposterMask()
+  let buttonAction = bot.emergencyButtonAction()
+  if buttonAction.found:
+    return buttonAction.mask
   if bot.moveAwayActive():
     return bot.navigateMoveAway()
   if bot.runawayActive():
     return bot.navigateEscapeLoop()
-  let buttonAction = bot.emergencyButtonAction()
-  if buttonAction.found:
-    return buttonAction.mask
   if bot.safeHideReady():
     return bot.navigateSafeHide()
   let taskAction = bot.navigateTaskBrain()
@@ -8629,6 +8918,13 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   bot.thought("localized near (" & $bot.playerWorldX() & ", " &
     $bot.playerWorldY() & ")")
   0
+
+proc rememberedDownMask(bot: Bot, mask: uint8): uint8 =
+  ## Returns the server down mask after any forced action tap.
+  if bot.forceActionTap:
+    mask and not ButtonA
+  else:
+    mask
 
 proc stepUnpackedFrame*(
   bot: var Bot,
@@ -8643,7 +8939,7 @@ proc stepUnpackedFrame*(
     bot.unpacked[i] = value and 0x0f
   inc bot.frameTick
   result = bot.decideNextMask()
-  bot.lastMask = result
+  bot.lastMask = bot.rememberedDownMask(result)
 
 proc stepPackedFrame*(
   bot: var Bot,
@@ -8659,7 +8955,7 @@ proc stepPackedFrame*(
   unpack4bpp(bot.packed, bot.unpacked)
   inc bot.frameTick
   result = bot.decideNextMask()
-  bot.lastMask = result
+  bot.lastMask = bot.rememberedDownMask(result)
 
 proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
   ## Extracts one 12x12 sprite from the local sprite sheet.
@@ -9594,7 +9890,8 @@ when not defined(italkalotLibrary):
             bot.noteActionActivity()
           if not gui and profileShouldDump(bot.frameTick):
             finishProfileTrace()
-          bot.lastMask = nextMask
+          let sentDownMask = bot.rememberedDownMask(nextMask)
+          bot.lastMask = sentDownMask
           if nextMask != lastMask or bot.forceActionTap:
             if gui:
               if bot.forceActionTap:
@@ -9607,7 +9904,7 @@ when not defined(italkalotLibrary):
                   ws.send(actionTapBlob(nextMask), BinaryMessage)
                 else:
                   ws.send(inputBlob(nextMask), BinaryMessage)
-            lastMask = nextMask
+            lastMask = sentDownMask
           if bot.pendingChatReady():
             if gui:
               ws.send(chatBlob(bot.pendingChat), BinaryMessage)
