@@ -1650,7 +1650,7 @@ proc recordOutcome(score: float, scores: openArray[float]): RecordOutcome =
       if score.nearScore(1.0):
         return OutcomeWin
       return OutcomeLoss
-    return OutcomeTie
+    return OutcomeMissing
 
   var
     best = scores[0]
@@ -1703,9 +1703,8 @@ proc playerSummaries(
     if not complete:
       continue
     for i in 0 ..< bots.len:
-      result[i].total += scores[i]
-      inc result[i].scored
-      case scores[i].recordOutcome(scores)
+      let outcome = scores[i].recordOutcome(scores)
+      case outcome
       of OutcomeWin:
         inc result[i].wins
       of OutcomeLoss:
@@ -1713,7 +1712,9 @@ proc playerSummaries(
       of OutcomeTie:
         inc result[i].ties
       of OutcomeMissing:
-        discard
+        continue
+      result[i].total += scores[i]
+      inc result[i].scored
   for item in result.mitems:
     if item.scored > 0:
       item.avg = item.total / item.scored.float
@@ -1739,9 +1740,8 @@ proc groupSummaries(
     if not complete:
       continue
     for i in 0 ..< groups.len:
-      result[i].total += scores[i]
-      inc result[i].scored
-      case scores[i].recordOutcome(scores)
+      let outcome = scores[i].recordOutcome(scores)
+      case outcome
       of OutcomeWin:
         inc result[i].wins
       of OutcomeLoss:
@@ -1749,7 +1749,9 @@ proc groupSummaries(
       of OutcomeTie:
         inc result[i].ties
       of OutcomeMissing:
-        discard
+        continue
+      result[i].total += scores[i]
+      inc result[i].scored
   for item in result.mitems:
     if item.scored > 0:
       item.avg = item.total / item.scored.float
@@ -1845,9 +1847,8 @@ proc summaryFor(
           scores[i] = b.score
           bestOpponent = max(bestOpponent, b.score)
         if complete:
-          result.totalA += a.score
-          result.totalB += bestOpponent
-          case a.score.recordOutcome(scores)
+          let outcome = a.score.recordOutcome(scores)
+          case outcome
           of OutcomeWin:
             inc result.wins
           of OutcomeLoss:
@@ -1855,7 +1856,9 @@ proc summaryFor(
           of OutcomeTie:
             inc result.ties
           of OutcomeMissing:
-            discard
+            continue
+          result.totalA += a.score
+          result.totalB += bestOpponent
 
   let scored = result.wins + result.losses + result.ties
   result.margin = result.totalA - result.totalB
@@ -2594,10 +2597,8 @@ proc focusSummaryFor(
         break
     if not foundOpponent:
       continue
-    total += focusScore.score
-    opponentTotal += bestOpponent
-    inc result.scored
-    case focusScore.score.recordOutcome(scores)
+    let outcome = focusScore.score.recordOutcome(scores)
+    case outcome
     of OutcomeWin:
       inc result.wins
     of OutcomeLoss:
@@ -2605,7 +2606,10 @@ proc focusSummaryFor(
     of OutcomeTie:
       inc result.ties
     of OutcomeMissing:
-      discard
+      continue
+    total += focusScore.score
+    opponentTotal += bestOpponent
+    inc result.scored
   result.finishRunFocus(total, opponentTotal)
 
 proc focusSummaryFor(
@@ -2679,10 +2683,8 @@ proc focusSummaryFor(meta: JsonNode): RunFocus =
     if not foundOpponent:
       continue
     let focusScore = scores[focusIndex].scoreValue()
-    total += focusScore
-    opponentTotal += bestOpponent
-    inc result.scored
-    case focusScore.recordOutcome(values)
+    let outcome = focusScore.recordOutcome(values)
+    case outcome
     of OutcomeWin:
       inc result.wins
     of OutcomeLoss:
@@ -2690,7 +2692,10 @@ proc focusSummaryFor(meta: JsonNode): RunFocus =
     of OutcomeTie:
       inc result.ties
     of OutcomeMissing:
-      discard
+      continue
+    total += focusScore
+    opponentTotal += bestOpponent
+    inc result.scored
   if result.scored == 0:
     return meta.legacyFocusSummary()
   result.finishRunFocus(total, opponentTotal)
@@ -2902,18 +2907,33 @@ proc addEpisodeScorePoints(
       continue
     var
       foundOpponent = false
-      bestOpponent = -1.0e300
+      values = newSeq[float](scores.len)
+      complete = true
     for i in 0 ..< scores.len:
+      if not scores[i].hasScoreValue():
+        complete = false
+        break
+      values[i] = scores[i].scoreValue()
       if i == focusIndex:
         continue
-      if scores[i].hasScoreValue():
-        bestOpponent = max(bestOpponent, scores[i].scoreValue())
-        foundOpponent = true
-    if not foundOpponent:
+      foundOpponent = true
+    if not complete or not foundOpponent:
+      continue
+    let score = values[focusIndex]
+    let record = score.recordOutcome(values)
+    if record == OutcomeMissing:
       continue
     let
-      score = scores[focusIndex].scoreValue()
-      outcome = score.scoreOutcome(bestOpponent)
+      outcome =
+        case record
+        of OutcomeWin:
+          ScoreWin
+        of OutcomeLoss:
+          ScoreLoss
+        of OutcomeTie:
+          ScoreTie
+        of OutcomeMissing:
+          ScoreLoss
       gameIndex = episode.intField("index")
       title = label & " " & numberText(score, 2) & ", " &
         outcome.scoreChartOutcomeText() & ", run " & $runNumber &

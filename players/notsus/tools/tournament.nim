@@ -1256,6 +1256,11 @@ proc binaryScoreFlags(scores: openArray[Score]): tuple[
     if score.score.nearScore(1.0):
       result.hasOne = true
 
+proc noResultBinaryScores(scores: openArray[Score]): bool =
+  ## Returns true when binary scores carry no winner signal.
+  let flags = scores.binaryScoreFlags()
+  flags.binary and not (flags.hasZero and flags.hasOne)
+
 proc stripVersionSuffix(label: string): string =
   ## Returns a display label without a trailing version suffix.
   let clean = label.strip()
@@ -1302,7 +1307,7 @@ proc policyResult(game: Game, policyId: string): string =
       if own.score.nearScore(1.0):
         return "W"
       return "L"
-    return "T"
+    return "-"
   var bestOpponent = opponents[0]
   for i in 1 ..< opponents.len:
     bestOpponent = max(bestOpponent, opponents[i])
@@ -1318,12 +1323,15 @@ proc updateStats(stats: var PolicyStats, game: Game, policyId: string) =
   ## Adds one game to a policy summary.
   if game.status != "completed":
     return
+  let resultText = game.policyResult(policyId)
+  if resultText notin ["W", "L", "T"]:
+    return
   inc stats.games
   let score = game.scoreFor(policyId)
   if score.found:
     inc stats.scoredGames
     stats.totalScore += score.score
-  case game.policyResult(policyId)
+  case resultText
   of "W":
     inc stats.wins
   of "L":
@@ -2654,6 +2662,8 @@ proc heatScoreStats(games: openArray[Game]): Table[string, PolicyStats] =
   for game in games:
     if game.status != "completed":
       continue
+    if game.scores.noResultBinaryScores():
+      continue
     for score in game.scores:
       if score.policyId.len == 0:
         continue
@@ -2712,6 +2722,8 @@ proc heatFamilyScoreStats(
   ## Returns average-score inputs for versionless heat-map families.
   for game in games:
     if game.status != "completed":
+      continue
+    if game.scores.noResultBinaryScores():
       continue
     for score in game.scores:
       if score.policyId.len == 0:
@@ -2787,6 +2799,8 @@ proc heatRate(stats: HeatStats): float =
 
 proc heatScoreEntries(game: Game): seq[tuple[key: string, score: float]] =
   ## Returns scored versionless heat-map entries for one game.
+  if game.scores.noResultBinaryScores():
+    return
   for score in game.scores:
     if score.policyId.len == 0:
       continue
@@ -3153,6 +3167,8 @@ proc participantAt(game: Game, position: int): Participant =
 proc bestScore(game: Game): tuple[found: bool, score: float] =
   ## Returns the best score in one completed game.
   if game.status != "completed":
+    return
+  if game.scores.noResultBinaryScores():
     return
   for score in game.scores:
     if not result.found or score.score > result.score:
