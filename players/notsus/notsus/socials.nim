@@ -13,7 +13,9 @@ const
   SocialSelfTrust* = 1000
   SocialMaxFriendTrust* = 850
   SocialTrustIterations* = 4
+  SocialCrewBrigadeVotes* = 2
   SocialImposterBrigadeVotes* = 2
+  SocialImposterDangerVotes* = 2
   SocialSusWords = [
     "sus", "suspicious", "accuse", "accused", "vote", "voted",
     "eject", "ejected", "bad", "lying", "lie", "liar", "fake",
@@ -33,6 +35,12 @@ const
   ]
   SocialSoftWords = [
     "maybe", "might", "little", "soft", "weak", "slight"
+  ]
+  SocialRiskWords = [
+    "body", "bodies", "kill", "kills", "killed", "murder", "murdered"
+  ]
+  SocialStrongWords = [
+    "main", "most", "clearest", "strong", "hard"
   ]
 
 type
@@ -175,6 +183,21 @@ proc socialWords(text: string): seq[string] =
   for word in strutils.splitWhitespace(text.normalizeSocialText()):
     result.add word
 
+proc socialWordSentences(text: string): seq[seq[string]] =
+  ## Splits social text into normalized sentence word lists.
+  var current = ""
+  for ch in text:
+    if ch in {'.', '!', '?', ';', '\n'}:
+      let words = current.socialWords()
+      if words.len > 0:
+        result.add words
+      current.setLen(0)
+    else:
+      current.add ch
+  let words = current.socialWords()
+  if words.len > 0:
+    result.add words
+
 proc socialNear(
   words: openArray[string],
   index: int,
@@ -220,11 +243,63 @@ proc socialKilledVictim(words: openArray[string], index: int): bool =
     return false
   words[index - 1] in ["killed", "murdered"]
 
+proc socialDeadMention(words: openArray[string], index: int): bool =
+  ## Returns true when this color is named as dead, not accused.
+  if index + 1 < words.len and words[index + 1] in ["dead", "died"]:
+    return true
+  if index + 1 < words.len and words[index + 1] in ["body", "bodies"]:
+    return true
+  if index + 2 < words.len and
+      words[index + 1] in ["is", "was"] and
+      words[index + 2] in ["dead", "died", "killed", "murdered"]:
+    return true
+  if index + 2 < words.len and
+      words[index + 1] in ["s"] and
+      words[index + 2] in ["body"]:
+    return true
+  if index + 3 < words.len and
+      words[index + 1] in ["was"] and
+      words[index + 2] in ["found"] and
+      words[index + 3] in ["dead"]:
+    return true
+
+proc socialQuestionMention(words: openArray[string], index: int): bool =
+  ## Returns true when this color is part of an information question.
+  let
+    first = max(0, index - 5)
+    last = min(words.len - 1, index + 5)
+  var
+    hasQuestion = false
+    hasRequest = false
+    hasInfo = false
+  for i in first .. last:
+    if words[i] in ["who", "where", "when", "what"]:
+      hasQuestion = true
+    if words[i] in ["give", "list", "explain", "say"]:
+      hasRequest = true
+    if words[i] in ["route", "routes", "room", "rooms", "task", "tasks", "path"]:
+      hasInfo = true
+  if hasRequest and hasInfo:
+    return true
+  if not hasQuestion:
+    return false
+  for i in first .. last:
+    if words[i] in [
+      "near", "with", "body", "dead", "died", "killed", "murdered"
+    ]:
+      return true
+
 proc socialWithMe(words: openArray[string], index: int): bool =
   ## Returns true when plain chat says this color was with me.
   if not words.socialNear(index, ["with"], 3, 3):
     return false
   words.socialNear(index, ["me"], 3, 3)
+
+proc socialNearRisk(words: openArray[string], index: int): bool =
+  ## Returns true when this color is placed near a body or kill.
+  if not words.socialNear(index, ["near"], 3, 3):
+    return false
+  words.socialNear(index, SocialRiskWords, 6, 6)
 
 proc plainSocialStance(
   words: openArray[string],
@@ -241,14 +316,18 @@ proc plainSocialStance(
     susNear = words.socialNear(index, SocialSusWords, 4, 4)
     highSusNear = words.socialNear(index, SocialHighSusWords, 3, 3)
     softNear = words.socialNear(index, SocialSoftWords, 4, 4)
+    riskNear = words.socialNearRisk(index)
+    strongNear = words.socialNear(index, SocialStrongWords, 4, 4)
   result.strength =
     if softNear:
       SocialLowClaim
-    elif highSusNear:
+    elif highSusNear or riskNear or (susNear and strongNear):
       SocialHighClaim
     else:
       SocialMediumClaim
-  if highSusNear and not words.socialKilledVictim(index):
+  if words.socialDeadMention(index) or words.socialQuestionMention(index):
+    return
+  if (highSusNear or riskNear) and not words.socialKilledVictim(index):
     return (true, SocialSus, result.strength)
   if trustNegated:
     return (true, SocialSus, SocialMediumClaim)
@@ -266,30 +345,26 @@ proc parsePlainSocialClaims*(
   ## Extracts plain-English sus and clear claims from visible chat.
   if speaker < 0 or speaker >= SocialPlayerCount:
     return
-  let words = text.socialWords()
-  if words.len == 0:
-    return
-  for colorIndex, colorName in PlayerColorNames:
-    if colorIndex == speaker:
+  for words in text.socialWordSentences():
+    if words.len == 0:
       continue
-    let normalizedColor = colorName.normalizeSocialText()
-    for i, word in words:
-      if word != normalizedColor:
+    for colorIndex, colorName in PlayerColorNames:
+      if colorIndex == speaker:
         continue
-      let stance = words.plainSocialStance(i)
-      if not stance.found:
-        continue
-      result.add SocialClaim(
-        speaker: speaker,
-        target: colorIndex,
-        stance: stance.stance,
-        strength: stance.strength,
-        reason:
-          if stance.stance == SocialSus:
-            "plain English suspicion"
-          else:
-            "plain English clear"
-      )
+      let normalizedColor = colorName.normalizeSocialText()
+      for i, word in words:
+        if word != normalizedColor:
+          continue
+        let stance = words.plainSocialStance(i)
+        if not stance.found:
+          continue
+        result.add SocialClaim(
+          speaker: speaker,
+          target: colorIndex,
+          stance: stance.stance,
+          strength: stance.strength,
+          reason: text
+        )
 
 proc parseSocialClaim(node: JsonNode): tuple[ok: bool, claim: SocialClaim] =
   ## Parses one social claim JSON node.
@@ -483,6 +558,16 @@ proc bestBrigadeTarget(
     let targetColor = state.slotColors[choice]
     if targetColor < 0 or targetColor >= scores.len:
       continue
+    if not roleImposter:
+      let voterSlot = state.slotForSocialColor(voterColor)
+      if voterSlot < 0 or
+          voterSlot >= state.playerCount or
+          not state.slotAlive[voterSlot]:
+        continue
+      if voterColor >= 0 and
+          voterColor < scores.len and
+          scores[voterColor] > scores[targetColor]:
+        continue
     if not roleImposter and scores[targetColor] < minScore:
       continue
     inc counts[choice]
@@ -495,6 +580,38 @@ proc bestBrigadeTarget(
       tied = true
   if tied:
     result.found = false
+
+proc imposterSkipDefense(
+  state: SocialVoteState
+): tuple[found: bool, colorIndex: int, count: int] =
+  ## Returns an accused imposter teammate that skip can defend.
+  var
+    counts: array[SocialMaxSlots, int]
+    skipCount = 0
+  result.colorIndex = SocialUnknown
+  for voterColor, choice in state.choices:
+    if voterColor == state.selfColor:
+      continue
+    if choice == SocialSkip:
+      inc skipCount
+      continue
+    if choice < 0 or choice >= state.playerCount:
+      continue
+    let targetColor = state.slotColors[choice]
+    if targetColor < 0 or
+        targetColor >= state.knownImposters.len or
+        not state.knownImposters[targetColor] or
+        not state.slotAlive[choice]:
+      continue
+    inc counts[choice]
+  for slot in 0 ..< state.playerCount:
+    if counts[slot] <= result.count:
+      continue
+    result.count = counts[slot]
+    result.colorIndex = state.slotColors[slot]
+  if result.count >= SocialImposterDangerVotes and
+      skipCount + 1 >= result.count:
+    result.found = true
 
 proc chooseSocialVote*(
   state: SocialVoteState,
@@ -511,11 +628,17 @@ proc chooseSocialVote*(
         low(int)
       elif threshold == low(int):
         low(int)
-      else:
+    else:
         max(10, threshold div 2)
     brigade = state.bestBrigadeTarget(scores, roleImposter, brigadeMin)
+    crewBrigadeVotes =
+      if aliveCount <= 3:
+        1
+      else:
+        SocialCrewBrigadeVotes
   if brigade.found and (
-    not roleImposter or forced or brigade.count >= SocialImposterBrigadeVotes
+    (not roleImposter and brigade.count >= crewBrigadeVotes) or
+    (roleImposter and (forced or brigade.count >= SocialImposterBrigadeVotes))
   ):
     let reason =
       if roleImposter:
@@ -529,6 +652,16 @@ proc chooseSocialVote*(
         socialColorName(state.slotColors[brigade.slot]),
       instant: false
     )
+  if roleImposter:
+    let defense = state.imposterSkipDefense()
+    if defense.found:
+      return SocialVoteDecision(
+        found: true,
+        target: state.playerCount,
+        reason: "defending accused imposter " &
+          socialColorName(defense.colorIndex) & " with skip",
+        instant: false
+      )
   let best = state.bestSocialTarget(scores, roleImposter)
   if not best.found:
     return
