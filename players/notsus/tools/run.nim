@@ -1647,6 +1647,11 @@ proc scoreFlags(scores: openArray[float]): tuple[
     if score.nearScore(1.0):
       result.hasOne = true
 
+proc noResultBinaryScores(scores: openArray[float]): bool =
+  ## Returns true when binary scores carry no winner signal.
+  let flags = scores.scoreFlags()
+  flags.binary and not (flags.hasZero and flags.hasOne)
+
 proc recordOutcome(score: float, scores: openArray[float]): RecordOutcome =
   ## Classifies one score under the current score model.
   if scores.len == 0:
@@ -3701,15 +3706,110 @@ proc focusedLogHrefs(
     else:
       result[slot] = LogMissingPrefix & "not downloaded"
 
+proc groupScoreVector(
+  episode: Episode,
+  groups: openArray[BotGroup]
+): seq[float] =
+  ## Returns complete group scores for one episode or an empty vector.
+  if groups.len == 0:
+    return
+  result.setLen(groups.len)
+  for i in 0 ..< groups.len:
+    let score = episode.scoreForGroup(groups, i)
+    if not score.found:
+      result.setLen(0)
+      return
+    result[i] = score.score
+
+proc replayGroupAverages(
+  replayPath: string,
+  groups: openArray[BotGroup]
+): seq[tuple[found: bool, score: float]] =
+  ## Returns per-group average replay scores from one replay.
+  result.setLen(groups.len)
+  let players = replayPlayerResultsForPath(replayPath)
+  var slots: seq[SeatScore]
+  for player in players:
+    if player.slot < 0:
+      continue
+    while slots.len <= player.slot:
+      slots.add SeatScore()
+    slots[player.slot] = SeatScore(found: true, score: player.score.float)
+  for i, group in groups:
+    var
+      total = 0.0
+      count = 0
+    for slot in group.slots:
+      if slot >= 0 and slot < slots.len and slots[slot].found:
+        total += slots[slot].score
+        inc count
+    if count > 0:
+      result[i] = (found: true, score: total / count.float)
+
+proc replayBinaryScores(
+  replayPath: string,
+  groups: openArray[BotGroup]
+): seq[float] =
+  ## Returns binary scores recovered from replay group averages.
+  let averages = replayGroupAverages(replayPath, groups)
+  if averages.len == 0:
+    return
+  var best = -1.0e300
+  for average in averages:
+    if not average.found:
+      return
+    best = max(best, average.score)
+  var bestCount = 0
+  for average in averages:
+    if average.score.nearScore(best):
+      inc bestCount
+  if bestCount == averages.len:
+    return
+  result.setLen(averages.len)
+  for i, average in averages:
+    if average.score.nearScore(best):
+      result[i] = 1.0
+    else:
+      result[i] = 0.0
+
+proc setGroupScores(episode: var Episode, scores: openArray[float]) =
+  ## Replaces episode scores with group-level scores.
+  if scores.len == 0:
+    return
+  while episode.scores.len < scores.len:
+    episode.scores.add Score()
+  if episode.scores.len > scores.len:
+    episode.scores.setLen(scores.len)
+  for i, score in scores:
+    episode.scores[i].score = score
+
 proc fillReplayScores(
   episodes: var seq[Episode],
+  config: ToolConfig,
   paths: RunPaths,
   gameOffset = 0
 ) =
-  ## Replay score decoding is intentionally disabled for Crewrift Prime for now.
-  discard episodes
-  discard paths
-  discard gameOffset
+  ## Recovers no-signal binary timeout rows from replay score tables.
+  let groups = groupedBots(config.bots)
+  if groups.len < 2:
+    return
+  for episode in episodes.mitems:
+    if episode.excluded or episode.status != "completed":
+      continue
+    let scores = episode.groupScoreVector(groups)
+    if scores.len == 0 or not scores.noResultBinaryScores():
+      continue
+    let replayPath = paths.replays / replayFileName(gameOffset + episode.index)
+    if not fileExists(replayPath):
+      continue
+    try:
+      let recovered = replayBinaryScores(replayPath, groups)
+      if recovered.len > 0:
+        episode.setGroupScores(recovered)
+    except CatchableError as e:
+      episode.markExcluded(
+        "replay score parse error: " & e.msg.shortCommandError()
+      )
 
 proc renderGamePages(
   config: ToolConfig,
@@ -3767,7 +3867,7 @@ proc renderAll(
   ## Writes all static pages and run metadata for the current state.
   result = parseEpisodes(detail)
   renderGamePages(config, paths, result)
-  result.fillReplayScores(paths)
+  result.fillReplayScores(config, paths)
   writeRunMeta(
     config,
     paths,
@@ -4467,6 +4567,11 @@ proc renderVersusAll(
       segment.config,
       paths,
       segmentEpisodes,
+      segment.gameOffset
+    )
+    segmentEpisodes.fillReplayScores(
+      segment.config,
+      paths,
       segment.gameOffset
     )
     result.add segmentEpisodes.offsetEpisodes(segment.gameOffset)
