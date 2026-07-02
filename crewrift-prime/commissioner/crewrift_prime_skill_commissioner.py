@@ -487,8 +487,11 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         the ``CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS`` env override, else the
         per-league fillers served by ``GET /v2/leagues/{league_id}/filler-policies``).
         If no fillers are configured we fall back to cycling real entrants into the empty
-        seats so the game can still run — but those duplicate seats, like all filler
-        seats, are recorded in ``filler_seats`` and EXCLUDED from scoring/ranking by
+        seats so the game can still run — but NEVER seating a policy that already holds
+        a seat in that same episode (so one player can't control two seats and collude
+        with itself); a policy is only reused once every distinct entrant is already
+        seated. Those duplicate top-up seats, like all filler seats, are recorded in
+        ``filler_seats`` and EXCLUDED from scoring/ranking by
         ``_complete_competition_round`` (filler/duplicate wins never count).
 
         The real entrants and the seat rotation are shifted per episode so seat/role
@@ -545,15 +548,24 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         real_seat_count = len(seat_policies)
 
         # Top up the remaining seats. Prefer configured fillers (whose results are
-        # excluded); when none are configured, cycle real entrants so the closed
-        # roster can still dispatch (those duplicate seats are excluded too).
+        # excluded). When none are configured, cycle real entrants so the closed
+        # roster can still dispatch (those duplicate seats are excluded from
+        # scoring) — but NEVER seat a policy that is already in THIS episode, so a
+        # single player can't hold two seats and collude with itself. A policy is
+        # only reused for a top-up seat once every OTHER distinct policy has already
+        # been placed (i.e. the pool is genuinely exhausted, e.g. a single entrant
+        # with no fillers).
         remaining = NUM_SEATS - real_seat_count
         topup_is_filler = bool(filler_ids)
         if remaining > 0:
             topup_pool = filler_ids if topup_is_filler else entrant_ids
             seat_policies.extend(
-                topup_pool[(episode_index + index) % len(topup_pool)]
-                for index in range(remaining)
+                _distinct_topup(
+                    topup_pool,
+                    already_seated=seat_policies,
+                    count=remaining,
+                    rotation=episode_index,
+                )
             )
 
         filler_seats = list(range(real_seat_count, NUM_SEATS))
@@ -1723,6 +1735,44 @@ def _status_str(status: Any) -> str:
     """Normalize a membership status (enum or str) to its lowercase value."""
     value = status.value if hasattr(status, "value") else str(status)
     return value.lower()
+
+
+def _distinct_topup(
+    pool: list[UUID],
+    *,
+    already_seated: list[UUID],
+    count: int,
+    rotation: int,
+) -> list[UUID]:
+    """Pick ``count`` top-up policies from ``pool``, avoiding duplicates in a seat.
+
+    Returns policies drawn from ``pool`` for the empty seats, preferring policies
+    NOT already present in ``already_seated`` (nor already chosen for this top-up)
+    so no policy occupies two seats in the same episode — self-collusion (a single
+    player controlling multiple seats) is impossible whenever the pool holds enough
+    distinct policies. Only when every distinct policy is already seated does it
+    fall back to reusing policies (e.g. a single entrant with no configured
+    fillers), cycling so the reuse is balanced. ``rotation`` shifts the starting
+    point per episode for balance.
+    """
+    if not pool:
+        return []
+    seated = set(already_seated)
+    chosen: list[UUID] = []
+    size = len(pool)
+    for index in range(count):
+        # Prefer a policy that is neither already seated nor already chosen.
+        picked: UUID | None = None
+        for step in range(size):
+            candidate = pool[(rotation + index + step) % size]
+            if candidate not in seated and candidate not in chosen:
+                picked = candidate
+                break
+        if picked is None:
+            # Pool exhausted of distinct policies: reuse, cycling for balance.
+            picked = pool[(rotation + index) % size]
+        chosen.append(picked)
+    return chosen
 
 
 def _filler_seats_by_request(

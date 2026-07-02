@@ -716,6 +716,56 @@ class CompetitionSchedulingTest(unittest.TestCase):
             else:
                 os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = prev
 
+    def test_no_policy_holds_two_seats_when_enough_distinct_policies(self) -> None:
+        # With no configured fillers, empty seats top up from real entrants — but a
+        # policy must never occupy two seats in the SAME episode when there are
+        # enough distinct entrants to fill the roster, so a single player can't
+        # control multiple seats and collude with itself.
+        commissioner = _commissioner()
+        entrants = [uuid4() for _ in range(NUM_SEATS)] + [uuid4(), uuid4()]
+        rs = self._competition_round_start(entrants)
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(len(ep.policy_version_ids), NUM_SEATS)
+            self.assertEqual(
+                len(ep.policy_version_ids), len(set(ep.policy_version_ids)),
+                "no policy may hold two seats in the same episode (self-collusion)",
+            )
+
+    def test_topup_uses_distinct_entrants_before_reusing(self) -> None:
+        # Fewer real entrants than seats and no fillers: the top-up seats must be
+        # filled with the OTHER distinct entrants first (each policy at most once)
+        # before any policy is reused. With 5 entrants across 8 seats every distinct
+        # entrant must appear, and no policy that could stay unique is duplicated.
+        commissioner = _commissioner()
+        entrants = [uuid4() for _ in range(5)]
+        rs = self._competition_round_start(entrants)
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            seated = ep.policy_version_ids
+            self.assertEqual(len(seated), NUM_SEATS)
+            self.assertEqual(
+                set(seated), set(entrants),
+                "every distinct real entrant must be seated before any reuse",
+            )
+            # 5 distinct policies fill the first 5 seats uniquely; only the 3
+            # unavoidable top-up seats reuse (pool exhausted of distinct policies).
+            self.assertEqual(len(seated[:5]), len(set(seated[:5])))
+
+    def test_single_entrant_still_duplicates_to_fill_roster(self) -> None:
+        # The one case where duplication is unavoidable: a lone entrant with no
+        # fillers must still fill all 8 seats so the closed roster can dispatch.
+        commissioner = _commissioner()
+        entrant = uuid4()
+        rs = self._competition_round_start([entrant])
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(ep.policy_version_ids, [entrant] * NUM_SEATS)
+            self.assertEqual(ep.tags["filler_seats"], "1,2,3,4,5,6,7")
+
 
 class XpRequestPayloadTest(unittest.TestCase):
     """The qualifier POST body must match the live V2CreateExperienceRequestRequest.
