@@ -605,6 +605,7 @@ proc imposterSkipDefense(
   var
     counts: array[SocialMaxSlots, int]
     skipCount = 0
+    openImposterSkips = 0
   result.colorIndex = SocialUnknown
   for voterColor, choice in state.choices:
     if voterColor == state.selfColor:
@@ -621,13 +622,26 @@ proc imposterSkipDefense(
         not state.slotAlive[choice]:
       continue
     inc counts[choice]
+  for colorIndex, known in state.knownImposters:
+    if not known:
+      continue
+    let slot = state.slotForSocialColor(colorIndex)
+    if slot < 0 or slot >= state.playerCount or not state.slotAlive[slot]:
+      continue
+    let choice = state.choices[colorIndex]
+    if colorIndex == state.selfColor and (
+      choice == SocialUnknown or choice == SocialSkip
+    ):
+      inc openImposterSkips
+    elif colorIndex != state.selfColor and choice == SocialUnknown:
+      inc openImposterSkips
   for slot in 0 ..< state.playerCount:
     if counts[slot] <= result.count:
       continue
     result.count = counts[slot]
     result.colorIndex = state.slotColors[slot]
   if result.count >= SocialImposterDangerVotes and
-      skipCount + 1 >= result.count:
+      skipCount + openImposterSkips >= result.count:
     result.found = true
 
 proc chooseSocialVote*(

@@ -308,7 +308,7 @@ suite "notsus social reasoning":
     check decision.target == 1
     check not decision.instant
 
-  test "imposter waits against visible pile on partner":
+  test "imposter skips when both imposters can tie partner pile":
     var
       state = emptyVoteState()
       scores: array[SocialPlayerCount, int]
@@ -319,7 +319,8 @@ suite "notsus social reasoning":
     state.choices[4] = 7
     state.choices[5] = 7
     let decision = chooseSocialVote(state, scores, true, false)
-    check not decision.found
+    check decision.found
+    check decision.target == state.playerCount
 
   test "imposter skips to defend accused partner":
     var
@@ -336,6 +337,20 @@ suite "notsus social reasoning":
     check decision.found
     check decision.target == state.playerCount
     check not decision.instant
+
+  test "imposter does not count committed partner as open skip":
+    var
+      state = emptyVoteState()
+      scores: array[SocialPlayerCount, int]
+    state.selfSlot = 6
+    state.selfColor = 6
+    state.knownImposters[6] = true
+    state.knownImposters[7] = true
+    state.choices[4] = 7
+    state.choices[5] = 7
+    state.choices[7] = 1
+    let decision = chooseSocialVote(state, scores, true, false)
+    check not decision.found
 
   test "forced vote picks top sus even under threshold":
     var
