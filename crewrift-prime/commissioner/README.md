@@ -322,6 +322,18 @@ and emits it through **three protocol-supported channels**:
    records are appended under `state["crewrift_prime_skill"]["rounds"]` (bounded
    to the most recent 50 rounds) so the full decision history is auditable.
 
+4. **Commissioner changelog** (Observatory "League Overview" → *Commissioner
+   Changelog*). The commissioner is a black box to the platform, so how it works
+   and what functionality changed is only knowable if it tells us. `describe_division`
+   attaches `PRIME_COMMISSIONER_CHANGELOG` (a newest-first list of
+   `CommissionerChangelogEntry` — `date`, `title`, optional `detail`/`category`) to
+   every division description; the platform caches it on the division and the
+   Observatory renders it verbatim. **When you change the commissioner's observable
+   behavior (scoring, scheduling, matchmaking, eligibility, filler/void handling),
+   add a new entry at the TOP of `PRIME_COMMISSIONER_CHANGELOG` in
+   `crewrift_prime_skill_commissioner.py`.** Keep entries player-legible: describe the
+   behavior change, not the code.
+
 The hosted path and the local debug path call the **same** pure function
 (`decision.evaluate_entrants`), so the records are identical.
 

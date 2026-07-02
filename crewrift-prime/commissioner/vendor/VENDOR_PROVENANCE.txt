@@ -1,1 +1,10 @@
 Vendored from https://github.com/Metta-AI/commissioners @ b63e437c9a33e49f767add68327ba11a169d3ce0
+
+Local patch (NOT yet upstream — 2026-07-02):
+  Added `CommissionerChangelogEntry` + `DivisionDescription.changelog` /
+  `DivisionCommissionerDescriptionPublic.changelog` (common/protocol.py,
+  common/models.py) so the Prime commissioner can publish a self-authored
+  changelog via `describe_division`. The canonical source of truth is
+  `Metta-AI/metta` packages/coworld/src/coworld/commissioner/protocol.py and
+  app_backend v2 models; land the field in `Metta-AI/commissioners` and re-vendor
+  to drop this note.
