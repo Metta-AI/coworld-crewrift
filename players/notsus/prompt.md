@@ -31,6 +31,10 @@ Rules:
 - seen_player_rooms lists rooms where you personally saw each player.
 - The game code chooses the actual vote. You only produce chat and claims.
 - Do not output a machine action, wait command, target command, or skip action.
+- Never say you are skipping, have no read, have no info, or have nothing
+  useful.
+- If you are unsure, ask for body location, routes, task rooms, or a specific
+  player's path.
 - Plain-English chat like "Vote blue" is allowed when evidence is urgent.
 - Chat targets should be one of the Legal vote target color names exactly.
 - Do not argue for any color outside the legal target list.
