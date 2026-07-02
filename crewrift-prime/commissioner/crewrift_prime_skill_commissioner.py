@@ -143,15 +143,21 @@ _COMPETITION_DIVISION_TYPE = "competition"
 _COMPETITION_SCORE_KIND = "competition_wins"
 
 # --- Standings recency window (2026-07-02) -----------------------------------
-# The main Competition "Standings" board grades players on RECENT merit only:
-# every player keeps improving their submitted policy, so a policy should be
-# judged on how it does NOW, not on stale rounds it won days ago. Only rounds
-# whose gameplay completed within the last ``STANDINGS_WINDOW_HOURS`` hours count
-# toward the standings win rate / cumulative score.
+# The main Competition "Standings" board can optionally grade players on RECENT
+# merit only: when enabled, only rounds whose gameplay completed within the last
+# ``STANDINGS_WINDOW_HOURS`` hours count toward the standings win rate / cumulative
+# score.
 #
-# Configurable via ``CREWRIFT_PRIME_STANDINGS_WINDOW_HOURS`` (set on the hosted
-# runnable's ``env`` with no rebuild); DEFAULTS to 6 hours. A value of ``0`` (or
-# negative / unparseable) DISABLES the window and reverts to the all-time board.
+# DISABLED BY DEFAULT (2026-07-02). A 6-hour window was briefly the default, but it
+# collapsed the standings to a SINGLE round whenever the league's other recent
+# rounds fell outside the 6h window (a burst of rounds followed by any pause) — so
+# the board showed win% = wins / one-round's-episodes (e.g. 5/7 = 71%) instead of
+# aggregating every recent round. To avoid silently blanking the multi-round board
+# again, the window now DEFAULTS TO 0 (all-time). Opt in explicitly by setting
+# ``CREWRIFT_PRIME_STANDINGS_WINDOW_HOURS`` to a positive number of hours on the
+# hosted runnable's ``env`` (no rebuild); ``0``/negative/unset/unparseable keeps the
+# all-time board.
+#
 # The window applies ONLY to the Competition Standings the commissioner owns
 # (``rank_division`` scheduling-tick board + the ``_complete_competition_round``
 # round-complete board — both publish the SAME board via ``_win_total_board``).
@@ -160,11 +166,11 @@ _COMPETITION_SCORE_KIND = "competition_wins"
 def _standings_window_hours() -> float:
     raw = os.getenv("CREWRIFT_PRIME_STANDINGS_WINDOW_HOURS")
     if raw is None or not raw.strip():
-        return 6.0
+        return 0.0
     try:
         return float(raw)
     except ValueError:
-        return 6.0
+        return 0.0
 
 
 STANDINGS_WINDOW_HOURS = _standings_window_hours()
@@ -181,11 +187,12 @@ PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
     CommissionerChangelogEntry(
         date="2026-07-02",
         category="scoring",
-        title="Standings grade recent form only",
+        title="Standings show all rounds again",
         detail=(
-            "Competition standings now rank players by their win rate over the last "
-            f"{STANDINGS_WINDOW_HOURS:g} hours of gameplay instead of all-time, so a "
-            "player is judged on how its current policy performs rather than stale wins."
+            "Competition standings once more aggregate every completed round (all-time "
+            "win rate) instead of only the last few hours. The short recency window was "
+            "collapsing the board to a single round whenever the other recent rounds fell "
+            "outside the window, so it is now off by default."
         ),
     ),
     CommissionerChangelogEntry(
@@ -1386,19 +1393,22 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         return description
 
     def rank_division(self, ctx: DivisionLeaderboardContext) -> list[DivisionLeaderboardSnapshot]:
-        """Competition leaderboard = recent-window WIN RATE, collapsed to player.
+        """Competition leaderboard = all-time (or windowed) WIN RATE, collapsed to player.
 
         Each player's score is the fraction of episodes they won across the
-        division's completed rounds WITHIN THE STANDINGS RECENCY WINDOW (default
-        the last 6 hours of gameplay; see ``STANDINGS_WINDOW_HOURS``): episodes won
-        / episodes played (one point per won episode, capped per episode, fillers
-        excluded — see ``_complete_competition_round``). The score is always in
-        ``[0, 1]``. Players are ranked by descending win rate; ``rounds_played`` is
-        the number of in-window completed rounds the player participated in. Only
-        recent rounds count, so players are graded on current form rather than
-        stale wins (a policy that has since been improved is not carried by old
-        results). Setting ``CREWRIFT_PRIME_STANDINGS_WINDOW_HOURS=0`` reverts to the
-        all-time board.
+        division's completed rounds (episodes won / episodes played; one point per
+        won episode, capped per episode, fillers excluded — see
+        ``_complete_competition_round``). The score is always in ``[0, 1]``. Players
+        are ranked by descending win rate; ``rounds_played`` is the number of
+        counted completed rounds the player participated in.
+
+        By DEFAULT every completed round counts (all-time board). An OPTIONAL recency
+        window (``CREWRIFT_PRIME_STANDINGS_WINDOW_HOURS`` > 0) restricts the count to
+        rounds whose gameplay finished within the last N hours, so players can be
+        graded on current form. The window is OFF by default because a short window
+        collapsed the board to a single round whenever the other recent rounds fell
+        outside it; if enabled and it would drop every round, ``rank_division`` falls
+        back to the most-recent completed round rather than an empty board.
 
         The board is PLAYER-keyed: a player's policy versions are aggregated into
         one row (their wins summed). Matching/seeding is out of scope here — the
@@ -1412,14 +1422,24 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         if not ctx.completed_rounds or not ctx.round_results:
             return []
 
-        # STANDINGS RECENCY WINDOW: only rounds whose gameplay completed within the
-        # last STANDINGS_WINDOW_HOURS hours count toward the standings, so players
-        # are graded on recent merit (default 6h; disabled when the window is 0).
-        # Filtering the completed-round id set here is the single, least-invasive
-        # seam — every score below is gated on ``result.round_id in completed_ids``.
+        # STANDINGS RECENCY WINDOW: when enabled (STANDINGS_WINDOW_HOURS > 0), only
+        # rounds whose gameplay completed within the last STANDINGS_WINDOW_HOURS hours
+        # count toward the standings. DEFAULT is 0 (disabled -> all-time board);
+        # filtering the completed-round id set here is the single, least-invasive seam
+        # — every score below is gated on ``result.round_id in completed_ids``.
+        #
+        # Defense-in-depth against the single-round board: if the window would drop
+        # EVERY completed round (e.g. a burst of rounds then a pause longer than the
+        # window), do NOT return an empty board. An empty ``rank_division`` result
+        # lets the platform's RoundComplete compat shim fabricate its own board from
+        # just the latest round's results, which both flips the leaderboard and shows
+        # a misleading one-round win rate. Instead fall back to the most-recent
+        # completed round so the standings still reflect real gameplay.
         completed_ids = _rounds_within_standings_window(
             ctx.completed_rounds, _standings_window_cutoff()
         )
+        if not completed_ids:
+            completed_ids = _most_recent_completed_round_ids(ctx.completed_rounds)
         if not completed_ids:
             return []
         name_by_player: dict[Any, str | None] = {}
@@ -1688,6 +1708,25 @@ def _rounds_within_standings_window(
     return ids
 
 
+def _most_recent_completed_round_ids(completed_rounds: list[Any]) -> set:
+    """Id(s) of the single most-recent completed round (by effective time).
+
+    Fallback for ``rank_division`` when the recency window would otherwise drop
+    every completed round: rather than emit an EMPTY board (which lets the platform
+    fabricate a misleading one-round board that also flips against the round-complete
+    writer), keep the latest real round so the standings reflect actual gameplay.
+    Rounds with no resolvable timestamp sort last (kept only if nothing else has a
+    timestamp), so a real timestamped round always wins.
+    """
+    if not completed_rounds:
+        return set()
+    epoch = datetime.min.replace(tzinfo=UTC)
+    latest = max(
+        completed_rounds, key=lambda r: _round_effective_time(r) or epoch
+    )
+    return {latest.id}
+
+
 def _clamped_win_rate(wins: float, episodes_played: int) -> float:
     """True per-player WIN % = episodes won / episodes played, clamped to [0, 1].
 
@@ -1784,14 +1823,19 @@ def _win_rate_leaderboard(
     view = CommissionerDivisionLeaderboardView(
         key="score",
         title="Score",
+        # Standings headline is Win % (the board is RANKED by win rate). The platform renders the
+        # `primary_column` value under its label + value_type, so a `percent` win_rate column shows
+        # e.g. "20%" instead of the raw cumulative `score`.
+        primary_column="win_rate",
         axis_values={"metric": "score", "timeframe": "legacy"},
         columns=[
             CommissionerDivisionLeaderboardColumn(key="rank", label="Rank", value_type="integer", sort="asc"),
             # True per-player WIN % = episodes_won / episodes_played, clamped to
             # [0, 1]. NOT a share of total wins (which would sum to 100%); the UI
-            # renders this column verbatim as the WIN % rate.
+            # renders this column verbatim as the WIN % rate. `percent` tells the UI
+            # to format the [0, 1] fraction as a whole-number percentage (0.2 -> "20%").
             CommissionerDivisionLeaderboardColumn(
-                key="win_rate", label="Win %", value_type="number", sort="desc"
+                key="win_rate", label="Win %", value_type="percent", sort="desc"
             ),
             CommissionerDivisionLeaderboardColumn(key="score", label="Score", value_type="number", sort="desc"),
             CommissionerDivisionLeaderboardColumn(key="wins", label="Wins", value_type="number"),
