@@ -115,6 +115,8 @@ const
   VoteLlmDuplicateOverlapPercent = 75
   VoteLlmMaxMessageWords = 28
   VoteChatSpeakerSearch = 24
+  ProtocolPlayerNameObjectBase = 7000
+  ProtocolPlayerNameLabelPrefix = "player label|"
   RoomHistoryMax = 12
   TaskHistoryMax = 8
   VoteCursorConfirmTicks = sim.TargetFps div 2
@@ -566,6 +568,7 @@ type
     vanishedVentGroup: array[PlayerColorCount, int]
     vanishedVentIndex: array[PlayerColorCount, int]
     vanishedVentTick: array[PlayerColorCount, int]
+    playerDisplayNames: array[PlayerColorCount, string]
     selfColorIndex: int
     knownImposters: array[PlayerColorCount, bool]
     socialGraph: SocialMatrix
@@ -1335,6 +1338,8 @@ proc rememberMeetingCall(
   bodyColor: int,
   buttonSeen: bool
 )
+
+proc rememberPlayerDisplayName(bot: var Bot, objectId: int, label: string)
 
 proc voteChatTextFromLines(lines: openArray[VoteChatLine]): string
 
@@ -3014,6 +3019,7 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} 
     voteChoices[i] = VoteUnknown
   for item in client.spriteObjectRefs():
     let label = item.sprite.label
+    bot.rememberPlayerDisplayName(item.objectId, label)
     case label
     of "task bubble":
       bot.spriteTaskIcons.addIconMatch(item.x, item.y)
@@ -4249,6 +4255,62 @@ proc playerColorName(colorIndex: int): string =
   else:
     "unknown"
 
+proc playerLabelColor(objectId: int): int =
+  ## Returns the color index implied by one player-name object id.
+  let colorIndex = objectId - ProtocolPlayerNameObjectBase
+  if colorIndex >= 0 and colorIndex < PlayerColorCount:
+    colorIndex
+  else:
+    VoteUnknown
+
+proc protocolPlayerLabelName(label: string): string =
+  ## Returns the player name carried by one floating label sprite.
+  if not label.startsWith(ProtocolPlayerNameLabelPrefix):
+    return ""
+  let start = ProtocolPlayerNameLabelPrefix.len
+  var stop = label.len
+  for i in start ..< label.len:
+    if label[i] == '|':
+      stop = i
+      break
+  label[start ..< stop].strip()
+
+proc ownerNameKey(name: string): string =
+  ## Returns a stable owner key from a possibly suffixed player label.
+  result = name.strip().toLowerAscii()
+  if result.len == 0 or result == "?":
+    return ""
+  while result.len > 0 and result[^1] == ' ':
+    result.setLen(result.len - 1)
+  if result.len >= 4 and result[^1] == ')':
+    var i = result.len - 2
+    while i >= 0 and result[i] in {'0' .. '9'}:
+      dec i
+    if i >= 1 and result[i] == '(' and result[i - 1] == ' ':
+      result.setLen(i - 1)
+      result = result.strip()
+
+proc rememberPlayerDisplayName(
+  bot: var Bot,
+  objectId: int,
+  label: string
+) =
+  ## Stores a visible player display name by color.
+  let
+    colorIndex = playerLabelColor(objectId)
+    name = protocolPlayerLabelName(label)
+  if colorIndex < 0 or colorIndex >= bot.playerDisplayNames.len:
+    return
+  if name.len == 0 or name == "?":
+    return
+  if bot.playerDisplayNames[colorIndex] == name:
+    return
+  bot.playerDisplayNames[colorIndex] = name
+  bot.logEvent(
+    "notsus player name: " & playerColorName(colorIndex) &
+      " is " & name
+  )
+
 proc logTick(bot: Bot): int =
   ## Returns the server tick used for human-readable log time.
   if bot.serverTick >= 0:
@@ -4564,8 +4626,8 @@ proc logRoomTransitions(bot: var Bot) =
       )
       bot.visibleRoomNames[i] = ""
 
-proc voteTargetSafeForRole(bot: Bot, target: int): bool =
-  ## Returns true when this role should be willing to vote for a target.
+proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
+  ## Returns true when target voting is legal before owner protection.
   if not bot.voteTargetCanBeSus(target):
     return false
   let colorIndex = bot.voteSlots[target].colorIndex
@@ -4583,6 +4645,42 @@ proc voteTargetSafeForRole(bot: Bot, target: int): bool =
   if bot.role == RoleImposter:
     if bot.knownImposterColor(colorIndex):
       return false
+  true
+
+proc sameOwnerColor(bot: Bot, colorIndex: int): bool =
+  ## Returns true when a color appears to share this bot's owner label.
+  if colorIndex < 0 or colorIndex >= bot.playerDisplayNames.len:
+    return false
+  if bot.selfColorIndex < 0 or
+      bot.selfColorIndex >= bot.playerDisplayNames.len:
+    return false
+  let
+    selfKey = bot.playerDisplayNames[bot.selfColorIndex].ownerNameKey()
+    targetKey = bot.playerDisplayNames[colorIndex].ownerNameKey()
+  selfKey.len > 0 and targetKey.len > 0 and selfKey == targetKey
+
+proc sameOwnerVoteTarget(bot: Bot, target: int): bool =
+  ## Returns true when a vote target appears to be our own policy copy.
+  if target < 0 or target >= bot.votePlayerCount:
+    return false
+  bot.sameOwnerColor(bot.voteSlots[target].colorIndex)
+
+proc hasDifferentOwnerVoteTarget(bot: Bot): bool =
+  ## Returns true when a safe non-owner vote target exists.
+  for target in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetBaseSafeForRole(target):
+      continue
+    if not bot.sameOwnerVoteTarget(target):
+      return true
+
+proc voteTargetSafeForRole(bot: Bot, target: int): bool =
+  ## Returns true when this role should be willing to vote for a target.
+  if not bot.voteTargetBaseSafeForRole(target):
+    return false
+  if bot.role == RoleCrewmate and
+      bot.sameOwnerVoteTarget(target) and
+      bot.hasDifferentOwnerVoteTarget():
+    return false
   true
 
 proc knownImposterSummary(bot: Bot): string =

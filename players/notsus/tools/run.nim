@@ -4623,8 +4623,7 @@ proc versusWinnerText(
   of OutcomeTie:
     return "tie"
   of OutcomeMissing:
-    discard
-  "tie"
+    return "-"
 
 proc versusScoreCell(
   score: tuple[found: bool, score: float],
