@@ -1308,16 +1308,23 @@ proc policyResult(game: Game, policyId: string): string =
         return "W"
       return "L"
     return "-"
-  var bestOpponent = opponents[0]
-  for i in 1 ..< opponents.len:
-    bestOpponent = max(bestOpponent, opponents[i])
-  let margin = own.score - bestOpponent
-  if margin > ScoreEpsilon:
-    "W"
-  elif margin < -ScoreEpsilon:
+  var
+    best = own.score
+    bestCount = 1
+    scoreCount = 1
+  for opponent in opponents:
+    inc scoreCount
+    if opponent > best + ScoreEpsilon:
+      best = opponent
+      bestCount = 1
+    elif opponent.nearScore(best):
+      inc bestCount
+  if own.score + ScoreEpsilon < best:
     "L"
-  else:
+  elif bestCount == scoreCount:
     "T"
+  else:
+    "W"
 
 proc updateStats(stats: var PolicyStats, game: Game, policyId: string) =
   ## Adds one game to a policy summary.

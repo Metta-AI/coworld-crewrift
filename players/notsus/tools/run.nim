@@ -12,6 +12,7 @@ const
   DefaultPollMs = 5_000
   DefaultWaitSeconds = 1_800
   MaxPollBackoffMs = 30_000
+  PlayerLogTimeoutMs = 5_000
   UploadAttempts = 12
   UploadRetryMs = 30_000
   UploadRetrySeconds = UploadRetryMs div 1_000
@@ -1182,7 +1183,8 @@ proc shouldPrintPollFailure(failures: int): bool =
 proc runCommand(
   args: openArray[string],
   workingDir = "",
-  check = true
+  check = true,
+  timeoutMs = -1
 ): CommandResult =
   ## Runs one command directly and captures combined output.
   if args.len == 0:
@@ -1200,8 +1202,13 @@ proc runCommand(
     args = rest,
     options = {poUsePath, poStdErrToStdOut}
   )
-  result.output = process.outputStream().readAll()
-  result.code = process.waitForExit()
+  if timeoutMs >= 0:
+    result.code = process.waitForExit(timeoutMs)
+    if result.code == 0:
+      result.output = process.outputStream().readAll()
+  else:
+    result.output = process.outputStream().readAll()
+    result.code = process.waitForExit()
   process.close()
   if check and result.code != 0:
     raise newException(
@@ -1663,10 +1670,10 @@ proc recordOutcome(score: float, scores: openArray[float]): RecordOutcome =
       inc bestCount
   if score + ScoreEpsilon < best:
     return OutcomeLoss
-  if bestCount == 1:
-    OutcomeWin
-  else:
+  if bestCount == scores.len:
     OutcomeTie
+  else:
+    OutcomeWin
 
 proc winningScoreIndexes(scores: openArray[float]): seq[int] =
   ## Returns score indexes that should be marked as winners.
@@ -3650,10 +3657,14 @@ proc downloadPlayerLog(
   try:
     let output = runCommand(
       coworldCommand(config, ["episode-logs", episode.id, "--agent", $slot]),
-      workingDir = config.coworldDir
-    ).output
+      workingDir = config.coworldDir,
+      check = false,
+      timeoutMs = PlayerLogTimeoutMs
+    )
+    if output.code != 0:
+      return "log command failed: " & $output.code
     path.parentDir().createDir()
-    writeFile(path, output.redactLogTokens())
+    writeFile(path, output.output.redactLogTokens())
   except CatchableError as e:
     result = e.msg.shortCommandError()
 
