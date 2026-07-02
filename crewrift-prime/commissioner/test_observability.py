@@ -589,11 +589,14 @@ class CompetitionWinScoringTest(unittest.TestCase):
 
 
 class CompetitionSchedulingTest(unittest.TestCase):
-    def _competition_round_start(self, entrants: list[UUID]) -> RoundStart:
+    def _competition_round_start(
+        self, entrants: list[UUID], player_ids: list[str] | None = None
+    ) -> RoundStart:
+        players = player_ids if player_ids is not None else [f"ply_{i}" for i in range(len(entrants))]
         memberships = [
             MembershipInfo(
                 id=uuid4(), league_id=uuid4(), division_id=_COMPETITION_DIV,
-                policy_version_id=pid, player_id=f"ply_{i}", status="competing",
+                policy_version_id=pid, player_id=players[i], status="competing",
                 substatus="champion", is_champion=True,
             )
             for i, pid in enumerate(entrants)
@@ -715,6 +718,121 @@ class CompetitionSchedulingTest(unittest.TestCase):
                 os.environ.pop("CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS", None)
             else:
                 os.environ["CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS"] = prev
+
+    def test_no_policy_holds_two_seats_when_enough_distinct_policies(self) -> None:
+        # With no configured fillers, empty seats top up from real entrants — but a
+        # policy must never occupy two seats in the SAME episode when there are
+        # enough distinct entrants to fill the roster, so a single player can't
+        # control multiple seats and collude with itself.
+        commissioner = _commissioner()
+        entrants = [uuid4() for _ in range(NUM_SEATS)] + [uuid4(), uuid4()]
+        rs = self._competition_round_start(entrants)
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(len(ep.policy_version_ids), NUM_SEATS)
+            self.assertEqual(
+                len(ep.policy_version_ids), len(set(ep.policy_version_ids)),
+                "no policy may hold two seats in the same episode (self-collusion)",
+            )
+
+    def test_topup_uses_distinct_entrants_before_reusing(self) -> None:
+        # Fewer real entrants than seats and no fillers: the top-up seats must be
+        # filled with the OTHER distinct entrants first (each policy at most once)
+        # before any policy is reused. With 5 entrants across 8 seats every distinct
+        # entrant must appear, and no policy that could stay unique is duplicated.
+        commissioner = _commissioner()
+        entrants = [uuid4() for _ in range(5)]
+        rs = self._competition_round_start(entrants)
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            seated = ep.policy_version_ids
+            self.assertEqual(len(seated), NUM_SEATS)
+            self.assertEqual(
+                set(seated), set(entrants),
+                "every distinct real entrant must be seated before any reuse",
+            )
+            # 5 distinct policies fill the first 5 seats uniquely; only the 3
+            # unavoidable top-up seats reuse (pool exhausted of distinct policies).
+            self.assertEqual(len(seated[:5]), len(set(seated[:5])))
+
+    def test_single_entrant_still_duplicates_to_fill_roster(self) -> None:
+        # The one case where duplication is unavoidable: a lone entrant with no
+        # fillers must still fill all 8 seats so the closed roster can dispatch.
+        commissioner = _commissioner()
+        entrant = uuid4()
+        rs = self._competition_round_start([entrant])
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            self.assertEqual(ep.policy_version_ids, [entrant] * NUM_SEATS)
+            self.assertEqual(ep.tags["filler_seats"], "1,2,3,4,5,6,7")
+
+    def test_two_policies_from_same_player_never_share_a_seat_real(self) -> None:
+        # A player who submitted two policy versions must never occupy two REAL
+        # (scored) seats in one episode — only one of their policies is seated as a
+        # real entrant, so they can't collude across their own versions.
+        commissioner = _commissioner()
+        p1, p2, other = uuid4(), uuid4(), uuid4()
+        # p1 and p2 belong to the SAME player; `other` is a distinct player.
+        rs = self._competition_round_start(
+            [p1, p2, other], player_ids=["ply_shared", "ply_shared", "ply_other"]
+        )
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            filler_seats = {
+                int(s) for s in ep.tags["filler_seats"].split(",") if s.strip()
+            }
+            real_seats = [
+                pid for i, pid in enumerate(ep.policy_version_ids) if i not in filler_seats
+            ]
+            # At most one of the shared-player policies is a real seat.
+            shared_real = [pid for pid in real_seats if pid in {p1, p2}]
+            self.assertLessEqual(
+                len(shared_real), 1,
+                "two policies from the same player must not both hold real seats",
+            )
+            self.assertIn(other, real_seats, "the distinct player is still seated")
+
+    def test_same_player_never_seated_via_two_different_policies(self) -> None:
+        # No configured fillers: empty seats top up from real entrants. A player who
+        # submitted two policies must never be represented by BOTH versions in one
+        # episode. When seats must be duplicated (more seats than distinct players),
+        # the duplicate is an EXACT copy of an already-seated policy (excluded from
+        # scoring), never the player's other version.
+        commissioner = _commissioner()
+        # 4 players, one of whom (ply_a) submitted TWO policy versions.
+        a1, a2, b, c, d = uuid4(), uuid4(), uuid4(), uuid4(), uuid4()
+        rs = self._competition_round_start(
+            [a1, a2, b, c, d],
+            player_ids=["ply_a", "ply_a", "ply_b", "ply_c", "ply_d"],
+        )
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        for ep in schedule.episodes:
+            seated = ep.policy_version_ids
+            self.assertEqual(len(seated), NUM_SEATS)
+            # ply_a's two versions must never BOTH appear: at most one of {a1, a2}
+            # is present in the whole episode (the other version is never seated).
+            versions_present = {pid for pid in seated if pid in {a1, a2}}
+            self.assertLessEqual(
+                len(versions_present), 1,
+                "a player must never be represented by two different policy versions",
+            )
+            # Any seat that repeats a policy (unavoidable duplicate) must be tagged
+            # as a filler seat, so no player is scored twice for one episode.
+            filler_seats = {
+                int(s) for s in ep.tags["filler_seats"].split(",") if s.strip()
+            }
+            real_seats = [
+                pid for i, pid in enumerate(seated) if i not in filler_seats
+            ]
+            self.assertEqual(
+                len(real_seats), len(set(real_seats)),
+                "no policy occupies two REAL (scored) seats",
+            )
 
 
 class XpRequestPayloadTest(unittest.TestCase):

@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -399,6 +400,38 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             self._xp_client = XpRequestClient()
         return self._xp_client
 
+    def _entrant_display_names(self, division_id: Any) -> dict[str, dict[str, str | None]]:
+        """Best-effort {policy_version_id: {player_name, policy_label}} for a division.
+
+        Joins through the platform's membership API (see
+        :meth:`XpRequestClient.get_entrant_display_names`) so the observability
+        HTML can lead with a human handle instead of a raw UUID. This is
+        DISPLAY-ONLY: scoring never reads it, so ANY failure (auth, network, a
+        test double without the method) degrades to an empty map and the report
+        falls back to id-based labels — a name lookup must never fail a round.
+
+        Only an ALREADY-CREATED client is used (the qualifier/filler paths create
+        it on any live deployment long before a Competition round completes);
+        we never construct one here, so an offline/unit-test commissioner does
+        no network I/O for a display nicety.
+        """
+        client = self._xp_client
+        if client is None:
+            return {}
+        try:
+            lookup = getattr(client, "get_entrant_display_names", None)
+            if lookup is None:
+                return {}
+            names = lookup(str(division_id))
+            return names if isinstance(names, dict) else {}
+        except Exception as exc:  # noqa: BLE001 - observability only, never raise.
+            print(
+                "WARNING: crewrift-prime: entrant display-name lookup failed for "
+                f"division {division_id} ({exc}); rendering id-based labels.",
+                flush=True,
+            )
+            return {}
+
     def _interview_transport(self, membership: MembershipSnapshot) -> InterviewTransport:
         """Build/locate the interview transport for a candidate (the launch seam).
 
@@ -477,18 +510,25 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     def _schedule_competition_round(
         self, round_start: CommissionerRoundStart, view: RoundStartView
     ) -> CommissionerScheduleEpisodes:
-        """Schedule full 8-seat Competition games with AT MOST ONE real policy per seat.
+        """Schedule full 8-seat Competition games with AT MOST ONE seat per PLAYER.
 
         The closed-roster 8-seat crewrift game must dispatch exactly ``NUM_SEATS``
-        policies. Each episode seats every real entrant AT MOST ONCE (no real policy
-        occupies more than one seat in a game). When fewer than ``NUM_SEATS`` real
-        entrants are competing, the remaining seats are TOPPED UP with the standard
-        default filler policies (resolved by :meth:`_filler_policy_version_ids`:
-        the ``CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS`` env override, else the
+        policies. Each episode seats every competing PLAYER AT MOST ONCE — no player
+        occupies two seats in a game, even if they submitted multiple policy
+        versions (only one of a player's versions is ever seated per episode). When
+        fewer than ``NUM_SEATS`` distinct players are competing, the remaining seats
+        are TOPPED UP with the standard default filler policies (resolved by
+        :meth:`_filler_policy_version_ids`: the
+        ``CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS`` env override, else the
         per-league fillers served by ``GET /v2/leagues/{league_id}/filler-policies``).
-        If no fillers are configured we fall back to cycling real entrants into the empty
-        seats so the game can still run — but those duplicate seats, like all filler
-        seats, are recorded in ``filler_seats`` and EXCLUDED from scoring/ranking by
+        If no fillers are configured we fall back to cycling real entrants into the
+        empty seats so the game can still run — but NEVER seating a policy whose
+        PLAYER already holds a seat in that same episode (so one player can't control
+        two seats and collude with itself). Only when there are genuinely more seats
+        than distinct players (and no fillers) is a seat unavoidably duplicated, and
+        then it EXACTLY copies an already-seated policy rather than a player's other
+        version. Those duplicate top-up seats, like all filler seats, are recorded in
+        ``filler_seats`` and EXCLUDED from scoring/ranking by
         ``_complete_competition_round`` (filler/duplicate wins never count).
 
         The real entrants and the seat rotation are shifted per episode so seat/role
@@ -501,6 +541,17 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         num_episodes = self._competition_num_episodes(view, len(entries))
         variant_id = self._competition_variant_id(round_start)
         entrant_ids = [entry.policy_version_id for entry in entries]
+        # Map each real entrant policy to its PLAYER so a single player can never
+        # occupy two seats in one episode — even across two DIFFERENT policy
+        # versions they submitted. Fillers (and any policy with no known player)
+        # have no player id and are only deduped by policy. When two entrant
+        # policies share a player id they collapse to one seat-eligible player.
+        player_by_policy = {
+            entry.policy_version_id: (
+                str(entry.player_id) if entry.player_id is not None else None
+            )
+            for entry in entries
+        }
         league_id = getattr(round_start.league, "id", None)
         filler_ids = self._filler_policy_version_ids(league_id)
         episodes = [
@@ -508,6 +559,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 round_start=round_start,
                 episode_index=episode_index,
                 entrant_ids=entrant_ids,
+                player_by_policy=player_by_policy,
                 filler_ids=filler_ids,
                 variant_id=variant_id,
             )
@@ -521,6 +573,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         round_start: CommissionerRoundStart,
         episode_index: int,
         entrant_ids: list[UUID],
+        player_by_policy: dict[UUID, str | None],
         filler_ids: list[UUID],
         variant_id: str,
     ) -> CommissionerProtocolEpisodeRequest:
@@ -535,25 +588,56 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         ``_complete_competition_round`` so filler seats — and any policy that only
         appears as a filler — are excluded from scoring and never scored as a real
         entrant.
+
+        No single PLAYER ever occupies two seats in the same episode: real seats are
+        deduped by player (so two policy versions submitted by the same player never
+        share a game), and the top-up never seats a policy whose player is already
+        present. This prevents a player from controlling multiple seats and colluding
+        with itself.
         """
-        # Real entrants, each seated at most once, rotated per episode for balance.
+        # Dedup identity for a policy: its PLAYER if known, else the policy id. Two
+        # policies from the same player collapse to one identity so they can't share
+        # a game. Fillers/unknown-player policies dedup by their own policy id.
+        def seat_key(policy: UUID) -> str:
+            player = player_by_policy.get(policy)
+            return f"player:{player}" if player is not None else f"policy:{policy}"
+
+        # Real entrants, at most one seat PER PLAYER, rotated per episode for balance.
         seat_policies: list[UUID] = []
+        seated_keys: set[str] = set()
         if entrant_ids:
             offset = episode_index % len(entrant_ids)
             rotated = entrant_ids[offset:] + entrant_ids[:offset]
-            seat_policies = rotated[:NUM_SEATS]
+            for policy in rotated:
+                if len(seat_policies) >= NUM_SEATS:
+                    break
+                key = seat_key(policy)
+                if key in seated_keys:
+                    continue
+                seat_policies.append(policy)
+                seated_keys.add(key)
         real_seat_count = len(seat_policies)
 
         # Top up the remaining seats. Prefer configured fillers (whose results are
-        # excluded); when none are configured, cycle real entrants so the closed
-        # roster can still dispatch (those duplicate seats are excluded too).
+        # excluded). When none are configured, cycle real entrants so the closed
+        # roster can still dispatch (those duplicate seats are excluded from
+        # scoring) — but NEVER seat a policy whose PLAYER is already in THIS episode,
+        # so a single player can't hold two seats and collude with itself. A policy
+        # is only reused for a top-up seat once every OTHER distinct player has
+        # already been placed (i.e. the pool is genuinely exhausted, e.g. a single
+        # entrant with no fillers).
         remaining = NUM_SEATS - real_seat_count
         topup_is_filler = bool(filler_ids)
         if remaining > 0:
             topup_pool = filler_ids if topup_is_filler else entrant_ids
             seat_policies.extend(
-                topup_pool[(episode_index + index) % len(topup_pool)]
-                for index in range(remaining)
+                _distinct_topup(
+                    topup_pool,
+                    already_seated=seat_policies,
+                    count=remaining,
+                    rotation=episode_index,
+                    key=seat_key,
+                )
             )
 
         filler_seats = list(range(real_seat_count, NUM_SEATS))
@@ -916,6 +1000,12 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             entry for entry in entries if str(entry.policy_version_id) not in filler_policy_ids
         ]
 
+        # Best-effort display names (player_name / policy_label) for the report's
+        # HTML view, keyed by policy_version_id. Round-start memberships carry only
+        # ids, so we join through the platform's membership API; observability
+        # never fails a round, so a lookup failure just falls back to id labels.
+        display_names = self._entrant_display_names(view.current_division.id)
+
         # Per episode: coerced game_results, the policy at each seat, and the seat
         # indices that are filler/duplicate top-up (excluded from scoring).
         #
@@ -1009,6 +1099,10 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 {
                     "policy_version_id": pid,
                     "player_id": str(entry.player_id) if entry.player_id is not None else None,
+                    # Human display names for the observability HTML (never used
+                    # for scoring); None when the membership lookup had no name.
+                    "player_name": display_names.get(pid, {}).get("player_name"),
+                    "policy_label": display_names.get(pid, {}).get("policy_label"),
                     "wins": rec.wins,
                     "imposter_wins": rec.imposter_wins,
                     "crew_wins": rec.crew_wins,
@@ -1723,6 +1817,64 @@ def _status_str(status: Any) -> str:
     """Normalize a membership status (enum or str) to its lowercase value."""
     value = status.value if hasattr(status, "value") else str(status)
     return value.lower()
+
+
+def _distinct_topup(
+    pool: list[UUID],
+    *,
+    already_seated: list[UUID],
+    count: int,
+    rotation: int,
+    key: Callable[[UUID], str] | None = None,
+) -> list[UUID]:
+    """Pick ``count`` top-up policies from ``pool``, avoiding duplicates in a seat.
+
+    Returns policies drawn from ``pool`` for the empty seats, preferring policies
+    whose dedup identity is NOT already present in ``already_seated`` (nor already
+    chosen for this top-up) so no identity occupies two seats in the same episode.
+    ``key`` maps a policy to its dedup identity — by default its own id, but
+    scheduling passes a PLAYER-aware key so two policies from the same player (and
+    a player already holding a real seat) count as the same identity and can't
+    share a game. Self-collusion (one player controlling multiple seats) is thus
+    impossible whenever the pool holds enough distinct identities.
+
+    When the pool is exhausted of distinct identities (e.g. more seats than
+    distinct players and no configured fillers), the closed roster still has to
+    dispatch, so remaining seats are filled by EXACTLY DUPLICATING already-seated
+    policies (cycling for balance) rather than introducing a seated player's OTHER
+    policy version — so a player is never represented by two DIFFERENT policies in
+    one game, and any unavoidable duplicate seat is a pure copy that scoring
+    excludes. ``rotation`` shifts the starting point per episode for balance.
+    """
+    if not pool:
+        return []
+    identity = key if key is not None else (lambda policy: f"policy:{policy}")
+    seated_keys = {identity(policy) for policy in already_seated}
+    chosen: list[UUID] = []
+    size = len(pool)
+    reuse_index = 0
+    for index in range(count):
+        # Prefer a policy whose identity is not already present in this episode.
+        picked: UUID | None = None
+        for step in range(size):
+            candidate = pool[(rotation + index + step) % size]
+            candidate_key = identity(candidate)
+            if candidate_key not in seated_keys:
+                picked = candidate
+                seated_keys.add(candidate_key)
+                break
+        if picked is None:
+            # Pool exhausted of distinct identities: the roster must still fill, so
+            # duplicate an ALREADY-PLACED policy exactly (never a seated player's
+            # OTHER version), cycling for balance. Prefer reusing top-up policies
+            # already chosen for this episode (e.g. keep cycling the filler bots);
+            # otherwise duplicate an already-seated real policy. Either way the
+            # duplicate seats are tagged filler and excluded from scoring.
+            reuse_pool = chosen or already_seated or pool
+            picked = reuse_pool[(rotation + reuse_index) % len(reuse_pool)]
+            reuse_index += 1
+        chosen.append(picked)
+    return chosen
 
 
 def _filler_seats_by_request(
