@@ -6329,7 +6329,10 @@ proc hasQuestionProbeClaim(text: string): bool =
   for word in text.normalizeSocialText().splitWhitespace():
     if word in [
       "ask", "asks", "asked", "asking", "question", "questions",
-      "where", "route", "routes", "explain", "who", "closest"
+      "where", "route", "routes", "explain", "who", "closest",
+      "exact", "exactly", "timeline", "account", "clarity",
+      "quiet", "silent", "gap", "confirmed", "headed",
+      "arrived", "late", "body", "bodies", "near", "danger"
     ]:
       asks = true
     elif word in [
@@ -8181,6 +8184,8 @@ proc escapeBodyAction(bot: var Bot, bodyX, bodyY: int): uint8
 
 proc holdTaskAction(bot: var Bot, name: string): uint8 =
   ## Holds only the action button while completing a task.
+  let fakeTask =
+    bot.role == RoleImposter and not bot.isGhost
   if bot.role == RoleImposter and not bot.isGhost:
     let body = bot.nearestBody()
     if body.found:
@@ -8189,9 +8194,24 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
       bot.fakeTaskHoldIndex = -1
       bot.logEvent("notsus fake task canceled near body")
       return bot.escapeBodyAction(body.x, body.y)
-  bot.intent = "doing task at " & name & " hold=" & $bot.taskHoldTicks
-  bot.desiredMask = ButtonA
-  bot.controllerMask = ButtonA
+  let nearVent =
+    fakeTask and bot.nearestVentAt(
+      bot.playerWorldX(),
+      bot.playerWorldY()
+    ).found
+  let actionMask =
+    if nearVent:
+      0'u8
+    else:
+      ButtonA
+  bot.intent =
+    if nearVent:
+      "faking task at " & name & " hold=" & $bot.taskHoldTicks &
+        " no action near vent"
+    else:
+      "doing task at " & name & " hold=" & $bot.taskHoldTicks
+  bot.desiredMask = actionMask
+  bot.controllerMask = actionMask
   bot.clearPath()
   bot.stuckFrames = 0
   bot.jiggleTicks = 0
@@ -8205,8 +8225,8 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
       bot.completeFakeTask(bot.taskHoldIndex)
       bot.fakeTaskHoldIndex = -1
       bot.taskHoldIndex = -1
-      bot.thought("at task " & name & ", holding action")
-      return ButtonA
+      bot.thought(bot.intent)
+      return actionMask
   if bot.taskHoldTicks == 0 and
       bot.taskHoldIndex >= 0 and
       bot.taskHoldIndex < bot.taskStates.len:
@@ -8219,8 +8239,8 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
     else:
       bot.taskStates[bot.taskHoldIndex] = TaskMandatory
     bot.taskHoldIndex = -1
-  bot.thought("at task " & name & ", holding action")
-  ButtonA
+  bot.thought(bot.intent)
+  actionMask
 
 proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   ## Presses action to report a visible dead body.

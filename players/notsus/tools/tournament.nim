@@ -1270,82 +1270,102 @@ proc replayPath(config: ToolConfig, game: Game): string
 
 proc downloadReplay(game: Game, path: string): string
 
-proc replayPolicyAverages(
+proc replayPolicyWinScores(
   config: ToolConfig,
   game: Game
-): Table[string, tuple[total: float, count: int]] =
-  ## Returns replay score totals grouped by policy identifier.
+): Table[string, float] =
+  ## Returns recovered binary policy scores from replay win flags.
   let path = config.replayPath(game)
   if not fileExists(path):
     return
   let players = replayPlayerResultsForPath(path)
-  var slots: seq[tuple[found: bool, score: float]]
+  var slots: seq[tuple[found: bool, won: bool]]
   for player in players:
     if player.slot < 0:
       continue
+    if not player.hasResult:
+      continue
     while slots.len <= player.slot:
-      slots.add (found: false, score: 0.0)
-    slots[player.slot] = (found: true, score: player.score.float)
+      slots.add (found: false, won: false)
+    slots[player.slot] = (found: true, won: player.won)
+  var stats = initTable[string, tuple[wins, count: int]]()
   for participant in game.participants:
     if participant.policyId.len == 0:
       continue
     let slot = participant.position
     if slot < 0 or slot >= slots.len or not slots[slot].found:
       continue
-    var stats = result.getOrDefault(participant.policyId)
-    stats.total += slots[slot].score
-    inc stats.count
-    result[participant.policyId] = stats
+    var item = stats.getOrDefault(participant.policyId)
+    if slots[slot].won:
+      inc item.wins
+    inc item.count
+    stats[participant.policyId] = item
+
+  var
+    hasZero = false
+    hasOne = false
+    recovered = initTable[string, float]()
+  for score in game.scores:
+    if score.policyId.len == 0:
+      return
+    let item = stats.getOrDefault(score.policyId)
+    if item.count == 0:
+      return
+    if item.wins == 0:
+      recovered[score.policyId] = 0.0
+      hasZero = true
+    elif item.wins == item.count:
+      recovered[score.policyId] = 1.0
+      hasOne = true
+    else:
+      return
+  if hasZero and hasOne:
+    result = recovered
 
 proc replayBinaryScores(
   config: ToolConfig,
   game: Game
 ): Table[string, float] =
-  ## Returns recovered binary policy scores from replay averages.
-  let averages = config.replayPolicyAverages(game)
-  if averages.len == 0:
-    return
-  var best = -1.0e300
-  for score in game.scores:
-    if score.policyId.len == 0:
-      return
-    let average = averages.getOrDefault(score.policyId)
-    if average.count == 0:
-      return
-    best = max(best, average.total / average.count.float)
-  var bestCount = 0
-  for score in game.scores:
-    let average = averages[score.policyId]
-    if (average.total / average.count.float).nearScore(best):
-      inc bestCount
-  if bestCount == game.scores.len:
-    return
-  for score in game.scores:
-    let average = averages[score.policyId]
-    if (average.total / average.count.float).nearScore(best):
-      result[score.policyId] = 1.0
-    else:
-      result[score.policyId] = 0.0
+  ## Returns recovered binary policy scores from replay win flags.
+  config.replayPolicyWinScores(game)
+
+proc hasTiedNonBinaryScores(scores: openArray[Score]): bool =
+  ## Returns true when stale numeric scores may hide win results.
+  for score in scores:
+    if not score.score.binaryScore():
+      for i in 0 ..< scores.len:
+        for j in i + 1 ..< scores.len:
+          if scores[i].score.nearScore(scores[j].score):
+            return true
+      return false
+  false
+
+proc replayScoreRecoveryCandidate(game: Game): bool =
+  ## Returns true when replay data may improve cached scores.
+  if game.scores.noResultBinaryScores():
+    return true
+  game.scores.hasTiedNonBinaryScores()
 
 proc fillReplayScores(
   config: ToolConfig,
   games: var seq[Game],
   freshIds: HashSet[string]
 ) =
-  ## Recovers no-signal binary tournament rows from replay score tables.
+  ## Recovers stale tournament rows from replay win tables.
+  if not config.recoverReplayScores:
+    return
+  createDir(config.outDir / "replays")
   var
     checked = 0
     downloaded = 0
     failed = 0
     recoveredCount = 0
   for game in games.mitems:
-    if game.status != "completed" or not game.scores.noResultBinaryScores():
+    if game.status != "completed" or not game.replayScoreRecoveryCandidate():
       continue
     let path = config.replayPath(game)
     let canDownload =
-      config.recoverReplayScores and (
-        config.downloadReplays or freshIds.contains(game.id)
-      )
+      config.downloadReplays or freshIds.contains(game.id)
     if not fileExists(path) and not canDownload:
       continue
     inc checked
@@ -2896,8 +2916,20 @@ proc heatKey(rowId, columnId: string): string =
   ## Returns a table key for one heat-map matchup.
   rowId & "\t" & columnId
 
-proc addHeatResult(stats: var HeatStats, margin: float) =
+proc addHeatResult(
+  stats: var HeatStats,
+  rowScore,
+  columnScore: float,
+  binary: bool
+) =
   ## Adds one score comparison to a heat-map cell.
+  if binary:
+    if rowScore.nearScore(1.0):
+      inc stats.wins
+    elif rowScore.nearScore(0.0):
+      inc stats.losses
+    return
+  let margin = rowScore - columnScore
   if margin > ScoreEpsilon:
     inc stats.wins
   elif margin < -ScoreEpsilon:
@@ -2933,6 +2965,7 @@ proc computeHeat(games: openArray[Game]): Table[string, HeatStats] =
   for game in games:
     if game.status != "completed":
       continue
+    let binary = game.scores.binaryScoreFlags()
     let entries = game.heatScoreEntries()
     for i in 0 ..< entries.len:
       for j in 0 ..< entries.len:
@@ -2940,7 +2973,11 @@ proc computeHeat(games: openArray[Game]): Table[string, HeatStats] =
           continue
         let key = heatKey(entries[i].key, entries[j].key)
         var stats = result.getOrDefault(key)
-        stats.addHeatResult(entries[i].score - entries[j].score)
+        stats.addHeatResult(
+          entries[i].score,
+          entries[j].score,
+          binary.binary
+        )
         result[key] = stats
 
 proc heatRatio(value: float, scale: HeatScale): float =
@@ -3904,12 +3941,12 @@ proc writeReport(
   echo "Writing strategy page..."
   let strategyDocs = readStrategyDocs()
   writeStrategyPage(config, strategyDocs)
-  renderGamePages(config, games, freshGames)
   var freshIds: HashSet[string]
   for game in freshGames:
     freshIds.incl game.id
   var scoredGames = @games
   config.fillReplayScores(scoredGames, freshIds)
+  renderGamePages(config, scoredGames, freshGames)
   echo "Writing tournament metadata..."
   writeMetadata(config, scoredGames)
   echo "Computing tournament stats..."

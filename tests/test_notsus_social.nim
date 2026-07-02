@@ -96,6 +96,14 @@ suite "notsus social reasoning":
     )
     check claims.len == 0
 
+  test "silence and timeline probes are not accusations":
+    let claims = parsePlainSocialClaims(
+      7,
+      "Red, you were quiet after Storage. Need clarity on your timeline. " &
+        "Where exactly were you headed?"
+    )
+    check claims.len == 0
+
   test "dead player context does not eat real target":
     let claims = parsePlainSocialClaims(
       2,
