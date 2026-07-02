@@ -121,7 +121,7 @@ const
   VoteMoveAckTicks = sim.TargetFps div 2
   SusVoteMinScore = 75
   CrewPileMinSusScore = 45
-  UrgentCrewEffectiveMinScore = CrewPileMinSusScore
+  UrgentCrewEffectiveMinScore = 1
   VotedAgainstSusWeight = 10
   UnsupportedClaimSusScore = 60
   UnsupportedClaimMaxScore = 120
@@ -4352,6 +4352,9 @@ proc logProgressHeartbeat(bot: Bot) =
       " eventAge=" & eventAge &
       " mask=" & inputMaskSummary(bot.lastMask) &
       " velocity=(" & $bot.velocityX & "," & $bot.velocityY & ")" &
+      " crewmates=" & $bot.visibleCrewmates.len &
+      " bodies=" & $bot.visibleBodies.len &
+      " ghosts=" & $bot.visibleGhosts.len &
       " intent=" & bot.intent
   )
   bot.lastEventFrameTick = eventTickBeforeLog
@@ -6354,6 +6357,8 @@ proc unsupportedConcreteClaim(bot: Bot, claim: SocialClaim): bool =
     return false
   if claim.target < 0 or claim.target >= PlayerColorCount:
     return false
+  if not claim.reason.socialTargetHardActionClaim(claim.target):
+    return false
   bot.directVoteSusScore(claim.target) < SusVoteMinScore
 
 proc addUnsupportedClaimScore(bot: var Bot, colorIndex: int) =
@@ -6920,6 +6925,33 @@ proc fallbackSuspectLine(bot: Bot, colorIndex: int, reason: string): string =
     "Pressure on " & lowerName & ". I saw " & lowerName & " " &
       reason & "; explain."
 
+proc fallbackUrgentVoteLine(
+  bot: Bot,
+  colorIndex: int,
+  reason: string
+): string =
+  ## Returns an urgent plain-English vote call for one suspect.
+  let
+    lowerName = playerColorName(colorIndex)
+    name = lowerName.capitalizeAscii()
+  case bot.fallbackVariantIndex(6, colorIndex * 19 + 97)
+  of 0:
+    "Vote " & lowerName & ". " & name & " is my best read from " &
+      reason & "."
+  of 1:
+    "I am voting " & lowerName & ". " & name & " looks worst from " &
+      reason & "."
+  of 2:
+    "We need a vote. " & name & " is my strongest sus from " &
+      reason & "."
+  of 3:
+    "Do not skip. Vote " & lowerName & " from " & reason & "."
+  of 4:
+    "My vote is " & lowerName & ". " & name &
+      " needs to go from " & reason & "."
+  else:
+    "Several dead. Vote " & lowerName & "; " & reason & " points there."
+
 proc fallbackRouteProbeLine(bot: Bot, colorIndex: int): string =
   ## Returns a varied route question for weak body-area evidence.
   let name = playerColorLogName(colorIndex)
@@ -7009,7 +7041,9 @@ proc fallbackVotingChatCandidates(bot: Bot): seq[string] =
   if target.found:
     let
       reason = bot.fallbackTargetReason(target.colorIndex)
-    if reason == "near a body" and not bot.urgentCrewVote():
+    if bot.urgentCrewVote():
+      result.add bot.fallbackUrgentVoteLine(target.colorIndex, reason)
+    elif reason == "near a body":
       result.add bot.fallbackRouteProbeLine(target.colorIndex)
     else:
       result.add bot.fallbackSuspectLine(target.colorIndex, reason)
@@ -7628,6 +7662,29 @@ proc crewEarlyVoteReady(
   let colorIndex = bot.voteSlots[decision.target].colorIndex
   bot.directVoteSusScore(colorIndex) >= EmergencyButtonStrongSusScore
 
+proc crewTopEffectiveVotePlausible(bot: Bot, target: int): bool =
+  ## Returns true when crew should trust a top-effective vote target.
+  if bot.role != RoleCrewmate:
+    return true
+  if target < 0 or target >= bot.votePlayerCount:
+    return false
+  if bot.criticalCrewVote():
+    return true
+  let colorIndex = bot.voteSlots[target].colorIndex
+  if colorIndex < 0 or colorIndex >= PlayerColorCount:
+    return false
+  let scores = bot.effectiveSusScores()
+  if bot.urgentCrewVote() and scores[colorIndex] >=
+      UrgentCrewEffectiveMinScore:
+    return true
+  let direct = bot.targetDirectVoteSusScore(target)
+  if direct >= SusVoteMinScore:
+    return true
+  if bot.socialSusClaimCountFor(target) >= SocialCrewBrigadeVotes and
+      bot.socialClaimTargetPlausible(target):
+    return true
+  scores[colorIndex] >= SusVoteMinScore
+
 proc desiredVotingDecision(
   bot: Bot,
   listenedTicks: int
@@ -7666,7 +7723,9 @@ proc desiredVotingDecision(
       urgent and
       listenedTicks >= VoteListenBaseTicks:
     let effective = bot.bestLegalEffectiveVoteTarget()
-    if effective.found and effective.score >= UrgentCrewEffectiveMinScore:
+    if effective.found and
+        effective.score >= UrgentCrewEffectiveMinScore and
+        bot.crewTopEffectiveVotePlausible(effective.target):
       return (
         effective.target,
         "urgent crew vote, top effective sus " &
@@ -7674,6 +7733,16 @@ proc desiredVotingDecision(
         false
       )
   if bot.socialDecisionSafe(decision):
+    if bot.role == RoleCrewmate and
+        decision.reason.startsWith("top effective sus") and
+        not bot.crewTopEffectiveVotePlausible(decision.target):
+      if forced:
+        return (
+          bot.votePlayerCount,
+          "weak top effective evidence, skipping",
+          true
+        )
+      return (VoteUnknown, "waiting instead of weak top effective", false)
     if bot.role == RoleCrewmate and
         decision.reason.startsWith("joining social vote pile") and
         not bot.votePileTargetPlausible(decision.target):
@@ -7686,7 +7755,9 @@ proc desiredVotingDecision(
         )
       if forced:
         let effective = bot.bestLegalEffectiveVoteTarget()
-        if effective.found and effective.score >= CrewPileMinSusScore:
+        if effective.found and
+            effective.score >= CrewPileMinSusScore and
+            bot.crewTopEffectiveVotePlausible(effective.target):
           return (
             effective.target,
             "blocked weak pile, top effective sus " &

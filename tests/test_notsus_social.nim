@@ -96,6 +96,15 @@ suite "notsus social reasoning":
     )
     check claims.len == 0
 
+  test "task questions do not become clears":
+    let claims = parsePlainSocialClaims(
+      0,
+      "Cyan needs to answer. I saw cyan following people. Cyan, what tasks?"
+    )
+    check claims.len == 1
+    check claims[0].target == 7
+    check claims[0].stance == SocialSus
+
   test "silence and timeline probes are not accusations":
     let claims = parsePlainSocialClaims(
       7,
@@ -172,6 +181,14 @@ suite "notsus social reasoning":
     check claims[0].target == 1
     check claims[0].stance == SocialSus
     check claims[0].strength == SocialHighClaim
+
+  test "hard action checks target":
+    let text =
+      "Cyan and yellow both followed me. Cyan was near Observatory " &
+      "with red and me. Where exactly was red killed?"
+    check not socialTargetHardActionClaim(text, 7)
+    check socialTargetHardActionClaim("Cyan killed red near Observatory.", 7)
+    check not socialTargetHardActionClaim("Cyan killed red near Observatory.", 0)
 
   test "trust flows through clears":
     var graph: SocialMatrix

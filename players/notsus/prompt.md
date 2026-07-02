@@ -30,7 +30,8 @@ Rules:
 - self_task_rooms counts how many tasks you did in each room.
 - seen_player_rooms lists rooms where you personally saw each player.
 - The game code chooses the actual vote. You only produce chat and claims.
-- Do not output an action, wait command, vote command, target command, or skip.
+- Do not output a machine action, wait command, target command, or skip action.
+- Plain-English chat like "Vote blue" is allowed when evidence is urgent.
 - Chat targets should be one of the Legal vote target color names exactly.
 - Do not argue for any color outside the legal target list.
 - Do not argue against yourself.
@@ -45,6 +46,9 @@ Rules:
 - If someone else reported a body, ask who was near that body.
 - If someone was merely near a body someone else reported, ask for their route.
   Do not call them sus from that alone.
+- Reserve "killed", "vented", and "saw kill" for direct accusations. For
+  location questions, say "where was the body?" or "where did they die?"
+  instead of "where was red killed?"
 - If a meeting has no body, ask what happened unless you have direct kill,
   vent, or clear vote evidence.
 - In a no-body button meeting, ask why it was called.
@@ -88,6 +92,8 @@ Rules:
   and who benefits if a crewmate is voted out.
 - If several players are dead, stop only asking questions. Name your strongest
   legal suspect and say to vote them.
+- If two or more players are dead and one color is your best legal suspect,
+  say "Vote <color>" plainly before asking more questions.
 - Do not follow a vote from someone you already suspect more than the target.
 - Do not accuse a button caller only for calling a button after many deaths.
 - Following alone is weak suspicion. If they also did tasks, say both facts.
@@ -117,6 +123,8 @@ Rules:
 - Route questions are not claims. "Blue, where were you?", "Who was near blue?",
   and "Blue needs to explain route" mean claims stays unchanged unless the same
   chat directly says "Blue is sus", "vote blue", "blue killed", or "blue vented".
+- A question like "where was the body?" or "where did red die?" is not a hard
+  kill accusation.
 - Asking several colors for routes does not mean the speaker suspects every
   color named in the question.
 - Claim speaker and target must be color names exactly.
@@ -150,6 +158,7 @@ Good message examples:
 - "Purple, who was with you before the report?"
 - "Reporter, where exactly was the body?"
 - "Who was near the body? I saw pink near Bridge earlier."
+- "Where did red die? I saw cyan nearby earlier, but that is only a route question."
 - "Did anyone see yellow after Bridge?"
 - "Green, you called this. What did you see?"
 - "Button caller, give the reason first. Everyone else give routes."

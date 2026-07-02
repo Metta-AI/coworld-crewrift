@@ -288,6 +288,7 @@ proc socialQuestionMention(words: openArray[string], index: int): bool =
       "near", "with", "body", "dead", "died", "killed", "murdered"
     ]:
       return true
+  hasQuestion and hasInfo
 
 proc socialWithMe(words: openArray[string], index: int): bool =
   ## Returns true when plain chat says this color was with me.
@@ -365,6 +366,22 @@ proc parsePlainSocialClaims*(
           strength: stance.strength,
           reason: text
         )
+
+proc socialTargetHardActionClaim*(text: string, target: int): bool =
+  ## Returns true when text directly says the target killed or vented.
+  if target < 0 or target >= PlayerColorNames.len:
+    return false
+  let normalizedColor = PlayerColorNames[target].normalizeSocialText()
+  for words in text.socialWordSentences():
+    for i, word in words:
+      if word != normalizedColor:
+        continue
+      if words.socialKilledVictim(i) or
+          words.socialDeadMention(i) or
+          words.socialQuestionMention(i):
+        continue
+      if words.socialNear(i, SocialHighSusWords, 3, 3):
+        return true
 
 proc parseSocialClaim(node: JsonNode): tuple[ok: bool, claim: SocialClaim] =
   ## Parses one social claim JSON node.

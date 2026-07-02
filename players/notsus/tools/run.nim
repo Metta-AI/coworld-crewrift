@@ -3845,9 +3845,11 @@ proc renderGamePages(
     let
       replayPath = paths.replays / replayFileName(gameIndex)
       gamePath = paths.root / gameFileName(gameIndex)
+    var logHrefs = newSeq[string](config.bots.len)
+    if episode.status == "completed" or fileExists(replayPath):
       logHrefs = focusedLogHrefs(config, paths, episode, gameIndex)
     var replayError = ""
-    if config.downloadReplays:
+    if config.downloadReplays and episode.status == "completed":
       replayError = episode.downloadReplay(replayPath)
 
     var html = pageStart(
