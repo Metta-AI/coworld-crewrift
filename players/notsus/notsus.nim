@@ -124,6 +124,8 @@ const
   SusVoteMinScore = 75
   CrewPileMinSusScore = 45
   UrgentCrewEffectiveMinScore = 1
+  UrgentCrewDirectMinScore = 40
+  UrgentCrewDirectSlack = 20
   VotedAgainstSusWeight = 10
   UnsupportedClaimSusScore = 60
   UnsupportedClaimMaxScore = 120
@@ -6289,6 +6291,16 @@ proc votePileTargetPlausible(bot: Bot, target: int): bool =
     targetDirect = bot.targetDirectVoteSusScore(target)
     bestDirect = bot.bestLegalDirectVoteTarget()
   if bot.role == RoleCrewmate:
+    if bot.urgentCrewVote() and
+        not bot.criticalCrewVote() and
+        bestDirect.found and
+        bestDirect.score >= UrgentCrewDirectMinScore:
+      if target == bestDirect.target:
+        return true
+      if targetDirect < UrgentCrewDirectMinScore:
+        return false
+      if targetDirect + UrgentCrewDirectSlack < bestDirect.score:
+        return false
     let targetColor = bot.voteSlots[target].colorIndex
     if targetColor < 0 or targetColor >= PlayerColorCount:
       return false
@@ -7586,6 +7598,10 @@ proc shouldSwitchCrewVote(
       nextPile >= SocialCrewBrigadeVotes and
       nextScore + 5 >= ownScore:
     return true
+  if bot.urgentCrewVote() and
+      nextPile >= SocialCrewBrigadeVotes and
+      not bot.votePileTargetPlausible(nextVote):
+    return false
   if nextPile >= 3 and nextScore + 20 >= ownScore:
     return true
   if bot.criticalCrewVote() and nextScore > ownScore:
@@ -7771,11 +7787,18 @@ proc crewTopEffectiveVotePlausible(bot: Bot, target: int): bool =
   let colorIndex = bot.voteSlots[target].colorIndex
   if colorIndex < 0 or colorIndex >= PlayerColorCount:
     return false
-  let scores = bot.effectiveSusScores()
-  if bot.urgentCrewVote() and scores[colorIndex] >=
-      UrgentCrewEffectiveMinScore:
-    return true
   let direct = bot.targetDirectVoteSusScore(target)
+  if bot.urgentCrewVote():
+    let bestDirect = bot.bestLegalDirectVoteTarget()
+    if direct < UrgentCrewDirectMinScore:
+      return false
+    if bestDirect.found and
+        bestDirect.score >= UrgentCrewDirectMinScore and
+        target != bestDirect.target and
+        direct + UrgentCrewDirectSlack < bestDirect.score:
+      return false
+    return true
+  let scores = bot.effectiveSusScores()
   if direct >= SusVoteMinScore:
     return true
   if bot.socialSusClaimCountFor(target) >= SocialCrewBrigadeVotes and
@@ -7820,6 +7843,14 @@ proc desiredVotingDecision(
   if bot.role == RoleCrewmate and
       urgent and
       listenedTicks >= VoteListenBaseTicks:
+    let direct = bot.bestLegalDirectVoteTarget()
+    if direct.found and direct.score >= UrgentCrewDirectMinScore:
+      return (
+        direct.target,
+        "urgent crew vote, direct evidence against " &
+          bot.voteTargetName(direct.target),
+        false
+      )
     let effective = bot.bestLegalEffectiveVoteTarget()
     if effective.found and
         effective.score >= UrgentCrewEffectiveMinScore and
