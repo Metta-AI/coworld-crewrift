@@ -3,8 +3,11 @@
 
 Runs the SAME pure decision function the hosted commissioner uses
 (``decision.evaluate_entrants``) over sample or saved episode ``game_results``,
-WITHOUT the hosted round-runner, and prints the decision records (and the exact
-``COMMISSIONER_DECISION {json}`` line the hosted path logs).
+WITHOUT the hosted round-runner, and prints the decision records (and the
+``COMMISSIONER_DECISION {json}`` payload shape the hosted path logs — this
+script builds the JSON directly from ``DECISION_LOG_TAG``/``record.to_dict()``
+rather than importing the hosted commissioner's ``_emit_decision_log``, so it
+omits the ``ts``/``level`` envelope fields the live commissioner adds).
 
 Usage
 -----
@@ -84,8 +87,9 @@ def main(argv: list[str]) -> int:
                 f"    [{mark}] {v.skill:<8} {v.metric_name}={v.metric_value:.4f} "
                 f"{v.comparator}{v.threshold:g}  episodes={v.episodes_counted}  raw={v.raw_inputs}"
             )
-        # show the exact hosted stdout line so local and hosted match
-        print("  hosted log line:")
+        # payload shape matches the hosted line; the hosted commissioner also adds
+        # "ts"/"level" envelope fields via _emit_decision_log (not reproduced here).
+        print("  hosted log line (payload shape; ts/level omitted):")
         print(
             f"    {DECISION_LOG_TAG} "
             + json.dumps({"entrant_policy_version_id": entrant, **record.to_dict()}, sort_keys=True)

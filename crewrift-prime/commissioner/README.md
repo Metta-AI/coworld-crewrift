@@ -259,6 +259,24 @@ and emits it through **three protocol-supported channels**:
    ```
 
    Grep the hosted logs with `COMMISSIONER_DECISION` to see every decision.
+   Every stdout line the commissioner emits — across all four tags below — is a
+   single-line JSON payload prefixed by its tag, and every payload carries `ts`
+   (UTC ISO-8601) and `level` (`INFO`/`WARNING`/`ERROR`):
+
+   - `COMMISSIONER_DECISION` — qualification/ranking decisions: promotion/hold
+     reasons, `INFRA_HOLD`/`CRASH_DQ` (logged at `ERROR`), `COMPETITION_WINS`,
+     `WIN_RATE_RANK`, `FILLER_POLICIES_EXCLUDED`, `ROUND_SUMMARY`.
+   - `COMMISSIONER_SCHEDULE` — one line per Competition round scheduling call:
+     episode count, real-entrant count, filler resolution source/count, variant;
+     plus the filler-resolution line emitted by `_filler_policy_version_ids`.
+   - `COMMISSIONER_WARNING` — degraded-but-continuing conditions that used to be
+     entirely silent: malformed filler policy ids (env var or league API), a
+     failed league-API filler lookup, malformed `filler_seats` tags, and
+     per-episode results-fetch failures hit while qualifying a policy.
+   - `COMMISSIONER_BOOT` — one line at commissioner construction: resolved
+     skill-gate thresholds, qualifier episode count, and the interview-gate
+     flag — "what config is this pod actually running" without a shell into
+     the pod.
 
 2. **Membership event fields** (Observatory UI / `GET /v2/policy-membership-events`
    + `GET /v2/league-policy-memberships`). On each `PolicyMembershipEventChange`:

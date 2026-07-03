@@ -59,7 +59,26 @@ Observability (see decision.py for the pure decision function)
 --------------------------------------------------------------
 For every entrant we build a ``DecisionRecord`` and log one
 ``COMMISSIONER_DECISION {json}`` line to stdout plus rich membership-event
-evidence, identical to before.
+evidence, identical to before. Every stdout line below is a single-line JSON
+payload prefixed by its tag (greppable in the hosted commissioner log tab) and
+carries ``ts`` (UTC ISO-8601) and ``level`` (INFO/WARNING/ERROR) fields:
+
+- ``COMMISSIONER_DECISION`` — one per qualification/ranking decision
+  (promotion/hold reasons, INFRA_HOLD, CRASH_DQ, COMPETITION_WINS,
+  WIN_RATE_RANK, FILLER_POLICIES_EXCLUDED, ROUND_SUMMARY). INFRA_HOLD/CRASH_DQ
+  log at ERROR; everything else at INFO.
+- ``COMMISSIONER_SCHEDULE`` — one per Competition round scheduling call
+  (:meth:`_schedule_competition_round`): episode count, real-entrant count,
+  filler resolution source/count, variant — plus the filler-resolution INFO
+  line emitted by :meth:`_filler_policy_version_ids`.
+- ``COMMISSIONER_WARNING`` — degraded-but-continuing conditions that used to be
+  entirely silent: malformed filler policy ids (env var or league API), a
+  failed league-API filler lookup, malformed ``filler_seats`` tags, and
+  per-episode results-fetch failures encountered while qualifying a policy.
+- ``COMMISSIONER_BOOT`` — one line at commissioner construction: resolved
+  skill-gate thresholds, qualifier episode count, and whether the interview
+  gate is enabled — answers "what config is this pod actually running"
+  without a shell into the pod.
 
 Thresholds are constants (env-overridable) in decision.py.
 """
@@ -68,6 +87,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -112,8 +132,12 @@ from commissioners.common.utils import (
 from game_results_loader import coerce_results_schema, has_results_schema_arrays
 from decision import (
     DECISION_LOG_TAG,
+    HUNT_KILLS_MIN,
+    INTERVIEW_MIN_SCORE,
     SKILL_GATE_EVIDENCE_TYPE,
     SKILL_GATE_STAGE_ID,
+    TASK_TASKS_MIN,
+    VOTE_PARTICIPATION_MIN,
     build_competition_report,
     count_competition_wins,
     evaluate_combined_game_with_interview,
@@ -204,7 +228,16 @@ def _env_filler_policy_version_ids() -> list[UUID]:
             ids.append(UUID(token))
         except ValueError:
             # Ignore malformed entries rather than crash scheduling; a misconfigured
-            # filler id should never take down a tournament round.
+            # filler id should never take down a tournament round. Still logged —
+            # this used to fail with no stdout trace at all.
+            _emit_log(
+                WARNING_LOG_TAG,
+                "WARNING",
+                context="filler_env_var",
+                env_var="CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS",
+                token=token,
+                detail="not a valid UUID; entry dropped",
+            )
             continue
     return ids
 
@@ -284,10 +317,36 @@ _INTERVIEW_REASON = (
 )
 
 
-def _emit_decision_log(payload: dict) -> None:
-    """Write one greppable COMMISSIONER_DECISION line to stdout (hosted log tab)."""
-    line = f"{DECISION_LOG_TAG} {json.dumps(payload, sort_keys=True)}"
-    print(line, flush=True)
+# Tags for the event families that previously had no stdout trace at all —
+# COMMISSIONER_DECISION (imported from decision.py) covers qualification/ranking
+# decisions; these cover round scheduling, degraded-but-continuing warnings, and
+# a one-time boot line. See the module docstring's "Observability" section.
+SCHEDULE_LOG_TAG = "COMMISSIONER_SCHEDULE"
+WARNING_LOG_TAG = "COMMISSIONER_WARNING"
+BOOT_LOG_TAG = "COMMISSIONER_BOOT"
+
+
+def _emit_log(tag: str, level: str, **fields: Any) -> None:
+    """Write one greppable ``TAG {json}`` line to stdout (hosted commissioner log tab).
+
+    Every line carries ``ts`` (UTC ISO-8601) and ``level`` (INFO/WARNING/ERROR) as
+    JSON FIELDS rather than a raw stdout prefix, so the ``TAG `` prefix operators
+    already grep for (README: "Grep the hosted logs with COMMISSIONER_DECISION")
+    is preserved byte-for-byte, and existing ``line.startswith(TAG)`` consumers
+    (including ``test_observability.py``) are unaffected by this addition.
+    """
+    payload = {"ts": datetime.now(UTC).isoformat(), "level": level, **fields}
+    print(f"{tag} {json.dumps(payload, sort_keys=True)}", flush=True)
+
+
+def _emit_decision_log(payload: dict, *, level: str = "INFO") -> None:
+    """Write one greppable COMMISSIONER_DECISION line to stdout (hosted log tab).
+
+    ``level`` defaults to INFO for routine decisions (PROMOTED, COMPETITION_WINS,
+    WIN_RATE_RANK, ...); callers pass ``level="ERROR"`` for INFRA_HOLD/CRASH_DQ so
+    an operator can grep ``"level":"ERROR"`` for decisions that need attention.
+    """
+    _emit_log(DECISION_LOG_TAG, level, **payload)
 
 
 def _looks_like_dispatch_failure(error: str | None) -> bool:
@@ -356,6 +415,29 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     # so no Anthropic call happens; default builds one from the environment.
     _interview_llm: Any = None
 
+    def __init__(self, config: Any = None) -> None:
+        """Construct the commissioner and log one COMMISSIONER_BOOT line.
+
+        Surfaces the resolved skill-gate thresholds, qualifier episode count, and
+        interview-gate flag once per instantiation — answers "what config is this
+        pod actually running" from the log tab without a shell into the pod.
+        """
+        super().__init__(config)
+        _emit_log(
+            BOOT_LOG_TAG,
+            "INFO",
+            commissioner_key=COMMISSIONER_KEY,
+            num_seats=NUM_SEATS,
+            qualifier_num_episodes=_QUALIFIER_NUM_EPISODES,
+            interview_enabled=_INTERVIEW_ENABLED,
+            thresholds={
+                "meeting_participation_min": VOTE_PARTICIPATION_MIN,
+                "hunt_kills_min": HUNT_KILLS_MIN,
+                "task_tasks_min": TASK_TASKS_MIN,
+                "interview_min_score": INTERVIEW_MIN_SCORE,
+            },
+        )
+
     def _xp_request_client(self) -> XpRequestClient:
         if self._xp_client is None:
             self._xp_client = XpRequestClient()
@@ -380,7 +462,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             )
         return transport_from_address(address)
 
-    def _filler_policy_version_ids(self, league_id: Any) -> list[UUID]:
+    def _filler_policy_version_ids(self, league_id: Any, *, round_id: Any = None) -> list[UUID]:
         """Resolve the filler policy_version_id set for a round (env > API > empty).
 
         Precedence (see the module note on ``CREWRIFT_PRIME_FILLER_POLICY_VERSION_IDS``):
@@ -389,25 +471,63 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         (``GET /v2/leagues/{league_id}/filler-policies``) are used. Any API
         unavailability/error or an empty API list degrades gracefully (we log a
         warning and fall back to env, then to no fillers) — a filler lookup must
-        never crash a competition round.
+        never crash a competition round. Every resolution path (including "none")
+        logs its outcome (``COMMISSIONER_SCHEDULE``/``COMMISSIONER_WARNING``);
+        ``round_id`` is optional and only used to correlate that log with the
+        round's own scheduling summary line.
         """
+        round_id_str = str(round_id) if round_id is not None else None
+
+        def _log_resolution(source: str, count: int, **extra: Any) -> None:
+            _emit_log(
+                SCHEDULE_LOG_TAG,
+                "INFO",
+                round_id=round_id_str,
+                context="filler_resolution",
+                source=source,
+                filler_policy_count=count,
+                **extra,
+            )
+
         env_ids = _env_filler_policy_version_ids()
         if env_ids:
+            _log_resolution("env", len(env_ids))
             return env_ids
         if league_id is None:
+            _log_resolution("none", 0, detail="no league_id on round_start.league")
             return []
         try:
             served = self._xp_request_client().get_filler_policy_versions(str(league_id))
         except XpRequestError as exc:
-            print(
-                "WARNING: crewrift-prime: filler-policy lookup failed for league "
-                f"{league_id} ({exc}); falling back to env/no-filler seating.",
-                flush=True,
+            _emit_log(
+                WARNING_LOG_TAG,
+                "WARNING",
+                round_id=round_id_str,
+                context="filler_league_api",
+                league_id=str(league_id),
+                error=str(exc),
+                fallback="env/no-filler seating",
             )
             return []
         api_ids = _coerce_uuids(served)
+        if len(api_ids) != len(served):
+            _emit_log(
+                WARNING_LOG_TAG,
+                "WARNING",
+                round_id=round_id_str,
+                context="filler_league_api",
+                league_id=str(league_id),
+                detail=(
+                    f"dropped {len(served) - len(api_ids)} malformed filler policy "
+                    "id(s) from the league API response"
+                ),
+            )
         if not api_ids:
+            _log_resolution(
+                "none", 0, league_id=str(league_id), detail="league API returned no filler policies"
+            )
             return []
+        _log_resolution("league_api", len(api_ids), league_id=str(league_id))
         return api_ids
 
     # ---- division detection ---------------------------------------------------
@@ -464,7 +584,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         variant_id = self._competition_variant_id(round_start)
         entrant_ids = [entry.policy_version_id for entry in entries]
         league_id = getattr(round_start.league, "id", None)
-        filler_ids = self._filler_policy_version_ids(league_id)
+        filler_ids = self._filler_policy_version_ids(league_id, round_id=round_start.round_id)
         episodes = [
             self._competition_episode(
                 round_start=round_start,
@@ -475,6 +595,18 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             )
             for episode_index in range(num_episodes)
         ]
+        _emit_log(
+            SCHEDULE_LOG_TAG,
+            "INFO",
+            round_id=str(round_start.round_id),
+            round_number=round_start.round_number,
+            division="Competition",
+            num_episodes=num_episodes,
+            real_entrant_count=len(entrant_ids),
+            filler_policy_count=len(filler_ids),
+            seats_topped_up_per_episode=max(NUM_SEATS - len(entrant_ids), 0),
+            variant_id=variant_id,
+        )
         return CommissionerScheduleEpisodes(episodes=episodes)
 
     def _competition_episode(
@@ -722,17 +854,29 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         for episode in completed:
             if not episode.job_id:
                 last_error = f"completed episode {episode.id} has no job_id"
+                _emit_log(
+                    WARNING_LOG_TAG, "WARNING", context="results_fetch",
+                    episode_id=str(episode.id), detail=last_error,
+                )
                 continue
             try:
                 game_results = self._xp_request_client().get_episode_results(episode.job_id)
             except XpRequestInfraError as exc:
                 last_error = f"results fetch failed for {episode.id}: {exc}"
+                _emit_log(
+                    WARNING_LOG_TAG, "WARNING", context="results_fetch",
+                    episode_id=str(episode.id), detail=last_error,
+                )
                 continue
             coerced = coerce_results_schema(game_results)
             if not has_results_schema_arrays(coerced or {}):
                 last_error = (
                     f"completed episode {episode.id} results JSON missing per-slot "
                     f"arrays (keys: {sorted((game_results or {}).keys())})"
+                )
+                _emit_log(
+                    WARNING_LOG_TAG, "WARNING", context="results_fetch",
+                    episode_id=str(episode.id), detail=last_error,
                 )
                 continue
             return coerced, None
@@ -770,7 +914,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "decision": "INFRA_HOLD",
                 "reason": reason_text,
                 "detail": detail[:300],
-            }
+            },
+            level="ERROR",
         )
         return ModelsPolicyMembershipEventChange(
             league_policy_membership_id=membership.id,
@@ -800,7 +945,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "xreq_id": run.xreq_id,
                 "decision": "CRASH_DQ",
                 "reason": "Qualifier game did not complete (crash / non-completion)",
-            }
+            },
+            level="ERROR",
         )
         return ModelsPolicyMembershipEventChange(
             league_policy_membership_id=membership.id,
@@ -970,6 +1116,17 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             + ", ".join(f"filler policy {fid}" for fid in filler_ids_sorted)
             if filler_ids_sorted
             else "No filler policies were used this round."
+        )
+        _emit_decision_log(
+            {
+                "round_id": str(round_start.round_id),
+                "round_number": round_start.round_number,
+                "division": "Competition",
+                "decision": "ROUND_SUMMARY",
+                "entrants_ranked": len(ranked),
+                "games_scored": len(games),
+                "filler_policy_count": len(filler_ids_sorted),
+            }
         )
         leaderboards, next_state = self._competition_win_leaderboards(
             incoming_state=round_start.state,
@@ -1549,6 +1706,14 @@ def _filler_seats_by_request(
             try:
                 seats.add(int(token))
             except ValueError:
+                _emit_log(
+                    WARNING_LOG_TAG,
+                    "WARNING",
+                    context="filler_seats_tag",
+                    request_id=episode.request_id,
+                    token=token,
+                    detail="not a valid seat index; entry dropped",
+                )
                 continue
         if seats:
             mapping[episode.request_id] = seats
