@@ -108,6 +108,7 @@ const
   VoteCrewmateMinDelayTicks = sim.TargetFps * 8
   VoteCrewmateMaxDelayTicks = sim.TargetFps * 14
   VoteImposterSkipTicks = VoteListenBaseTicks + VoteListenJitterTicks
+  VoteImposterRescueDelayTicks = sim.TargetFps * 2
   VoteRetryTicks = sim.TargetFps div 2
   VoteLlmDeadlineFallbackTicks = sim.TargetFps * 3
   VoteLlmChatGapTicks = 0
@@ -7615,6 +7616,94 @@ proc voteScoreForColor(
     return low(int)
   scores[colorIndex]
 
+proc visibleKnownImposterPile(
+  bot: Bot
+): tuple[found: bool, target: int, count: int] =
+  ## Returns the known imposter slot taking the largest visible pile.
+  result.target = VoteUnknown
+  if not bot.imposterKnown():
+    return
+  for target in 0 ..< bot.votePlayerCount:
+    if target == bot.voteSelfSlot:
+      continue
+    let colorIndex = bot.voteSlots[target].colorIndex
+    if not bot.knownImposterColor(colorIndex):
+      continue
+    if not bot.voteSlots[target].alive:
+      continue
+    let count = bot.visibleVoteCountFor(target)
+    if count < SocialImposterDangerVotes:
+      continue
+    if not result.found or count > result.count:
+      result = (true, target, count)
+
+proc imposterRescueVoteTarget(
+  bot: Bot,
+  listenedTicks: int
+): tuple[found: bool, target: int, reason: string, instant: bool] =
+  ## Returns an early legal counter-vote when a partner is being piled.
+  result.target = VoteUnknown
+  if listenedTicks < VoteImposterRescueDelayTicks:
+    return
+  let threat = bot.visibleKnownImposterPile()
+  if not threat.found:
+    return
+  let scores = bot.effectiveSusScores()
+  var
+    bestPile = VoteUnknown
+    bestPileCount = 0
+    bestPileScore = low(int)
+  for target in 0 ..< bot.votePlayerCount:
+    if not bot.voteTargetSafeForRole(target):
+      continue
+    let
+      count = bot.visibleVoteCountFor(target)
+      colorIndex = bot.voteSlots[target].colorIndex
+      score = scores.voteScoreForColor(colorIndex)
+    if count <= 0:
+      continue
+    if count > bestPileCount or
+        (count == bestPileCount and score > bestPileScore):
+      bestPile = target
+      bestPileCount = count
+      bestPileScore = score
+  if bestPile != VoteUnknown:
+    return (
+      true,
+      bestPile,
+      "early counter-pile against " & bot.voteTargetName(bestPile),
+      true
+    )
+  let socialTarget = bot.socialSusClaimTarget(1)
+  if socialTarget.found and bot.socialClaimTargetPlausible(
+      socialTarget.target
+    ):
+    return (
+      true,
+      socialTarget.target,
+      "early social counter-claim against " &
+        bot.voteTargetName(socialTarget.target),
+      true
+    )
+  let effective = bot.bestLegalEffectiveVoteTarget()
+  if effective.found:
+    return (
+      true,
+      effective.target,
+      "early counter-read against " &
+        bot.voteTargetName(effective.target),
+      true
+    )
+  for target in 0 ..< bot.votePlayerCount:
+    if bot.voteTargetSafeForRole(target):
+      return (
+        true,
+        target,
+        "early counter-fallback against " &
+          bot.voteTargetName(target),
+        true
+      )
+
 proc shouldSwitchCrewVote(
   bot: Bot,
   ownVote,
@@ -7980,6 +8069,13 @@ proc desiredVotingDecision(
       ownerDecision.target,
       ownerDecision.reason,
       ownerDecision.instant
+    )
+  let rescueDecision = bot.imposterRescueVoteTarget(listenedTicks)
+  if rescueDecision.found:
+    return (
+      rescueDecision.target,
+      rescueDecision.reason,
+      rescueDecision.instant
     )
   let socialTarget = bot.socialSusClaimTarget(SocialCrewBrigadeVotes)
   if bot.role == RoleCrewmate and
@@ -8725,11 +8821,15 @@ proc killChaseMask(bot: Bot, track: PlayerTrack): uint8 =
       (bot.frameTick div UnstuckPulseTicks) mod UnstuckMasks.len
     ]
 
-proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
+proc killTapMask(
+  bot: var Bot,
+  moveMask: uint8,
+  allowReportableBody = false
+): uint8 =
   ## Returns movement plus a forced kill button tap.
   if bot.frameTick - bot.lastKillTapTick < KillTapRepeatTicks:
     return moveMask and not ButtonA
-  if bot.reportableBodyVisible():
+  if not allowReportableBody and bot.reportableBodyVisible():
     return moveMask and not ButtonA
   bot.forceActionTap = true
   bot.lastKillTapTick = bot.frameTick
@@ -8745,8 +8845,9 @@ proc killCrewmateAction(
   bot.imposterFakeUntilTick = -1
   var moveMask = bot.killChaseMask(track)
   moveMask = bot.applyJiggle(moveMask)
+  let allowReportableBody = bot.inKillRange(track.x, track.y)
   bot.intent = "kill " & name
-  bot.desiredMask = bot.killTapMask(moveMask)
+  bot.desiredMask = bot.killTapMask(moveMask, allowReportableBody)
   bot.controllerMask = bot.desiredMask
   bot.clearPath()
   bot.thought(name & " in range, tapping kill while closing")
