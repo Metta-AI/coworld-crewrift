@@ -132,8 +132,7 @@ const
   UnsupportedClaimMaxScore = 120
   ReporterEarlyClearScore = 45
   ReporterMidClearScore = 15
-  LateReporterDeadCount = 3
-  LateReporterSusScore = 90
+  RepeatReporterDeadCount = 3
   RepeatReporterSusScore = 260
   TaskerStationaryVelocity = 1
   BodySuspectRange = 64
@@ -5888,20 +5887,16 @@ proc knownDeadVoteCount(bot: Bot): int =
 
 proc reporterSusScore(bot: Bot, colorIndex: int): int =
   ## Returns sus pressure from late or repeated body reports.
-  if not bot.voting or
+  if bot.role != RoleCrewmate or
+      not bot.voting or
       colorIndex < 0 or
       colorIndex >= bot.bodyReportCounts.len:
     return 0
   let
     reportCount = bot.bodyReportCounts[colorIndex]
     deadCount = bot.knownDeadVoteCount()
-  if reportCount >= 2 and deadCount >= LateReporterDeadCount:
+  if reportCount >= 2 and deadCount >= RepeatReporterDeadCount:
     return RepeatReporterSusScore
-  if reportCount > 0 and
-      deadCount >= LateReporterDeadCount and
-      bot.meetingCallKind == VoteCalledBody and
-      bot.meetingCallCallerColor == colorIndex:
-    return LateReporterSusScore
 
 proc reporterClearScore(bot: Bot, colorIndex: int): int =
   ## Returns the small clear score earned for reporting a body.

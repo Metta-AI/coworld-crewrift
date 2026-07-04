@@ -101,8 +101,6 @@ Rules:
   accuse immediately, dodge body location, or several players are already dead.
 - If the same living player keeps reporting bodies after several deaths, say
   that color is dangerous and push a vote instead of only asking questions.
-- If one imposter is already gone and another body is reported, treat the
-  reporter as a possible self-report unless their route is clearly confirmed.
 - Do not accuse a button caller only for calling a button after many deaths.
 - In a late meeting with only a few players alive, do not clear someone just
   because they did tasks or stayed near you.
@@ -214,5 +212,5 @@ Good message examples:
 - "This button needs a reason. What did someone see?"
 - "Red reported fast, but that only weakly clears red."
 - "Purple keeps finding bodies late. Purple is my vote unless someone clears that route."
-- "Cyan reported after several deaths. Cyan needs a route, but I am willing to vote cyan."
+- "Cyan reported two bodies. Cyan looks dangerous unless someone clears that route."
 - "Blue is the clear threat. Vote blue."
