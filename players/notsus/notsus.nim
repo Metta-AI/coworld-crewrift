@@ -434,6 +434,7 @@ type
     killButtonSprite: Sprite
     ghostIconSprite: Sprite
     rng: Rand
+    configuredName: string
     role: BotRole
     isGhost: bool
     ghostIconFrames: int
@@ -4304,6 +4305,14 @@ proc ownerNameKey(name: string): string =
       result.setLen(i - 1)
       result = result.strip()
 
+proc selfOwnerNameKey(bot: Bot): string =
+  ## Returns this bot's owner key from screen or configured name.
+  if bot.selfColorIndex >= 0 and
+      bot.selfColorIndex < bot.playerDisplayNames.len:
+    result = bot.playerDisplayNames[bot.selfColorIndex].ownerNameKey()
+  if result.len == 0:
+    result = bot.configuredName.ownerNameKey()
+
 proc rememberPlayerDisplayName(
   bot: var Bot,
   objectId: int,
@@ -4665,11 +4674,8 @@ proc sameOwnerColor(bot: Bot, colorIndex: int): bool =
   ## Returns true when a color appears to share this bot's owner label.
   if colorIndex < 0 or colorIndex >= bot.playerDisplayNames.len:
     return false
-  if bot.selfColorIndex < 0 or
-      bot.selfColorIndex >= bot.playerDisplayNames.len:
-    return false
   let
-    selfKey = bot.playerDisplayNames[bot.selfColorIndex].ownerNameKey()
+    selfKey = bot.selfOwnerNameKey()
     targetKey = bot.playerDisplayNames[colorIndex].ownerNameKey()
   selfKey.len > 0 and targetKey.len > 0 and selfKey == targetKey
 
@@ -8602,6 +8608,8 @@ proc killChaseMask(bot: Bot, track: PlayerTrack): uint8 =
 
 proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
   ## Returns movement plus a forced kill button tap.
+  if bot.reportableBodyVisible():
+    return moveMask and not ButtonA
   bot.forceActionTap = true
   moveMask or ButtonA
 
@@ -8787,6 +8795,8 @@ proc visibleBodyAction(bot: var Bot): tuple[found: bool, mask: uint8] =
   if not bot.imposterKnown():
     bot.queueBodySeen(body.x, body.y)
   if bot.imposterKnown():
+    if bot.reportableBodyVisible():
+      return (true, bot.escapeBodyAction(body.x, body.y))
     if bot.imposterIgnoringBody(body.x, body.y):
       return
     let killAction = bot.killReadyCrewmateAction(body.colorIndex)
@@ -10041,6 +10051,7 @@ when not defined(italkalotLibrary):
     if not gui:
       startProfileTrace()
     var bot = initBot(mapPath)
+    bot.configuredName = name
     let endpoint =
       if url.len > 0: ensureWsPath(url, WebSocketPath)
       else: "ws://" & host & ":" & $port & WebSocketPath
