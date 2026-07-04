@@ -78,6 +78,8 @@ const
   FollowingCloseRadius = 16
   StalkerOverlapRadius = 16
   KillerEvidenceRadius = 64
+  KillWitnessRadius = 112
+  KillWitnessPenalty = 256
   BodyProximitySusWeight = 2
   BodyProximityPlainMin = 56
   TimeTogetherRadius = 96
@@ -5540,6 +5542,29 @@ proc playerTrackDistanceFrom(
   ## Returns one tracked player's distance from a world point.
   heuristic(x, y, track.x, track.y)
 
+proc nearbyCrewWitnessCount(bot: Bot, candidate: PlayerTrack): int =
+  ## Counts nearby tracked crew who could quickly witness one kill.
+  for colorIndex in 0 ..< PlayerColorCount:
+    if colorIndex == bot.selfColorIndex or
+        colorIndex == candidate.colorIndex:
+      continue
+    if bot.knownImposterColor(colorIndex):
+      continue
+    let world = bot.trackedPlayerWorld(colorIndex)
+    if not world.found:
+      continue
+    if heuristic(candidate.x, candidate.y, world.x, world.y) <=
+        KillWitnessRadius:
+      inc result
+
+proc killTargetScore(
+  bot: Bot,
+  candidate: PlayerTrack,
+  distance: int
+): int =
+  ## Returns a hunt score that prefers isolated targets.
+  distance + bot.nearbyCrewWitnessCount(candidate) * KillWitnessPenalty
+
 proc nearestCrewmateFrom(
   bot: Bot,
   x,
@@ -5579,7 +5604,9 @@ proc nearestUnclaimedCrewmate(
   let
     selfX = bot.playerWorldX()
     selfY = bot.playerWorldY()
-  var bestDistance = high(int)
+  var
+    bestDistance = high(int)
+    bestScore = high(int)
   for colorIndex in 0 ..< PlayerColorCount:
     if colorIndex == bot.selfColorIndex:
       continue
@@ -5609,7 +5636,11 @@ proc nearestUnclaimedCrewmate(
         break
     if claimed:
       continue
-    if selfDistance < bestDistance:
+    let score = bot.killTargetScore(track, selfDistance)
+    if score < bestScore or (
+        score == bestScore and selfDistance < bestDistance
+      ):
+      bestScore = score
       bestDistance = selfDistance
       result = (true, track)
 
