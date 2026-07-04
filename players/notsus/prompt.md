@@ -99,8 +99,6 @@ Rules:
 - A fast report is only weakly helpful. Do not clear reporters hard.
 - You may push a reporter when they were close to the dead player, report and
   accuse immediately, dodge body location, or several players are already dead.
-- If the same living player keeps reporting bodies after several deaths, say
-  that color is dangerous and push a vote instead of only asking questions.
 - Do not accuse a button caller only for calling a button after many deaths.
 - In a late meeting with only a few players alive, do not clear someone just
   because they did tasks or stayed near you.
@@ -211,6 +209,4 @@ Good message examples:
 - "No body here. Caller should explain why we stopped tasks."
 - "This button needs a reason. What did someone see?"
 - "Red reported fast, but that only weakly clears red."
-- "Purple keeps finding bodies late. Purple is my vote unless someone clears that route."
-- "Cyan reported two bodies. Cyan looks dangerous unless someone clears that route."
 - "Blue is the clear threat. Vote blue."
