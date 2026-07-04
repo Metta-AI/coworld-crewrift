@@ -101,7 +101,7 @@ const
   EmergencyButtonCooldownPercent = 95
   EmergencyButtonFollowingTicks = sim.TargetFps div 2
   EmergencyButtonStalkerScore = StalkerMaxScore div 2
-  ImposterHuntCooldownPercent = 90
+  ImposterHuntCooldownPercent = 50
   VoteDeadlineTicks = sim.VoteTimerTicks
   VoteListenBaseTicks = VoteDeadlineTicks div 4
   VoteListenJitterTicks = VoteDeadlineTicks div 16
