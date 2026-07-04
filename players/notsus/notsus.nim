@@ -132,6 +132,9 @@ const
   UnsupportedClaimMaxScore = 120
   ReporterEarlyClearScore = 45
   ReporterMidClearScore = 15
+  LateReporterDeadCount = 3
+  LateReporterSusScore = 90
+  RepeatReporterSusScore = 260
   TaskerStationaryVelocity = 1
   BodySuspectRange = 64
   EmergencyButtonStrongSusScore = 250
@@ -475,6 +478,7 @@ type
     roundStartTick: int
     roundStartServerTick: int
     bodyReportColors: array[PlayerColorCount, bool]
+    bodyReportCounts: array[PlayerColorCount, int]
     meetingCallKind: VoteCallKind
     meetingCallCallerColor: int
     meetingCallBodyColor: int
@@ -1354,6 +1358,8 @@ proc voteTargetName(bot: Bot, target: int): string
 
 proc knownDeadVoteCount(bot: Bot): int
 
+proc reporterSusScore(bot: Bot, colorIndex: int): int
+
 proc imposterKnown(bot: Bot): bool
 
 proc voteTargetSafeForRole(bot: Bot, target: int): bool
@@ -2173,6 +2179,8 @@ proc resetRoundState(bot: var Bot) =
   bot.escapeLoopPointIndex = -1
   bot.clearVotingState()
   for i in 0 ..< bot.lastSeenTicks.len:
+    bot.bodyReportColors[i] = false
+    bot.bodyReportCounts[i] = 0
     bot.lastSeenTicks[i] = 0
     bot.playerSeenX[i] = 0
     bot.playerSeenY[i] = 0
@@ -3521,6 +3529,7 @@ proc markBodyReporter(bot: var Bot, colorIndex: int) =
   ## Records that one player color has reported a dead body.
   if colorIndex >= 0 and colorIndex < bot.bodyReportColors.len:
     bot.bodyReportColors[colorIndex] = true
+    inc bot.bodyReportCounts[colorIndex]
 
 proc rememberMeetingCall(
   bot: var Bot,
@@ -3601,6 +3610,7 @@ proc directVoteSusScore(bot: Bot, colorIndex: int): int =
     bot.standingAroundScores[colorIndex]
   if bot.role == RoleCrewmate and bot.voting and bot.knownDeadVoteCount() > 0:
     result += bot.killerScores[colorIndex] * BodyProximitySusWeight
+  result += bot.reporterSusScore(colorIndex)
 
 proc selfVotingDead(bot: Bot): bool =
   ## Returns true when the local player is known dead in voting.
@@ -4668,7 +4678,8 @@ proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
       return false
     if directScore < EmergencyButtonStrongSusScore:
       if colorIndex < bot.bodyReportColors.len and
-          bot.bodyReportColors[colorIndex]:
+          bot.bodyReportColors[colorIndex] and
+          bot.reporterSusScore(colorIndex) == 0:
         return false
       if bot.meetingCallKind == VoteCalledButton and
           colorIndex == bot.meetingCallCallerColor:
@@ -5875,11 +5886,30 @@ proc knownDeadVoteCount(bot: Bot): int =
     if not bot.voteSlots[i].alive:
       inc result
 
+proc reporterSusScore(bot: Bot, colorIndex: int): int =
+  ## Returns sus pressure from late or repeated body reports.
+  if not bot.voting or
+      colorIndex < 0 or
+      colorIndex >= bot.bodyReportCounts.len:
+    return 0
+  let
+    reportCount = bot.bodyReportCounts[colorIndex]
+    deadCount = bot.knownDeadVoteCount()
+  if reportCount >= 2 and deadCount >= LateReporterDeadCount:
+    return RepeatReporterSusScore
+  if reportCount > 0 and
+      deadCount >= LateReporterDeadCount and
+      bot.meetingCallKind == VoteCalledBody and
+      bot.meetingCallCallerColor == colorIndex:
+    return LateReporterSusScore
+
 proc reporterClearScore(bot: Bot, colorIndex: int): int =
   ## Returns the small clear score earned for reporting a body.
   if colorIndex < 0 or
       colorIndex >= bot.bodyReportColors.len or
       not bot.bodyReportColors[colorIndex]:
+    return 0
+  if bot.reporterSusScore(colorIndex) > 0:
     return 0
   let deadCount = bot.knownDeadVoteCount()
   if deadCount <= 1:
@@ -5914,6 +5944,7 @@ proc susScores(bot: Bot): array[PlayerColorCount, int] =
         bot.standingAroundScores[colorIndex] +
         bot.ventScores[colorIndex] -
         bot.reporterClearScore(colorIndex) +
+        bot.reporterSusScore(colorIndex) +
         bot.votedAgainstScores[colorIndex] * VotedAgainstSusWeight +
         bot.unsupportedClaimScores[colorIndex]
     else:
@@ -5925,6 +5956,7 @@ proc susScores(bot: Bot): array[PlayerColorCount, int] =
         bot.standingAroundScores[colorIndex] +
         bot.ventScores[colorIndex] -
         bot.reporterClearScore(colorIndex) +
+        bot.reporterSusScore(colorIndex) +
         bot.votedAgainstScores[colorIndex] * VotedAgainstSusWeight +
         bot.unsupportedClaimScores[colorIndex]
 
@@ -5963,6 +5995,13 @@ proc votingEvidenceText(bot: Bot): string =
   ))
   addLine(evidenceSummary("venting", bot.sanitizedScores(bot.ventScores)))
   addLine(evidenceSummary("reporters", bot.sanitizedScores(bot.reporterScores())))
+  var reporterPressure: array[PlayerColorCount, int]
+  for colorIndex in 0 ..< reporterPressure.len:
+    reporterPressure[colorIndex] = bot.reporterSusScore(colorIndex)
+  addLine(evidenceSummary(
+    "reporter pressure",
+    bot.sanitizedScores(reporterPressure)
+  ))
   addLine(evidenceSummary(
     "voted against",
     bot.sanitizedScores(bot.votedAgainstScores)
@@ -6034,6 +6073,13 @@ proc plainVotingEvidenceText(bot: Bot): string =
   addLine(plainEvidenceLine(
     "These players reported bodies quickly:",
     bot.sanitizedScores(bot.reporterScores())
+  ))
+  var reporterPressure: array[PlayerColorCount, int]
+  for colorIndex in 0 ..< reporterPressure.len:
+    reporterPressure[colorIndex] = bot.reporterSusScore(colorIndex)
+  addLine(plainEvidenceLine(
+    "These players look dangerous from late or repeated body reports:",
+    bot.sanitizedScores(reporterPressure)
   ))
   addLine(plainEvidenceLine(
     "Other players are pushing these players:",
