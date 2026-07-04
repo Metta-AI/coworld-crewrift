@@ -1349,6 +1349,8 @@ proc voteTargetName(bot: Bot, target: int): string
 
 proc knownDeadVoteCount(bot: Bot): int
 
+proc imposterKnown(bot: Bot): bool
+
 proc voteTargetSafeForRole(bot: Bot, target: int): bool
 
 proc votingEvidenceText(bot: Bot): string
@@ -3602,7 +3604,7 @@ proc selfVotingDead(bot: Bot): bool =
 
 proc randomVoteDelay(bot: var Bot): int =
   ## Returns this meeting's randomized vote delay in ticks.
-  if bot.role != RoleImposter:
+  if not bot.imposterKnown():
     return VoteCrewmateMinDelayTicks +
       bot.rng.rand(VoteCrewmateMaxDelayTicks - VoteCrewmateMinDelayTicks)
   VoteListenBaseTicks - VoteListenJitterTicks +
@@ -4248,6 +4250,18 @@ proc knownImposterColor(bot: Bot, colorIndex: int): bool =
     colorIndex < bot.knownImposters.len and
     bot.knownImposters[colorIndex]
 
+proc imposterKnown(bot: Bot): bool =
+  ## Returns true when any reliable signal says this bot is an imposter.
+  bot.role == RoleImposter or
+    bot.knownImposterColor(bot.selfColorIndex) or
+    bot.imposterKillReady or
+    bot.imposterCooldownPercent >= 0
+
+proc normalizeRoleFromImposterSignals(bot: var Bot) =
+  ## Restores imposter role from hidden or cooldown signals.
+  if bot.imposterKnown() and not bot.isGhost:
+    bot.role = RoleImposter
+
 proc playerColorName(colorIndex: int): string =
   ## Returns the visible player color name.
   if colorIndex >= 0 and colorIndex < PlayerColorNames.len:
@@ -4631,7 +4645,7 @@ proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
   if not bot.voteTargetCanBeSus(target):
     return false
   let colorIndex = bot.voteSlots[target].colorIndex
-  if bot.role == RoleCrewmate and
+  if bot.role == RoleCrewmate and not bot.imposterKnown() and
       colorIndex >= 0 and
       colorIndex < PlayerColorCount:
     let directScore = bot.directVoteSusScore(colorIndex)
@@ -4642,7 +4656,7 @@ proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
       if bot.meetingCallKind == VoteCalledButton and
           colorIndex == bot.meetingCallCallerColor:
         return false
-  if bot.role == RoleImposter:
+  if bot.imposterKnown():
     if bot.knownImposterColor(colorIndex):
       return false
   true
@@ -4677,7 +4691,7 @@ proc voteTargetSafeForRole(bot: Bot, target: int): bool =
   ## Returns true when this role should be willing to vote for a target.
   if not bot.voteTargetBaseSafeForRole(target):
     return false
-  if bot.role == RoleCrewmate and
+  if bot.role == RoleCrewmate and not bot.imposterKnown() and
       bot.sameOwnerVoteTarget(target) and
       bot.hasDifferentOwnerVoteTarget():
     return false
@@ -5432,7 +5446,7 @@ proc initialProwlPointIndex(bot: Bot): int =
   if count == 0:
     return -1
   result = bot.closestProwlPointIndex()
-  if bot.role == RoleImposter and
+  if bot.imposterKnown() and
       bot.selfColorIndex >= 0 and
       bot.selfColorIndex mod 2 == 1:
     result = (result + count div 2) mod count
@@ -5649,7 +5663,7 @@ proc rememberKillEvidence(bot: var Bot, body: BodyMatch) =
 
 proc updateKillEvidence(bot: var Bot) =
   ## Updates kill evidence when bodies newly appear on screen.
-  if bot.interstitial or bot.role == RoleImposter:
+  if bot.interstitial or bot.imposterKnown():
     return
   if bot.visibleBodies.len == 0:
     bot.hadVisibleBody = false
@@ -5782,11 +5796,11 @@ proc sanitizedVoteSummary(bot: Bot): string =
   for voterColor, choice in bot.voteChoices:
     if choice == VoteUnknown:
       continue
-    if bot.role == RoleImposter and bot.knownImposterColor(voterColor):
+    if bot.imposterKnown() and bot.knownImposterColor(voterColor):
       continue
     if choice >= 0 and choice < bot.votePlayerCount:
       let targetColor = bot.voteSlots[choice].colorIndex
-      if bot.role == RoleImposter and bot.knownImposterColor(targetColor):
+      if bot.imposterKnown() and bot.knownImposterColor(targetColor):
         continue
     if result.len > 0:
       result.add(", ")
@@ -5900,7 +5914,7 @@ proc sanitizedScores(
 ): array[PlayerColorCount, int] =
   ## Returns scores with hidden teammate facts removed for imposters.
   for colorIndex in 0 ..< min(result.len, scores.len):
-    if bot.role == RoleImposter and bot.knownImposterColor(colorIndex):
+    if bot.imposterKnown() and bot.knownImposterColor(colorIndex):
       result[colorIndex] = 0
     else:
       result[colorIndex] = scores[colorIndex]
@@ -6309,7 +6323,7 @@ proc votePileTargetPlausible(bot: Bot, target: int): bool =
   let
     targetDirect = bot.targetDirectVoteSusScore(target)
     bestDirect = bot.bestLegalDirectVoteTarget()
-  if bot.role == RoleCrewmate:
+  if bot.role == RoleCrewmate and not bot.imposterKnown():
     let targetColor = bot.voteSlots[target].colorIndex
     if targetColor < 0 or targetColor >= PlayerColorCount:
       return false
@@ -6333,7 +6347,7 @@ proc socialSpeakerPlausible(bot: Bot, speakerSlot: int): bool =
   if speakerSlot < 0 or speakerSlot >= bot.votePlayerCount:
     return false
   let speakerColor = bot.voteSlots[speakerSlot].colorIndex
-  if bot.role == RoleImposter and bot.knownImposterColor(speakerColor):
+  if bot.imposterKnown() and bot.knownImposterColor(speakerColor):
     return false
   if speakerColor == bot.selfColorIndex:
     return true
@@ -6402,10 +6416,10 @@ proc socialGraphJson(bot: Bot): JsonNode =
   ## Builds plain social graph edges for the LLM.
   result = newJArray()
   for speaker in 0 ..< bot.socialGraph.len:
-    if bot.role == RoleImposter and bot.knownImposterColor(speaker):
+    if bot.imposterKnown() and bot.knownImposterColor(speaker):
       continue
     for target in 0 ..< bot.socialGraph[speaker].len:
-      if bot.role == RoleImposter and bot.knownImposterColor(target):
+      if bot.imposterKnown() and bot.knownImposterColor(target):
         continue
       let score = bot.socialGraph[speaker][target]
       if score == 0:
@@ -6466,7 +6480,7 @@ proc hasQuestionProbeClaim(text: string): bool =
 
 proc unsupportedConcreteClaim(bot: Bot, claim: SocialClaim): bool =
   ## Returns true when a strong accusation lacks private corroboration.
-  if bot.role != RoleCrewmate:
+  if bot.role != RoleCrewmate or bot.imposterKnown():
     return false
   if claim.stance != SocialSus:
     return false
@@ -6563,7 +6577,7 @@ proc votingChatLinesJson(bot: Bot): JsonNode =
   ## Builds JSON for voting chat after hidden teammate sanitization.
   result = newJArray()
   for line in bot.voteChatLines:
-    if bot.role == RoleImposter and bot.knownImposterColor(line.speakerColor):
+    if bot.imposterKnown() and bot.knownImposterColor(line.speakerColor):
       continue
     var item = newJObject()
     item["speaker"] = %playerColorName(line.speakerColor)
@@ -6573,7 +6587,7 @@ proc votingChatLinesJson(bot: Bot): JsonNode =
 proc sanitizedVotingChatText(bot: Bot): string =
   ## Returns visible chat text after hidden teammate sanitization.
   for line in bot.voteChatLines:
-    if bot.role == RoleImposter and bot.knownImposterColor(line.speakerColor):
+    if bot.imposterKnown() and bot.knownImposterColor(line.speakerColor):
       continue
     if result.len > 0:
       result.add(' ')
@@ -6581,7 +6595,7 @@ proc sanitizedVotingChatText(bot: Bot): string =
 
 proc mentionsKnownTeammate(bot: Bot, text: string): bool =
   ## Returns true when text names a hidden imposter teammate.
-  if bot.role != RoleImposter:
+  if not bot.imposterKnown():
     return false
   let normalized = text.normalizeSocialText()
   for colorIndex in 0 ..< PlayerColorCount:
@@ -6597,7 +6611,7 @@ proc playersJson(bot: Bot): JsonNode =
   result = newJArray()
   for i in 0 ..< bot.votePlayerCount:
     let colorIndex = bot.voteSlots[i].colorIndex
-    if bot.role == RoleImposter and bot.knownImposterColor(colorIndex):
+    if bot.imposterKnown() and bot.knownImposterColor(colorIndex):
       continue
     var item = newJObject()
     item["slot"] = %i
@@ -6634,7 +6648,7 @@ proc seenRoomHistoryJson(bot: Bot): JsonNode =
   ## Builds JSON for rooms where this bot saw each player.
   result = newJObject()
   for colorIndex, rooms in bot.seenRoomHistory:
-    if bot.role == RoleImposter and bot.knownImposterColor(colorIndex):
+    if bot.imposterKnown() and bot.knownImposterColor(colorIndex):
       continue
     if rooms.len == 0:
       continue
@@ -6651,11 +6665,11 @@ proc votingObservationJson(bot: Bot): JsonNode =
   ## Builds the full voting observation shown to the LLM.
   let
     fakeCrewmateRole =
-      if bot.role == RoleImposter:
+      if bot.imposterKnown():
         RoleCrewmate
       else:
         bot.role
-    selfReportedBody = bot.role != RoleImposter and bot.hasSelfReportedBody()
+    selfReportedBody = not bot.imposterKnown() and bot.hasSelfReportedBody()
     bodySusColor =
       if selfReportedBody:
         bot.bodySusColor
@@ -6683,7 +6697,7 @@ proc votingObservationJson(bot: Bot): JsonNode =
       %bot.bodyRoomMessage(bot.lastBodyReportX, bot.lastBodyReportY)
     result["reported_body_sus_color"] =
       %playerColorName(bodySusColor)
-  if bot.role != RoleImposter:
+  if not bot.imposterKnown():
     result["known_imposters"] = bot.knownImpostersJson()
   result["players"] = bot.playersJson()
   result["visible_votes"] = %bot.sanitizedVoteSummary()
@@ -6823,7 +6837,7 @@ proc clearVotingLlmDecision(
 
 proc votingChatLeaksSecrets(bot: Bot, message: string): bool =
   ## Returns true when imposter chat exposes hidden-role information.
-  if bot.role != RoleImposter:
+  if not bot.imposterKnown():
     return false
   for word in strutils.splitWhitespace(message.normalizeChatText()):
     case word
@@ -7725,7 +7739,7 @@ proc fallbackVotingTarget(
 ): tuple[found: bool, target: int, reason: string] =
   ## Chooses a legal non-skip fallback target.
   result.target = VoteUnknown
-  if bot.role != RoleImposter:
+  if not bot.imposterKnown():
     result.target = bot.seenVotingTargetFrom(bot.bodySeenTicks)
     if result.target != VoteUnknown:
       result.found = true
@@ -7839,7 +7853,7 @@ proc desiredVotingDecision(
     decision = chooseSocialVote(
       bot.socialVoteState(),
       bot.effectiveSusScores(),
-      bot.role == RoleImposter,
+      bot.imposterKnown(),
       forced and not weakButton
     )
   let socialTarget = bot.socialSusClaimTarget(SocialCrewBrigadeVotes)
@@ -8095,7 +8109,7 @@ proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
     bot.thought(bot.intent)
     return bot.desiredMask
   let waitTicks =
-    if bot.role == RoleImposter and not decision.instant:
+    if bot.imposterKnown() and not decision.instant:
       VoteImposterSkipTicks
     else:
       bot.voteDelayTicks
@@ -8249,7 +8263,8 @@ proc nearestTaskGoal(
   state: TaskState
 ] {.measure.} =
   ## Returns the closest known active task station center.
-  if bot.role == RoleImposter and not bot.isGhost:
+  if bot.imposterKnown() and not bot.isGhost:
+    bot.role = RoleImposter
     if not bot.ensureFakeTasks():
       return
     if bot.goalIndex >= 0 and
@@ -8412,8 +8427,8 @@ proc escapeBodyAction(bot: var Bot, bodyX, bodyY: int): uint8
 proc holdTaskAction(bot: var Bot, name: string): uint8 =
   ## Holds only the action button while completing a task.
   let fakeTask =
-    bot.role == RoleImposter and not bot.isGhost
-  if bot.role == RoleImposter and not bot.isGhost:
+    bot.imposterKnown() and not bot.isGhost
+  if fakeTask:
     let body = bot.nearestBody()
     if body.found:
       bot.taskHoldTicks = 0
@@ -8447,7 +8462,7 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   if bot.taskHoldTicks == 0 and
       bot.taskHoldIndex >= 0 and
       bot.taskHoldIndex < bot.sim.tasks.len:
-    if bot.role == RoleImposter and not bot.isGhost:
+    if fakeTask:
       bot.rememberSelfTask(bot.taskHoldIndex)
       bot.completeFakeTask(bot.taskHoldIndex)
       bot.fakeTaskHoldIndex = -1
@@ -8471,7 +8486,7 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
 
 proc reportBodyAction(bot: var Bot, x, y: int): uint8 =
   ## Presses action to report a visible dead body.
-  if bot.role == RoleImposter and not bot.isGhost:
+  if bot.imposterKnown() and not bot.isGhost:
     bot.taskHoldTicks = 0
     bot.taskHoldIndex = -1
     bot.fakeTaskHoldIndex = -1
@@ -8558,7 +8573,7 @@ proc bodyEscapeGoal(
 
 proc imposterHuntActive(bot: Bot): bool =
   ## Returns true when this imposter is currently hunting.
-  bot.role == RoleImposter and
+  bot.imposterKnown() and
     not bot.isGhost and
     (
       bot.imposterKillReady or
@@ -8691,7 +8706,7 @@ proc navigateToPoint(
   bot.controllerMask = bot.desiredMask
   let mask = bot.applyJiggle(bot.controllerMask)
   let prefix =
-    if bot.role == RoleImposter:
+    if bot.imposterKnown():
       "imposter "
     elif bot.isGhost:
       "ghost "
@@ -8769,9 +8784,9 @@ proc visibleBodyAction(bot: var Bot): tuple[found: bool, mask: uint8] =
   if not body.found:
     return
   bot.updateKillEvidence()
-  if bot.role != RoleImposter:
+  if not bot.imposterKnown():
     bot.queueBodySeen(body.x, body.y)
-  if bot.role == RoleImposter:
+  if bot.imposterKnown():
     if bot.imposterIgnoringBody(body.x, body.y):
       return
     let killAction = bot.killReadyCrewmateAction(body.colorIndex)
@@ -9011,7 +9026,7 @@ proc navigateTaskBrain(bot: var Bot): tuple[found: bool, mask: uint8] =
       ):
     bot.taskHoldTicks = bot.sim.config.taskCompleteTicks + TaskHoldPadding
     bot.taskHoldIndex = goal.index
-    if bot.role == RoleImposter:
+    if bot.imposterKnown():
       bot.fakeTaskHoldIndex = goal.index
     return (true, bot.holdTaskAction(goal.name))
   if bot.isGhost:
@@ -9101,6 +9116,7 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   bot.pollVotingLlm()
   let centerStart = getMonoTime()
   bot.updateLocation()
+  bot.normalizeRoleFromImposterSignals()
   bot.logRoomTransitions()
   bot.centerMicros = int((getMonoTime() - centerStart).inMicroseconds)
   bot.astarMicros = 0
@@ -9146,7 +9162,7 @@ proc decideNextMask(bot: var Bot): uint8 {.measure.} =
   bot.updateVentEvidence()
   bot.updateFollowerTracking()
   bot.updateRunawayState()
-  if bot.role == RoleImposter and not bot.isGhost:
+  if bot.imposterKnown() and not bot.isGhost:
     return bot.decideImposterMask()
   let buttonAction = bot.emergencyButtonAction()
   if buttonAction.found:

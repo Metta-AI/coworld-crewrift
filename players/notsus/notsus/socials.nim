@@ -482,8 +482,8 @@ proc socialVoteThreshold*(aliveCount: int): int =
   if aliveCount == 5:
     return 35
   if aliveCount <= 7:
-    return 60
-  90
+    return 45
+  75
 
 proc socialTrustScores*(
   matrix: SocialMatrix,
