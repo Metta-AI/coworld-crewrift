@@ -101,7 +101,7 @@ const
   EmergencyButtonCooldownPercent = 95
   EmergencyButtonFollowingTicks = sim.TargetFps div 2
   EmergencyButtonStalkerScore = StalkerMaxScore div 2
-  ImposterHuntCooldownPercent = 70
+  ImposterHuntCooldownPercent = 50
   VoteDeadlineTicks = sim.VoteTimerTicks
   VoteListenBaseTicks = VoteDeadlineTicks div 4
   VoteListenJitterTicks = VoteDeadlineTicks div 16
@@ -126,6 +126,7 @@ const
   SusVoteMinScore = 75
   CrewPileMinSusScore = 45
   UrgentCrewEffectiveMinScore = 1
+  OwnerPairScoreGap = 75
   VotedAgainstSusWeight = 10
   UnsupportedClaimSusScore = 60
   UnsupportedClaimMaxScore = 120
@@ -7793,6 +7794,104 @@ proc weakButtonMeeting(bot: Bot): bool =
       return false
   true
 
+proc targetInList(target: int, targets: openArray[int]): bool =
+  ## Returns true when a target is present in a small target list.
+  for item in targets:
+    if item == target:
+      return true
+
+proc legalDifferentOwnerTargets(bot: Bot): seq[int] =
+  ## Returns legal living vote targets from a different owner label.
+  for target in 0 ..< bot.votePlayerCount:
+    if bot.voteTargetSafeForRole(target) and
+        not bot.sameOwnerVoteTarget(target):
+      result.add target
+
+proc ownOwnerVoteCountFor(bot: Bot, target: int): int =
+  ## Counts living same-owner visible votes on one target.
+  if target < 0 or target >= bot.votePlayerCount:
+    return
+  for voterColor, choice in bot.voteChoices:
+    if voterColor == bot.selfColorIndex or choice != target:
+      continue
+    let voterSlot = bot.voteSlotForColor(voterColor)
+    if voterSlot >= 0 and
+        voterSlot < bot.votePlayerCount and
+        bot.voteSlots[voterSlot].alive and
+        bot.sameOwnerColor(voterColor):
+      inc result
+
+proc ownerConvergenceVoteTarget(
+  bot: Bot,
+  listenedTicks: int
+): tuple[found: bool, target: int, reason: string, instant: bool] =
+  ## Returns a deterministic crew target when owner teams are obvious.
+  result.target = VoteUnknown
+  if bot.role != RoleCrewmate or bot.imposterKnown():
+    return
+  if bot.weakButtonMeeting():
+    return
+  if bot.knownDeadVoteCount() == 0 and
+      not bot.urgentCrewVote() and
+      not bot.criticalCrewVote():
+    return
+  let targets = bot.legalDifferentOwnerTargets()
+  if targets.len == 0:
+    return
+  let direct = bot.bestLegalDirectVoteTarget()
+  if direct.found and
+      direct.score >= EmergencyButtonStrongSusScore and
+      targetInList(direct.target, targets):
+    return (
+      true,
+      direct.target,
+      "owner convergence, hard evidence against " &
+        bot.voteTargetName(direct.target),
+      false
+    )
+  let scores = bot.effectiveSusScores()
+  var
+    pileTarget = VoteUnknown
+    pileCount = 0
+    pileScore = low(int)
+  for target in targets:
+    let
+      colorIndex = bot.voteSlots[target].colorIndex
+      count = bot.ownOwnerVoteCountFor(target)
+      score = scores.voteScoreForColor(colorIndex)
+    if count > pileCount or
+        (count == pileCount and count > 0 and score > pileScore):
+      pileTarget = target
+      pileCount = count
+      pileScore = score
+  if pileTarget != VoteUnknown and pileCount > 0:
+    return (
+      true,
+      pileTarget,
+      "joining same-owner vote pile against " &
+        bot.voteTargetName(pileTarget),
+      false
+    )
+  if targets.len <= 2 and (
+      bot.criticalCrewVote() or listenedTicks >= VoteListenBaseTicks
+    ):
+    var
+      bestTarget = targets[0]
+      bestScore = scores.voteScoreForColor(
+        bot.voteSlots[bestTarget].colorIndex
+      )
+    for target in targets:
+      let score = scores.voteScoreForColor(bot.voteSlots[target].colorIndex)
+      if score > bestScore + OwnerPairScoreGap:
+        bestTarget = target
+        bestScore = score
+    return (
+      true,
+      bestTarget,
+      "same-owner crew converging on " & bot.voteTargetName(bestTarget),
+      false
+    )
+
 proc socialDecisionSafe(bot: Bot, decision: SocialVoteDecision): bool =
   ## Returns true when a social vote decision is legal for this role.
   if not decision.found:
@@ -7868,6 +7967,13 @@ proc desiredVotingDecision(
       bot.effectiveSusScores(),
       bot.imposterKnown(),
       forced and not weakButton
+    )
+  let ownerDecision = bot.ownerConvergenceVoteTarget(listenedTicks)
+  if ownerDecision.found:
+    return (
+      ownerDecision.target,
+      ownerDecision.reason,
+      ownerDecision.instant
     )
   let socialTarget = bot.socialSusClaimTarget(SocialCrewBrigadeVotes)
   if bot.role == RoleCrewmate and
