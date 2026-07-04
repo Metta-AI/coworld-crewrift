@@ -6604,48 +6604,6 @@ proc votingChatLinesJson(bot: Bot): JsonNode =
     item["text"] = %line.text
     result.add item
 
-proc visibleVoteCountOnColor(bot: Bot, colorIndex: int): int =
-  ## Counts visible living votes currently on one color.
-  let target = bot.voteSlotForColor(colorIndex)
-  if target < 0 or target >= bot.votePlayerCount:
-    return
-  for voterColor, choice in bot.voteChoices:
-    if voterColor == bot.selfColorIndex or choice != target:
-      continue
-    let voterSlot = bot.voteSlotForColor(voterColor)
-    if voterSlot >= 0 and
-        voterSlot < bot.votePlayerCount and
-        bot.voteSlots[voterSlot].alive:
-      inc result
-
-proc selfAccuserColor(bot: Bot): int =
-  ## Returns one visible player who directly accused this bot.
-  result = VoteUnknown
-  for line in bot.voteChatLines:
-    if line.speakerColor == bot.selfColorIndex:
-      continue
-    if bot.imposterKnown() and bot.knownImposterColor(line.speakerColor):
-      continue
-    for claim in parsePlainSocialClaims(line.speakerColor, line.text):
-      if claim.stance == SocialSus and claim.target == bot.selfColorIndex:
-        return line.speakerColor
-
-proc selfAccusationCount(bot: Bot): int =
-  ## Counts visible direct social accusations against this bot.
-  for line in bot.voteChatLines:
-    if line.speakerColor == bot.selfColorIndex:
-      continue
-    if bot.imposterKnown() and bot.knownImposterColor(line.speakerColor):
-      continue
-    for claim in parsePlainSocialClaims(line.speakerColor, line.text):
-      if claim.stance == SocialSus and claim.target == bot.selfColorIndex:
-        inc result
-
-proc selfUnderPressure(bot: Bot): bool =
-  ## Returns true when this bot is being accused or visibly voted.
-  bot.visibleVoteCountOnColor(bot.selfColorIndex) > 0 or
-    bot.selfAccusationCount() > 0
-
 proc sanitizedVotingChatText(bot: Bot): string =
   ## Returns visible chat text after hidden teammate sanitization.
   for line in bot.voteChatLines:
@@ -6751,10 +6709,6 @@ proc votingObservationJson(bot: Bot): JsonNode =
   result["body_sus_color"] = %playerColorName(bodySusColor)
   result["said_something"] = %bot.voteSaidSomething
   result["say_count"] = %bot.voteLlmSayCount
-  result["self_visible_votes"] =
-    %bot.visibleVoteCountOnColor(bot.selfColorIndex)
-  result["self_accusations"] = %bot.selfAccusationCount()
-  result["self_under_pressure"] = %bot.selfUnderPressure()
   result["self_reported_body"] = %selfReportedBody
   if selfReportedBody:
     result["reported_body_x"] = %bot.lastBodyReportX
@@ -7012,26 +6966,6 @@ proc selfFallbackChat(bot: Bot): string =
     else:
       return "Tasks for me were in " & taskRooms & ". Who has info?"
 
-proc selfDefenseFallbackChat(bot: Bot): string =
-  ## Builds fallback chat that answers pressure on this bot.
-  let
-    rooms = bot.selfRoomHistory.shortList(2)
-    taskRooms = bot.taskRoomList(1)
-    accuser = bot.selfAccuserColor()
-    accuserName = playerColorLogName(accuser)
-  var base = ""
-  if rooms.len > 0 and taskRooms.len > 0:
-    base = "I was " & rooms & ". Task work in " & taskRooms & "."
-  elif rooms.len > 0:
-    base = "I was " & rooms & "."
-  elif taskRooms.len > 0:
-    base = "I did task work in " & taskRooms & "."
-  else:
-    base = "I need exact evidence, not a pile."
-  if accuserName != "Unknown":
-    return base & " " & accuserName & ", give exact sighting."
-  base & " Give exact sighting before piling me."
-
 proc externalChatAsksSelf(bot: Bot): bool =
   ## Returns true when visible chat asks this color for rooms or tasks.
   let
@@ -7254,9 +7188,6 @@ proc fallbackVotingChatCandidates(bot: Bot): seq[string] =
   let
     target = bot.bestFallbackSuspect()
     selfInfo = bot.selfFallbackChat()
-    selfDefense = bot.selfDefenseFallbackChat()
-  if bot.selfUnderPressure() and selfDefense.len > 0:
-    result.add selfDefense
   if bot.externalChatAsksSelf() and selfInfo.len > 0 and
       not bot.urgentCrewVote():
     result.add selfInfo
