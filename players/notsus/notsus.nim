@@ -68,6 +68,8 @@ const
   GhostMinStablePixels = 6
   GhostMinTintPixels = 6
   KillTapExtraRadius = 28
+  KillTapRepeatTicks = 6
+  CrewRoleColorCount = 6
   ChaseLeadTicks = 6
   ChasePredictionSearchRadius = 12
   PlayerTrackMemoryTicks = sim.TargetFps * 2
@@ -530,6 +532,7 @@ type
     bedrockConfigLogged: bool
     lastMask: uint8
     forceActionTap: bool
+    lastKillTapTick: int
     lastThought: string
     pendingChat: string
     lastVotingChatSentTick: int
@@ -2134,6 +2137,7 @@ proc resetRoundState(bot: var Bot) =
   bot.jiggleSide = 0
   bot.desiredMask = 0
   bot.controllerMask = 0
+  bot.lastKillTapTick = -KillTapRepeatTicks
   bot.taskHoldTicks = 0
   bot.taskHoldIndex = -1
   bot.pendingChat = ""
@@ -4658,6 +4662,9 @@ proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
       colorIndex >= 0 and
       colorIndex < PlayerColorCount:
     let directScore = bot.directVoteSusScore(colorIndex)
+    if colorIndex < CrewRoleColorCount and
+        directScore < EmergencyButtonStrongSusScore:
+      return false
     if directScore < EmergencyButtonStrongSusScore:
       if colorIndex < bot.bodyReportColors.len and
           bot.bodyReportColors[colorIndex]:
@@ -8608,9 +8615,12 @@ proc killChaseMask(bot: Bot, track: PlayerTrack): uint8 =
 
 proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
   ## Returns movement plus a forced kill button tap.
+  if bot.frameTick - bot.lastKillTapTick < KillTapRepeatTicks:
+    return moveMask and not ButtonA
   if bot.reportableBodyVisible():
     return moveMask and not ButtonA
   bot.forceActionTap = true
+  bot.lastKillTapTick = bot.frameTick
   moveMask or ButtonA
 
 proc killCrewmateAction(
@@ -9321,6 +9331,7 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.lastBodyReportY = low(int)
   result.lastKillBodyX = low(int)
   result.lastKillBodyY = low(int)
+  result.lastKillTapTick = -KillTapRepeatTicks
   result.bodySusColor = VoteUnknown
   result.hadVisibleBody = false
   result.serverTick = -1
