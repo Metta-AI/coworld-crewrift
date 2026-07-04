@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Match Making Simulator</title>
+  <link
+    rel="preload"
+    href="fonts/ETBembo-RomanOSF.otf"
+    as="font"
+    type="font/otf"
+    crossorigin
+  >
+  <link
+    rel="preload"
+    href="fonts/ETBembo-DisplayItalic.otf"
+    as="font"
+    type="font/otf"
+    crossorigin
+  >
+  <link
+    rel="preload"
+    href="fonts/ETBembo-SemiBoldOSF.otf"
+    as="font"
+    type="font/otf"
+    crossorigin
+  >
+  <link rel="stylesheet" href="tufte.css">
+  <style>
+    table { table-layout: fixed; width: 100%; }
+    .report-table { max-width: var(--max-width); table-layout: auto; }
+    .report-table.wide {
+      max-width: calc(100vw - 4rem);
+      table-layout: auto;
+      width: 738px;
+    }
+    .report-table.policy-summary { table-layout: fixed; }
+    .report-table th,
+    .report-table td {
+      overflow: hidden;
+      padding-right: 1.1rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .report-table th { cursor: default; }
+    .report-table td.wrap { white-space: normal; }
+    .inactive-row { opacity: 0.5; }
+    .num {
+      text-align: right;
+      white-space: nowrap;
+    }
+    .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .bot-name {
+      max-width: 16rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .policy-select-col { width: 4.6rem; }
+    .policy-games-col { width: 5rem; }
+    .policy-check-cell {
+      text-align: center;
+      vertical-align: middle;
+    }
+    .sim-controls {
+      max-width: 738px;
+      margin-top: 1rem;
+    }
+    .sim-controls .allocation-type {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem 1.1rem;
+    }
+    .sim-controls .allocation-label {
+      align-items: baseline;
+      display: inline-flex;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+    .sim-controls p {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.65rem;
+      max-width: 738px;
+      margin-top: 0.65rem;
+      width: 100%;
+    }
+    .sim-controls label {
+      align-items: center;
+      display: flex;
+      gap: 0.55rem;
+      margin: 0;
+      min-width: min(28rem, 100%);
+    }
+    .sim-controls input[type="range"] {
+      flex: 1 1 14rem;
+      min-width: 10rem;
+    }
+    .sim-count {
+      display: inline-block;
+      min-width: 2.5rem;
+      text-align: right;
+    }
+    .sim-status {
+      color: #666;
+      font-size: 0.95rem;
+      margin-top: 0.45rem;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+    .heat-wrap {
+      box-sizing: border-box;
+      margin: 1rem calc(50% - 50vw);
+      max-width: 100vw;
+      overflow-x: hidden;
+      padding: 0 1rem;
+    }
+    .heatmap-svg {
+      display: block;
+      height: auto;
+      margin: 0 auto;
+      max-width: calc(100vw - 2rem);
+      width: auto;
+      shape-rendering: crispEdges;
+    }
+    .heatmap-svg text {
+      font-family: inherit;
+      font-size: 0.78rem;
+      shape-rendering: auto;
+    }
+    .heatmap-svg .heat-label { fill: #111; }
+    .heatmap-svg .heat-label.excluded { fill: #777; }
+    .heatmap-svg .heat-rate {
+      font-size: 0.62rem;
+      font-weight: 700;
+    }
+    .heat-cell {
+      stroke: #e1e1da;
+      stroke-width: 1;
+    }
+    @media (max-width: 760px) {
+      .report-table.wide {
+        width: calc(100vw - 2rem);
+      }
+      .sim-controls p,
+      .sim-controls label {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .sim-controls input[type="range"],
+      .sim-controls button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+<main>
+<section>
+<h1>Match Making Simulator</h1>
+<p>
+This simulator tries to add continuous equalization matchmaking. When a new
+policy is added, it immediately plays a bunch of games involving that policy.
+When a policy is removed, it removes all past games that included that policy.
+The goal is to equalize how many games are played between the active policies.
+</p>
+</section>
+<section>
+<h2>Top Policies</h2>
+<div id="policy-panel"></div>
+<div class="sim-controls">
+<p class="allocation-type">
+Allocation
+<label class="allocation-label" for="allocation-random">
+<input
+  id="allocation-random"
+  type="radio"
+  name="allocation-type"
+  value="random"
+  checked
+>
+Allocate games randomly
+</label>
+<label class="allocation-label" for="allocation-equalize">
+<input
+  id="allocation-equalize"
+  type="radio"
+  name="allocation-type"
+  value="policies"
+>
+Equalize policies
+</label>
+<label class="allocation-label" for="allocation-pairings">
+<input
+  id="allocation-pairings"
+  type="radio"
+  name="allocation-type"
+  value="pairings"
+>
+Equalize pairings
+</label>
+</p>
+<p>
+<label for="game-slider">
+Games
+<input
+  id="game-slider"
+  type="range"
+  min="1"
+  max="100"
+  step="1"
+  value="1"
+>
+<span id="game-value" class="sim-count">1</span>
+</label>
+<button id="play-button" type="button">Play 1 game</button>
+<button id="remove-button" type="button">Remove 1 game</button>
+</p>
+<p id="status-line" class="sim-status"></p>
+</div>
+</section>
+<section>
+<h2>Matchup Games</h2>
+<div id="chart"></div>
+</section>
+<section>
+<h2>Auto Equalizer</h2>
+<div class="sim-controls">
+<p>
+<label for="auto-target-slider">
+Pair games
+<input
+  id="auto-target-slider"
+  type="range"
+  min="10"
+  max="1000"
+  step="1"
+  value="10"
+>
+<span id="auto-target-value" class="sim-count">10</span>
+</label>
+<button id="auto-button" type="button">Auto-Equalize</button>
+</p>
+<p id="auto-status-line" class="sim-status"></p>
+</div>
+</section>
+</main>
+<script src="./main.js"></script>
+</body>
+</html>
