@@ -4663,12 +4663,18 @@ proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
       colorIndex >= 0 and
       colorIndex < PlayerColorCount:
     let directScore = bot.directVoteSusScore(colorIndex)
+    var aliveCount = 0
+    for i in 0 ..< bot.votePlayerCount:
+      if bot.voteSlots[i].alive:
+        inc aliveCount
+    let criticalVote = aliveCount > 0 and aliveCount <= 4
     if colorIndex < CrewRoleColorCount and
         directScore < EmergencyButtonStrongSusScore:
       return false
     if directScore < EmergencyButtonStrongSusScore:
       if colorIndex < bot.bodyReportColors.len and
-          bot.bodyReportColors[colorIndex]:
+          bot.bodyReportColors[colorIndex] and
+          not criticalVote:
         return false
       if bot.meetingCallKind == VoteCalledButton and
           colorIndex == bot.meetingCallCallerColor:
