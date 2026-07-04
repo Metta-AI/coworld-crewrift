@@ -12,6 +12,7 @@ const
   DefaultPollMs = 5_000
   DefaultWaitSeconds = 1_800
   MaxPollBackoffMs = 30_000
+  CommandPollMs = 50
   PlayerLogTimeoutMs = 5_000
   UploadAttempts = 12
   UploadRetryMs = 30_000
@@ -1225,9 +1226,21 @@ proc runCommand(
     options = {poUsePath, poStdErrToStdOut}
   )
   if timeoutMs >= 0:
-    result.code = process.waitForExit(timeoutMs)
-    if result.code == 0:
-      result.output = process.outputStream().readAll()
+    let startedAt = getMonoTime()
+    while (getMonoTime() - startedAt).inMilliseconds < timeoutMs:
+      result.code = process.peekExitCode()
+      if result.code != -1:
+        break
+      sleep(CommandPollMs)
+    if result.code == -1:
+      process.terminate()
+      sleep(CommandPollMs)
+      if process.peekExitCode() == -1:
+        process.kill()
+      discard process.waitForExit()
+    else:
+      result.code = process.waitForExit()
+    result.output = process.outputStream().readAll()
   else:
     result.output = process.outputStream().readAll()
     result.code = process.waitForExit()
@@ -3688,6 +3701,8 @@ proc downloadPlayerLog(
       check = false,
       timeoutMs = PlayerLogTimeoutMs
     )
+    if output.code < 0:
+      return "log command timed out"
     if output.code != 0:
       return "log command failed: " & $output.code
     path.parentDir().createDir()
