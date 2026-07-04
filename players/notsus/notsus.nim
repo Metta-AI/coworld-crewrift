@@ -8725,15 +8725,11 @@ proc killChaseMask(bot: Bot, track: PlayerTrack): uint8 =
       (bot.frameTick div UnstuckPulseTicks) mod UnstuckMasks.len
     ]
 
-proc killTapMask(
-  bot: var Bot,
-  moveMask: uint8,
-  allowReportableBody = false
-): uint8 =
+proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
   ## Returns movement plus a forced kill button tap.
   if bot.frameTick - bot.lastKillTapTick < KillTapRepeatTicks:
     return moveMask and not ButtonA
-  if not allowReportableBody and bot.reportableBodyVisible():
+  if bot.reportableBodyVisible():
     return moveMask and not ButtonA
   bot.forceActionTap = true
   bot.lastKillTapTick = bot.frameTick
@@ -8749,9 +8745,8 @@ proc killCrewmateAction(
   bot.imposterFakeUntilTick = -1
   var moveMask = bot.killChaseMask(track)
   moveMask = bot.applyJiggle(moveMask)
-  let allowReportableBody = bot.inKillRange(track.x, track.y)
   bot.intent = "kill " & name
-  bot.desiredMask = bot.killTapMask(moveMask, allowReportableBody)
+  bot.desiredMask = bot.killTapMask(moveMask)
   bot.controllerMask = bot.desiredMask
   bot.clearPath()
   bot.thought(name & " in range, tapping kill while closing")
