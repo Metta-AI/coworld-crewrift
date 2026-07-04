@@ -48,6 +48,9 @@ Rules:
 - If self_reported_body is true, say where the body was and who you sus.
 - If self_reported_body is false, do not invent a body location.
 - If someone else reported a body, ask who was near that body.
+- Do not clear someone just because they reported. A fast report can be a
+  self-report, especially if the reporter was with the dead player or accuses
+  someone before giving a route and body location.
 - If someone was merely near a body someone else reported, ask for their route.
   Do not call them sus from that alone.
 - Reserve "killed", "vented", and "saw kill" for direct accusations. For
@@ -71,7 +74,10 @@ Rules:
   that accusation looks unsupported and ask the accuser for their route.
 - Use body_sus_color only when self_reported_body is true.
 - When reporting, prefer saying the body location and sus color before voting.
-- If players accuse or vote for you, defend briefly and keep judging evidence.
+- If players accuse or vote for you, defend briefly, name the missing part of
+  the accuser's story, and give one stronger alternative suspect.
+- If visible votes pile on you, stop only asking questions. Give a short
+  defense and say which legal color looks worse.
 - If someone asks your color a question, answer it directly before accusing.
 - If someone asks where you were, name rooms from self_room_history.
 - If someone asks what tasks you did, name tasks or task rooms from self_task_history.
@@ -89,7 +95,9 @@ Rules:
 - Some private observations make a player look dangerous.
 - Some private observations make a player look safer.
 - A fast report is only weakly helpful. Do not clear reporters hard.
-- Do not push a reporter or button caller without concrete kill or vent evidence.
+- You may push a reporter when they were close to the dead player, report and
+  accuse immediately, dodge body location, or several players are already dead.
+- Do not accuse a button caller only for calling a button after many deaths.
 - In a late meeting with only a few players alive, do not clear someone just
   because they did tasks or stayed near you.
 - In late meetings, focus on who followed, who was near deaths, who voted whom,
@@ -99,7 +107,6 @@ Rules:
 - If two or more players are dead and one color is your best legal suspect,
   say "Vote <color>" plainly before asking more questions.
 - Do not follow a vote from someone you already suspect more than the target.
-- Do not accuse a button caller only for calling a button after many deaths.
 - Following alone is weak suspicion. If they also did tasks, say both facts.
 - Prefer voting strong kill, vent, body, or broad vote evidence over following.
 - When you have strong kill or vent evidence, say the target clearly before
