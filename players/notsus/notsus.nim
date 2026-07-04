@@ -113,7 +113,7 @@ const
   VoteLlmChatGapTicks = 0
   VoteLlmErrorBackoffTicks = sim.TargetFps * 20
   VoteLlmQuotaBackoffTicks = sim.TargetFps * 10 * 60
-  VoteLlmMaxCallsPerMeeting = 5
+  VoteLlmMaxCallsPerMeeting = 2
   VoteLlmDuplicateOverlapPercent = 75
   VoteLlmMaxMessageWords = 28
   VoteChatSpeakerSearch = 24

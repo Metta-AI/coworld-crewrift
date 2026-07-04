@@ -78,6 +78,8 @@ Rules:
   the accuser's story, and give one stronger alternative suspect.
 - If visible votes pile on you, stop only asking questions. Give a short
   defense and say which legal color looks worse.
+- Do not repeat the same body, route, or task question after you already asked
+  it. If the room is voting or accusing, switch to defense and a vote target.
 - If someone asks your color a question, answer it directly before accusing.
 - If someone asks where you were, name rooms from self_room_history.
 - If someone asks what tasks you did, name tasks or task rooms from self_task_history.
