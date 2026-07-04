@@ -4688,6 +4688,12 @@ proc sameOwnerColor(bot: Bot, colorIndex: int): bool =
   ## Returns true when a color appears to share this bot's owner label.
   if colorIndex < 0 or colorIndex >= bot.playerDisplayNames.len:
     return false
+  if bot.role == RoleCrewmate and
+      not bot.imposterKnown() and
+      bot.selfColorIndex >= 0 and
+      bot.selfColorIndex < CrewRoleColorCount and
+      colorIndex < CrewRoleColorCount:
+    return true
   let
     selfKey = bot.selfOwnerNameKey()
     targetKey = bot.playerDisplayNames[colorIndex].ownerNameKey()
@@ -7951,6 +7957,15 @@ proc imposterEarlyVoteTarget(
       true,
       pile.target,
       "imposter defense pile against " & bot.voteTargetName(pile.target),
+      true
+    )
+  if danger.found and
+      danger.count >= SocialImposterDangerVotes and
+      danger.colorIndex != bot.selfColorIndex:
+    return (
+      true,
+      bot.votePlayerCount,
+      "imposter teammate danger, skipping",
       true
     )
   if danger.found and danger.count >= SocialImposterDangerVotes:
