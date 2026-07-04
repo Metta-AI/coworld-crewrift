@@ -4263,10 +4263,16 @@ proc imposterKnown(bot: Bot): bool =
     bot.imposterKillReady or
     bot.imposterCooldownPercent >= 0
 
+proc rememberSelfImposter(bot: var Bot) =
+  ## Marks this bot as an imposter for the rest of the round.
+  if bot.selfColorIndex >= 0 and bot.selfColorIndex < bot.knownImposters.len:
+    bot.knownImposters[bot.selfColorIndex] = true
+
 proc normalizeRoleFromImposterSignals(bot: var Bot) =
   ## Restores imposter role from hidden or cooldown signals.
   if bot.imposterKnown() and not bot.isGhost:
     bot.role = RoleImposter
+    bot.rememberSelfImposter()
 
 proc playerColorName(colorIndex: int): string =
   ## Returns the visible player color name.
@@ -5013,7 +5019,8 @@ proc emergencyRunawayColor(bot: Bot): int =
 
 proc emergencyButtonThreatColor(bot: Bot): int =
   ## Returns the current hunter that should trigger the button.
-  if bot.role != RoleCrewmate or
+  if bot.imposterKnown() or
+      bot.role != RoleCrewmate or
       bot.isGhost or
       bot.emergencyButtonUsed or
       not bot.cooldownPastPercent(EmergencyButtonCooldownPercent):
