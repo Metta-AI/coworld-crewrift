@@ -4263,16 +4263,10 @@ proc imposterKnown(bot: Bot): bool =
     bot.imposterKillReady or
     bot.imposterCooldownPercent >= 0
 
-proc rememberSelfImposter(bot: var Bot) =
-  ## Marks this bot as an imposter for the rest of the round.
-  if bot.selfColorIndex >= 0 and bot.selfColorIndex < bot.knownImposters.len:
-    bot.knownImposters[bot.selfColorIndex] = true
-
 proc normalizeRoleFromImposterSignals(bot: var Bot) =
   ## Restores imposter role from hidden or cooldown signals.
   if bot.imposterKnown() and not bot.isGhost:
     bot.role = RoleImposter
-    bot.rememberSelfImposter()
 
 proc playerColorName(colorIndex: int): string =
   ## Returns the visible player color name.
@@ -4688,12 +4682,6 @@ proc sameOwnerColor(bot: Bot, colorIndex: int): bool =
   ## Returns true when a color appears to share this bot's owner label.
   if colorIndex < 0 or colorIndex >= bot.playerDisplayNames.len:
     return false
-  if bot.role == RoleCrewmate and
-      not bot.imposterKnown() and
-      bot.selfColorIndex >= 0 and
-      bot.selfColorIndex < CrewRoleColorCount and
-      colorIndex < CrewRoleColorCount:
-    return true
   let
     selfKey = bot.selfOwnerNameKey()
     targetKey = bot.playerDisplayNames[colorIndex].ownerNameKey()
@@ -5025,8 +5013,7 @@ proc emergencyRunawayColor(bot: Bot): int =
 
 proc emergencyButtonThreatColor(bot: Bot): int =
   ## Returns the current hunter that should trigger the button.
-  if bot.imposterKnown() or
-      bot.role != RoleCrewmate or
+  if bot.role != RoleCrewmate or
       bot.isGhost or
       bot.emergencyButtonUsed or
       not bot.cooldownPastPercent(EmergencyButtonCooldownPercent):
@@ -7905,86 +7892,6 @@ proc ownerConvergenceVoteTarget(
       false
     )
 
-proc imposterDangerVoteCount(
-  bot: Bot
-): tuple[found: bool, colorIndex: int, count: int] =
-  ## Returns the largest visible vote pile on a known imposter.
-  result.colorIndex = VoteUnknown
-  if not bot.imposterKnown():
-    return
-  for target in 0 ..< bot.votePlayerCount:
-    let colorIndex = bot.voteSlots[target].colorIndex
-    if colorIndex != bot.selfColorIndex and not bot.knownImposterColor(
-      colorIndex
-    ):
-      continue
-    let count = bot.visibleVoteCountFor(target)
-    if count > result.count:
-      result = (true, colorIndex, count)
-
-proc imposterBestCrewPile(
-  bot: Bot
-): tuple[found: bool, target: int, count: int] =
-  ## Returns the largest visible pile against a legal crew target.
-  result.target = VoteUnknown
-  for target in 0 ..< bot.votePlayerCount:
-    if not bot.voteTargetSafeForRole(target):
-      continue
-    let count = bot.visibleVoteCountFor(target)
-    if count > result.count:
-      result = (true, target, count)
-
-proc imposterEarlyVoteTarget(
-  bot: Bot,
-  listenedTicks: int
-): tuple[found: bool, target: int, reason: string, instant: bool] =
-  ## Returns an urgent hidden-role imposter vote before the deadline.
-  result.target = VoteUnknown
-  if not bot.imposterKnown():
-    return
-  let
-    danger = bot.imposterDangerVoteCount()
-    pile = bot.imposterBestCrewPile()
-  if pile.found and pile.count >= SocialImposterBrigadeVotes:
-    return (
-      true,
-      pile.target,
-      "imposter early brigade against " & bot.voteTargetName(pile.target),
-      true
-    )
-  if danger.found and danger.count > 0 and pile.found and pile.count > 0:
-    return (
-      true,
-      pile.target,
-      "imposter defense pile against " & bot.voteTargetName(pile.target),
-      true
-    )
-  if danger.found and
-      danger.count >= SocialImposterDangerVotes and
-      danger.colorIndex != bot.selfColorIndex:
-    return (
-      true,
-      bot.votePlayerCount,
-      "imposter teammate danger, skipping",
-      true
-    )
-  if danger.found and danger.count >= SocialImposterDangerVotes:
-    let fallback = bot.fallbackVotingTarget()
-    if fallback.found:
-      return (
-        true,
-        fallback.target,
-        "imposter danger fallback, " & fallback.reason,
-        true
-      )
-  if listenedTicks >= VoteListenBaseTicks and pile.found and pile.count > 0:
-    return (
-      true,
-      pile.target,
-      "imposter late pile against " & bot.voteTargetName(pile.target),
-      false
-    )
-
 proc socialDecisionSafe(bot: Bot, decision: SocialVoteDecision): bool =
   ## Returns true when a social vote decision is legal for this role.
   if not decision.found:
@@ -8060,13 +7967,6 @@ proc desiredVotingDecision(
       bot.effectiveSusScores(),
       bot.imposterKnown(),
       forced and not weakButton
-    )
-  let imposterDecision = bot.imposterEarlyVoteTarget(listenedTicks)
-  if imposterDecision.found:
-    return (
-      imposterDecision.target,
-      imposterDecision.reason,
-      imposterDecision.instant
     )
   let ownerDecision = bot.ownerConvergenceVoteTarget(listenedTicks)
   if ownerDecision.found:
@@ -8248,16 +8148,14 @@ proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
           bot.voteTargetName(ownVote)
       )
   bot.refreshVotingLlmDecision(listenedTicks)
-  var decision = bot.desiredVotingDecision(listenedTicks)
-  if bot.pendingChat.len > 0 and (
-      decision.target == VoteUnknown or not decision.instant
-    ):
+  if bot.pendingChat.len > 0:
     bot.voteTarget = VoteUnknown
     bot.desiredMask = 0
     bot.controllerMask = 0
     bot.intent = "sending social vote chat"
     bot.thought(bot.intent)
     return 0
+  var decision = bot.desiredVotingDecision(listenedTicks)
   if ownVote != VoteUnknown and bot.ownVoteSafe(ownVote):
     if bot.shouldSwitchCrewVote(
       ownVote,
@@ -8662,9 +8560,8 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
       bot.playerWorldX(),
       bot.playerWorldY()
     ).found
-  let nearButton = fakeTask and bot.playerOnButton()
   let actionMask =
-    if nearVent or nearButton:
+    if nearVent:
       0'u8
     else:
       ButtonA
@@ -8672,9 +8569,6 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
     if nearVent:
       "faking task at " & name & " hold=" & $bot.taskHoldTicks &
         " no action near vent"
-    elif nearButton:
-      "faking task at " & name & " hold=" & $bot.taskHoldTicks &
-        " no action on button"
     else:
       "doing task at " & name & " hold=" & $bot.taskHoldTicks
   bot.desiredMask = actionMask
