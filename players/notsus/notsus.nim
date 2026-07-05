@@ -69,6 +69,9 @@ const
   GhostMinTintPixels = 6
   KillTapExtraRadius = 28
   KillTapRepeatTicks = 6
+  KillWitnessAvoidRadius = 96
+  KillWitnessSelfRadius = 72
+  KillWitnessAllowAliveCrew = 2
   CrewRoleColorCount = 6
   ChaseLeadTicks = 6
   ChasePredictionSearchRadius = 12
@@ -5546,6 +5549,58 @@ proc playerTrackDistanceFrom(
   ## Returns one tracked player's distance from a world point.
   heuristic(x, y, track.x, track.y)
 
+proc knownAliveCrewTargets(bot: Bot): int =
+  ## Counts living non-imposter targets from the vote screen.
+  if bot.votePlayerCount <= 0:
+    return high(int)
+  for slot in 0 ..< bot.votePlayerCount:
+    if not bot.voteSlots[slot].alive:
+      continue
+    let colorIndex = bot.voteSlots[slot].colorIndex
+    if colorIndex == bot.selfColorIndex:
+      continue
+    if bot.knownImposterColor(colorIndex):
+      continue
+    inc result
+
+proc killWitnessCount(
+  bot: Bot,
+  candidate: PlayerTrack,
+  deadColor = VoteUnknown
+): int =
+  ## Counts fresh non-imposter witnesses near a candidate kill.
+  let
+    selfX = bot.playerWorldX()
+    selfY = bot.playerWorldY()
+  for colorIndex in 0 ..< PlayerColorCount:
+    if colorIndex == bot.selfColorIndex or
+        colorIndex == candidate.colorIndex or
+        colorIndex == deadColor:
+      continue
+    if bot.knownImposterColor(colorIndex):
+      continue
+    if bot.frameTick - bot.bodySeenTicks[colorIndex] <= PlayerTrackMemoryTicks:
+      continue
+    let world = bot.trackedPlayerWorld(colorIndex)
+    if not world.found:
+      continue
+    let
+      targetDistance = heuristic(candidate.x, candidate.y, world.x, world.y)
+      selfDistance = heuristic(selfX, selfY, world.x, world.y)
+    if targetDistance <= KillWitnessAvoidRadius or
+        selfDistance <= KillWitnessSelfRadius:
+      inc result
+
+proc safeKillTarget(
+  bot: Bot,
+  candidate: PlayerTrack,
+  deadColor = VoteUnknown
+): bool =
+  ## Returns true when a kill target is isolated or the endgame is small.
+  if bot.knownAliveCrewTargets() <= KillWitnessAllowAliveCrew:
+    return true
+  bot.killWitnessCount(candidate, deadColor) == 0
+
 proc nearestCrewmateFrom(
   bot: Bot,
   x,
@@ -5579,7 +5634,9 @@ proc imposterClaimsCrewmate(
     claimed.distance <= selfDistance
 
 proc nearestUnclaimedCrewmate(
-  bot: Bot
+  bot: Bot,
+  requireSafeKill = false,
+  deadColor = VoteUnknown
 ): tuple[found: bool, track: PlayerTrack] =
   ## Returns the nearest tracked crewmate not claimed by another imposter.
   let
@@ -5614,6 +5671,8 @@ proc nearestUnclaimedCrewmate(
         claimed = true
         break
     if claimed:
+      continue
+    if requireSafeKill and not bot.safeKillTarget(track, deadColor):
       continue
     if selfDistance < bestDistance:
       bestDistance = selfDistance
@@ -9343,7 +9402,7 @@ proc decideImposterMask(bot: var Bot): uint8 {.measure.} =
   bot.taskHoldIndex = -1
   bot.fakeTaskHoldIndex = -1
   bot.imposterFakeUntilTick = -1
-  let hunted = bot.nearestUnclaimedCrewmate()
+  let hunted = bot.nearestUnclaimedCrewmate(requireSafeKill = true)
   if hunted.found:
     return bot.attackTrackedCrewmate(
       hunted.track,
