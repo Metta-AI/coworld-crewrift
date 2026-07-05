@@ -71,7 +71,7 @@ const
   KillTapRepeatTicks = 6
   KillWitnessAvoidRadius = 96
   KillWitnessSelfRadius = 72
-  KillWitnessAllowAliveCrew = 2
+  KillWitnessAllowAliveCrew = 1
   CrewRoleColorCount = 6
   ChaseLeadTicks = 6
   ChasePredictionSearchRadius = 12
@@ -116,7 +116,7 @@ const
   VoteLlmChatGapTicks = 0
   VoteLlmErrorBackoffTicks = sim.TargetFps * 20
   VoteLlmQuotaBackoffTicks = sim.TargetFps * 10 * 60
-  VoteLlmMaxCallsPerMeeting = 2
+  VoteLlmMaxCallsPerMeeting = 5
   VoteLlmDuplicateOverlapPercent = 75
   VoteLlmMaxMessageWords = 28
   VoteChatSpeakerSearch = 24
@@ -615,6 +615,7 @@ type
     voteLoggedReason: string
     voteEvidenceLogged: bool
     voteSaidSomething: bool
+    voteImposterDefenseSaid: bool
     voteLlmSayCount: int
     voteLlmCallCount: int
     voteLlmAction: VoteLlmAction
@@ -1407,6 +1408,7 @@ proc clearVotingState(bot: var Bot) =
   bot.voteLoggedReason = ""
   bot.voteEvidenceLogged = false
   bot.voteSaidSomething = false
+  bot.voteImposterDefenseSaid = false
   bot.voteLlmSayCount = 0
   bot.voteLlmCallCount = 0
   bot.voteLlmAction = VoteLlmAction(
@@ -7142,12 +7144,22 @@ proc imposterDefenseChat(bot: Bot): string =
     return
   let
     dangerName = playerColorName(danger.colorIndex)
-    targetName = playerColorName(bot.voteSlots[counter.target].colorIndex)
+    targetColor = bot.voteSlots[counter.target].colorIndex
+    targetName = playerColorName(targetColor)
+    targetReason =
+      if bot.meetingCallKind == VoteCalledBody and
+          targetColor == bot.meetingCallCallerColor:
+        " reported without a full route"
+      elif bot.meetingCallKind == VoteCalledButton and
+          targetColor == bot.meetingCallCallerColor:
+        " called button without a clear reason"
+      else:
+        " voted before giving route"
   if danger.colorIndex == bot.selfColorIndex:
     return "I do not buy this push. " & targetName &
-      " looks worse. Vote " & targetName & "."
+      targetReason & ". Vote " & targetName & "."
   "I do not buy " & dangerName & " yet. " & targetName &
-    " is pushing too hard; vote " & targetName & "."
+    targetReason & ". Vote " & targetName & "."
 
 proc fallbackBodyQuestion(bot: Bot): string =
   ## Returns a varied fallback question for a body meeting.
@@ -7407,6 +7419,33 @@ proc queueFallbackVotingChat(
     )
     return true
 
+proc queueImposterDefenseChat(bot: var Bot): bool =
+  ## Queues a fast fake-crew defense when an imposter is being voted.
+  if not bot.imposterKnown():
+    return false
+  if bot.voteImposterDefenseSaid:
+    return false
+  if bot.voteLlmCallCount >= VoteLlmMaxCallsPerMeeting:
+    return false
+  let message = bot.imposterDefenseChat().cleanLlmChatMessage()
+  if message.len == 0 or bot.votingChatAlreadySaid(message):
+    return false
+  inc bot.voteLlmCallCount
+  bot.voteLlmAction = VoteLlmAction(
+    kind: VoteLlmFallback,
+    targetColor: VoteUnknown,
+    message: message,
+    reason: "fast imposter defense"
+  )
+  bot.pendingChat = message
+  bot.voteLlmWaiting = true
+  bot.voteLlmNeedsDecision = false
+  bot.voteLlmPromptKey = bot.votingLlmSnapshotKey()
+  bot.voteImposterDefenseSaid = true
+  bot.logEvent("notsus voting fallback chat: fast imposter defense | " &
+    message)
+  true
+
 proc votingBedrockQuotaError(message: string): bool =
   ## Returns true when Bedrock is quota-limited for the current run.
   let text = message.toLowerAscii()
@@ -7654,6 +7693,8 @@ proc refreshVotingLlmDecision(bot: var Bot, listenedTicks: int) =
   if bot.skipDeadVotingLlm():
     return
   if bot.pendingChat.len > 0:
+    return
+  if bot.queueImposterDefenseChat():
     return
   if bot.voteLlmCallCount >= VoteLlmMaxCallsPerMeeting:
     if bot.voteLlmNeedsDecision:
@@ -8105,6 +8146,16 @@ proc crewTopEffectiveVotePlausible(bot: Bot, target: int): bool =
     return true
   scores[colorIndex] >= SusVoteMinScore
 
+proc imposterSkipDefenseDecision(
+  bot: Bot,
+  decision: SocialVoteDecision
+): bool =
+  ## Returns true when a social decision wants defensive imposter skip.
+  bot.imposterKnown() and
+    decision.found and
+    decision.target == bot.votePlayerCount and
+    decision.reason.startsWith("defending accused imposter")
+
 proc desiredVotingDecision(
   bot: Bot,
   listenedTicks: int
@@ -8131,6 +8182,12 @@ proc desiredVotingDecision(
   if bot.imposterKnown() and
       bot.socialDecisionSafe(decision) and
       decision.target == bot.votePlayerCount:
+    if bot.imposterSkipDefenseDecision(decision) and not deadline:
+      return (
+        VoteUnknown,
+        "waiting before defensive skip",
+        false
+      )
     return (
       decision.target,
       decision.reason,

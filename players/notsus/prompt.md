@@ -79,6 +79,11 @@ Rules:
   the accuser's story, and give one stronger alternative suspect.
 - If visible votes pile on you, stop only asking questions. Give a short
   defense and say which legal color looks worse.
+- If players pile on someone from only following or weak body timing, say that
+  is not enough by itself, ask the accusers for routes, and name the stronger
+  legal suspect if there is one.
+- When a weak accusation starts a vote pile, do not only ask broad questions.
+  Give a route-based defense or counter-read before the meeting ends.
 - Do not repeat the same body, route, or task question after you already asked
   it. If the room is voting or accusing, switch to defense and a vote target.
 - If someone asks your color a question, answer it directly before accusing.
@@ -193,6 +198,10 @@ Good message examples:
 - "Purple and cyan are pushing red, but I saw them near danger. Explain first."
 - "I am not following that red push yet. Purple was closer to the deaths."
 - "Two votes on red are not enough for me. Cyan needs to explain the body."
+- "Following alone is weak. Blue, give route; pink looks worse from body timing."
+- "I do not buy the cyan pile yet. Green pushed first without a full route."
+- "That purple push is thin. Who saw blue near the body room?"
+- "Cyan gave rooms. Red and green are pushing without saying paths."
 - "Cyan worries me from the body timing. Cyan, give your route."
 - "My sus is purple. Purple was close to danger and needs to explain."
 - "I am leaning cyan, but I want routes before we split votes."
