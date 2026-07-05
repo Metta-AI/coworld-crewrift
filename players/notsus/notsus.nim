@@ -5812,16 +5812,10 @@ proc voteSummary(bot: Bot): string =
     result = "none"
 
 proc sanitizedVoteSummary(bot: Bot): string =
-  ## Returns parsed votes after hidden teammate sanitization.
+  ## Returns parsed votes as the fake-crew brain would see them.
   for voterColor, choice in bot.voteChoices:
     if choice == VoteUnknown:
       continue
-    if bot.imposterKnown() and bot.knownImposterColor(voterColor):
-      continue
-    if choice >= 0 and choice < bot.votePlayerCount:
-      let targetColor = bot.voteSlots[choice].colorIndex
-      if bot.imposterKnown() and bot.knownImposterColor(targetColor):
-        continue
     if result.len > 0:
       result.add(", ")
     result.add(playerColorName(voterColor))
@@ -6436,11 +6430,7 @@ proc socialGraphJson(bot: Bot): JsonNode =
   ## Builds plain social graph edges for the LLM.
   result = newJArray()
   for speaker in 0 ..< bot.socialGraph.len:
-    if bot.imposterKnown() and bot.knownImposterColor(speaker):
-      continue
     for target in 0 ..< bot.socialGraph[speaker].len:
-      if bot.imposterKnown() and bot.knownImposterColor(target):
-        continue
       let score = bot.socialGraph[speaker][target]
       if score == 0:
         continue
@@ -6597,8 +6587,6 @@ proc votingChatLinesJson(bot: Bot): JsonNode =
   ## Builds JSON for voting chat after hidden teammate sanitization.
   result = newJArray()
   for line in bot.voteChatLines:
-    if bot.imposterKnown() and bot.knownImposterColor(line.speakerColor):
-      continue
     var item = newJObject()
     item["speaker"] = %playerColorName(line.speakerColor)
     item["text"] = %line.text
@@ -6607,32 +6595,21 @@ proc votingChatLinesJson(bot: Bot): JsonNode =
 proc sanitizedVotingChatText(bot: Bot): string =
   ## Returns visible chat text after hidden teammate sanitization.
   for line in bot.voteChatLines:
-    if bot.imposterKnown() and bot.knownImposterColor(line.speakerColor):
-      continue
     if result.len > 0:
       result.add(' ')
     result.add(line.text)
 
 proc mentionsKnownTeammate(bot: Bot, text: string): bool =
-  ## Returns true when text names a hidden imposter teammate.
-  if not bot.imposterKnown():
-    return false
-  let normalized = text.normalizeSocialText()
-  for colorIndex in 0 ..< PlayerColorCount:
-    if not bot.knownImposterColor(colorIndex):
-      continue
-    let colorName = playerColorName(colorIndex)
-    for word in normalized.splitWhitespace():
-      if word == colorName:
-        return true
+  ## Returns false because color names are normal fake-crew discussion.
+  discard bot
+  discard text
+  false
 
 proc playersJson(bot: Bot): JsonNode =
   ## Builds JSON for current voting slots.
   result = newJArray()
   for i in 0 ..< bot.votePlayerCount:
     let colorIndex = bot.voteSlots[i].colorIndex
-    if bot.imposterKnown() and bot.knownImposterColor(colorIndex):
-      continue
     var item = newJObject()
     item["slot"] = %i
     item["color"] = %playerColorName(colorIndex)
@@ -6668,8 +6645,6 @@ proc seenRoomHistoryJson(bot: Bot): JsonNode =
   ## Builds JSON for rooms where this bot saw each player.
   result = newJObject()
   for colorIndex, rooms in bot.seenRoomHistory:
-    if bot.imposterKnown() and bot.knownImposterColor(colorIndex):
-      continue
     if rooms.len == 0:
       continue
     result[playerColorName(colorIndex)] = stringListJson(rooms)
@@ -6744,11 +6719,27 @@ proc validVotingTargetNames(bot: Bot): string =
   if result.len == 0:
     result = "none"
 
+proc livingVotingColorNames(bot: Bot): string =
+  ## Returns living color names visible in the current vote.
+  for i in 0 ..< bot.votePlayerCount:
+    if not bot.voteSlots[i].alive:
+      continue
+    let colorIndex = bot.voteSlots[i].colorIndex
+    if colorIndex < 0 or colorIndex >= PlayerColorCount:
+      continue
+    if result.len > 0:
+      result.add(", ")
+    result.add(playerColorName(colorIndex))
+  if result.len == 0:
+    result = "none"
+
 proc votingPromptText(bot: Bot): string =
   ## Builds the current voting prompt sent to Bedrock.
   "Current voting observation JSON:\n" &
     $bot.votingObservationJson() &
-    "\n\nLegal vote target color names for discussion only: " &
+    "\n\nLiving player color names for discussion: " &
+    bot.livingVotingColorNames() &
+    "\nLegal vote target color names for vote calls: " &
     bot.validVotingTargetNames() &
     "\nReturn one JSON object only."
 
@@ -6998,6 +6989,107 @@ proc fallbackTargetReason(bot: Bot, colorIndex: int): string =
     return "getting pushed by others"
   "from this round"
 
+proc visibleVoteCountForSlot(bot: Bot, target: int): int =
+  ## Returns how many living visible voters are on one target slot.
+  if target < 0 or target >= bot.votePlayerCount:
+    return
+  for voterColor, choice in bot.voteChoices:
+    if voterColor == bot.selfColorIndex or choice != target:
+      continue
+    let voterSlot = bot.voteSlotForColor(voterColor)
+    if voterSlot >= 0 and
+        voterSlot < bot.votePlayerCount and
+        bot.voteSlots[voterSlot].alive:
+      inc result
+
+proc imposterVoteDanger(
+  bot: Bot
+): tuple[found: bool, colorIndex: int, slot: int, votes: int] =
+  ## Returns the known imposter currently under the most visible votes.
+  if not bot.imposterKnown():
+    return
+  result.colorIndex = VoteUnknown
+  result.slot = VoteUnknown
+  for colorIndex, known in bot.knownImposters:
+    if not known:
+      continue
+    let slot = bot.voteSlotForColor(colorIndex)
+    if slot < 0 or slot >= bot.votePlayerCount:
+      continue
+    if not bot.voteSlots[slot].alive:
+      continue
+    let votes = bot.visibleVoteCountForSlot(slot)
+    if votes > result.votes:
+      result = (votes > 0, colorIndex, slot, votes)
+
+proc imposterCounterVoteTarget(
+  bot: Bot,
+  danger: tuple[found: bool, colorIndex: int, slot: int, votes: int]
+): tuple[found: bool, target: int, reason: string] =
+  ## Returns a legal countervote target when an imposter is pressured.
+  result.target = VoteUnknown
+  if not danger.found:
+    return
+  let scores = bot.effectiveSusScores()
+  var
+    bestTarget = VoteUnknown
+    bestScore = low(int)
+  for voterColor, choice in bot.voteChoices:
+    if choice != danger.slot:
+      continue
+    let target = bot.voteSlotForColor(voterColor)
+    if not bot.voteTargetSafeForRole(target):
+      continue
+    let score =
+      if voterColor >= 0 and voterColor < scores.len:
+        scores[voterColor]
+      else:
+        low(int)
+    if target != VoteUnknown and (bestTarget == VoteUnknown or
+        score > bestScore):
+      bestTarget = target
+      bestScore = score
+  if bestTarget != VoteUnknown:
+    return (
+      true,
+      bestTarget,
+      "countering votes on " & playerColorName(danger.colorIndex) &
+        " with accuser " & bot.voteTargetName(bestTarget)
+    )
+  let effective = bot.bestLegalEffectiveVoteTarget()
+  if effective.found:
+    return (
+      true,
+      effective.target,
+      "countering votes on " & playerColorName(danger.colorIndex) &
+        " with strongest safe target " &
+        bot.voteTargetName(effective.target)
+    )
+  for target in 0 ..< bot.votePlayerCount:
+    if bot.voteTargetSafeForRole(target):
+      return (
+        true,
+        target,
+        "countering votes on " & playerColorName(danger.colorIndex) &
+          " with first safe target " & bot.voteTargetName(target)
+      )
+
+proc imposterDefenseChat(bot: Bot): string =
+  ## Returns a fake-crew defense when public votes pressure an imposter.
+  let
+    danger = bot.imposterVoteDanger()
+    counter = bot.imposterCounterVoteTarget(danger)
+  if not danger.found or not counter.found:
+    return
+  let
+    dangerName = playerColorName(danger.colorIndex)
+    targetName = playerColorName(bot.voteSlots[counter.target].colorIndex)
+  if danger.colorIndex == bot.selfColorIndex:
+    return "I do not buy this push. " & targetName &
+      " looks worse. Vote " & targetName & "."
+  "I do not buy " & dangerName & " yet. " & targetName &
+    " is pushing too hard; vote " & targetName & "."
+
 proc fallbackBodyQuestion(bot: Bot): string =
   ## Returns a varied fallback question for a body meeting.
   let
@@ -7188,6 +7280,9 @@ proc fallbackVotingChatCandidates(bot: Bot): seq[string] =
   let
     target = bot.bestFallbackSuspect()
     selfInfo = bot.selfFallbackChat()
+    imposterDefense = bot.imposterDefenseChat()
+  if imposterDefense.len > 0:
+    result.add imposterDefense
   if bot.externalChatAsksSelf() and selfInfo.len > 0 and
       not bot.urgentCrewVote():
     result.add selfInfo
@@ -7974,6 +8069,20 @@ proc desiredVotingDecision(
       bot.imposterKnown(),
       forced and not weakButton
     )
+  if bot.imposterKnown() and
+      bot.socialDecisionSafe(decision) and
+      decision.target == bot.votePlayerCount:
+    return (
+      decision.target,
+      decision.reason,
+      true
+    )
+  if bot.imposterKnown():
+    let
+      danger = bot.imposterVoteDanger()
+      counter = bot.imposterCounterVoteTarget(danger)
+    if counter.found:
+      return (counter.target, counter.reason, true)
   let ownerDecision = bot.ownerConvergenceVoteTarget(listenedTicks)
   if ownerDecision.found:
     return (
@@ -8154,14 +8263,14 @@ proc decideVotingMask(bot: var Bot): uint8 {.measure.} =
           bot.voteTargetName(ownVote)
       )
   bot.refreshVotingLlmDecision(listenedTicks)
-  if bot.pendingChat.len > 0:
+  var decision = bot.desiredVotingDecision(listenedTicks)
+  if bot.pendingChat.len > 0 and not decision.instant:
     bot.voteTarget = VoteUnknown
     bot.desiredMask = 0
     bot.controllerMask = 0
     bot.intent = "sending social vote chat"
     bot.thought(bot.intent)
     return 0
-  var decision = bot.desiredVotingDecision(listenedTicks)
   if ownVote != VoteUnknown and bot.ownVoteSafe(ownVote):
     if bot.shouldSwitchCrewVote(
       ownVote,

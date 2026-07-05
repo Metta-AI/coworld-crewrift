@@ -306,7 +306,7 @@ suite "notsus social reasoning":
     let decision = chooseSocialVote(state, scores, true, false)
     check decision.found
     check decision.target == 1
-    check not decision.instant
+    check decision.instant
 
   test "imposter skips when both imposters can tie partner pile":
     var
@@ -336,7 +336,7 @@ suite "notsus social reasoning":
     let decision = chooseSocialVote(state, scores, true, false)
     check decision.found
     check decision.target == state.playerCount
-    check not decision.instant
+    check decision.instant
 
   test "imposter does not count committed partner as open skip":
     var

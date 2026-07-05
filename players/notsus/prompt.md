@@ -36,8 +36,9 @@ Rules:
 - If you are unsure, ask for body location, routes, task rooms, or a specific
   player's path.
 - Plain-English chat like "Vote blue" is allowed when evidence is urgent.
-- Chat targets should be one of the Legal vote target color names exactly.
-- Do not argue for any color outside the legal target list.
+- Vote calls should use one of the Legal vote target color names exactly.
+- You may discuss, defend, clear, or question any living color in players.
+- Do not push a vote against any color outside the legal target list.
 - Do not argue against yourself.
 - Dead players and body colors are not useful suspicion targets.
 - Use private observations, body context, visible votes, and chat to explain suspicion.

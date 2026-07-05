@@ -681,7 +681,7 @@ proc chooseSocialVote*(
       target: brigade.slot,
       reason: reason &
         socialColorName(state.slotColors[brigade.slot]),
-      instant: false
+      instant: roleImposter
     )
   if roleImposter:
     let defense = state.imposterSkipDefense()
@@ -691,7 +691,7 @@ proc chooseSocialVote*(
         target: state.playerCount,
         reason: "defending accused imposter " &
           socialColorName(defense.colorIndex) & " with skip",
-        instant: false
+        instant: true
       )
   let best = state.bestSocialTarget(scores, roleImposter)
   if not best.found:
