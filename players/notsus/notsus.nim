@@ -6661,10 +6661,30 @@ proc sanitizedVotingChatText(bot: Bot): string =
     result.add(line.text)
 
 proc mentionsKnownTeammate(bot: Bot, text: string): bool =
-  ## Returns false because color names are normal fake-crew discussion.
-  discard bot
-  discard text
-  false
+  ## Returns true when imposter chat would drag a teammate into danger.
+  if not bot.imposterKnown():
+    return false
+  let words = text.normalizeChatText().splitWhitespace()
+  var
+    hasTeammate = false
+    hasDanger = false
+    hasClear = false
+  for word in words:
+    for colorIndex, known in bot.knownImposters:
+      if known and word == playerColorName(colorIndex):
+        hasTeammate = true
+    case word
+    of "vote", "voted", "sus", "suspicious", "kill", "killed",
+        "vent", "vented", "body", "dead", "near", "closest",
+        "where", "route", "routes", "following", "standing",
+        "danger", "explain", "accuse", "accusing", "push",
+        "pushing":
+      hasDanger = true
+    of "clear", "cleared", "trust", "trusted", "safe", "good":
+      hasClear = true
+    else:
+      discard
+  hasTeammate and hasDanger and not hasClear
 
 proc playersJson(bot: Bot): JsonNode =
   ## Builds JSON for current voting slots.
@@ -6706,6 +6726,8 @@ proc seenRoomHistoryJson(bot: Bot): JsonNode =
   ## Builds JSON for rooms where this bot saw each player.
   result = newJObject()
   for colorIndex, rooms in bot.seenRoomHistory:
+    if bot.imposterKnown() and bot.knownImposterColor(colorIndex):
+      continue
     if rooms.len == 0:
       continue
     result[playerColorName(colorIndex)] = stringListJson(rooms)
@@ -7092,6 +7114,36 @@ proc imposterCounterVoteTarget(
   if not danger.found:
     return
   let scores = bot.effectiveSusScores()
+  var
+    pileTarget = VoteUnknown
+    pileCount = 0
+    pileScore = low(int)
+  for target in 0 ..< bot.votePlayerCount:
+    if target == danger.slot:
+      continue
+    if not bot.voteTargetSafeForRole(target):
+      continue
+    let
+      colorIndex = bot.voteSlots[target].colorIndex
+      count = bot.visibleVoteCountForSlot(target)
+      score =
+        if colorIndex >= 0 and colorIndex < scores.len:
+          scores[colorIndex]
+        else:
+          low(int)
+    if count > pileCount or
+        (count == pileCount and count > 0 and score > pileScore):
+      pileTarget = target
+      pileCount = count
+      pileScore = score
+  if pileTarget != VoteUnknown and pileCount + 1 >= danger.votes:
+    return (
+      true,
+      pileTarget,
+      "joining visible crew pile to defend " &
+        playerColorName(danger.colorIndex) & " against " &
+        bot.voteTargetName(pileTarget)
+    )
   var
     bestTarget = VoteUnknown
     bestScore = low(int)
