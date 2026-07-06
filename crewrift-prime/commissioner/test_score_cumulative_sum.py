@@ -28,6 +28,13 @@ from commissioners.common.models import (
     LeagueSnapshot,
     RoundSnapshot,
 )
+from commissioners.common.protocol import (
+    LeagueInfo,
+    MembershipInfo,
+    RankingEntry as CommissionerRankingEntry,
+    RecentResult,
+    RoundStart,
+)
 from commissioners.common.utils import (
     COMPLETED_EPISODE_COUNT_METADATA_KEY,
     MEAN_ROUND_SCORE_KIND,
@@ -36,6 +43,7 @@ from commissioners.common.utils import (
 from commissioners.common.ruleset_strategy.config import load_ruleset_strategy_config_file
 
 from crewrift_prime_skill_commissioner import CrewriftPrimeSkillCommissioner
+import crewrift_prime_skill_commissioner as comm
 from test_observability import _CONFIG_PATH, _COMPETITION_DIV
 
 
@@ -204,6 +212,85 @@ class CompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):
         self.assertEqual(by_player["ply_crew"].episode_wins, 3.0)
         # Same win rate; imposter-heavy player has higher cumulative points.
         self.assertGreater(by_player["ply_imp"].score, by_player["ply_crew"].score)
+
+    def test_gap_history_backfills_points_from_recent_results(self) -> None:
+        """Gap-era history rows (score=wins only) recover points from recent_results."""
+        commissioner = _commissioner()
+        division_id = _COMPETITION_DIV
+        round_id = uuid4()
+        league_id = uuid4()
+        policy_id = uuid4()
+        player_id = "ply_a"
+        state = {
+            comm._WIN_HISTORY_STATE_KEY: [
+                {
+                    "round_id": str(round_id),
+                    "policy_version_id": str(policy_id),
+                    "player_id": player_id,
+                    "rank": 1,
+                    "score": 5.0,
+                    "episodes_played": 10,
+                    "tainted": False,
+                }
+            ]
+        }
+        ranking_entries = [
+            CommissionerRankingEntry(
+                policy_version_id=policy_id,
+                player_id=player_id,
+                rank=1,
+                score=13.0,
+                result_metadata={
+                    RANKED_SCORE_COUNT_METADATA_KEY: 10,
+                    COMPLETED_EPISODE_COUNT_METADATA_KEY: 10,
+                    "episode_wins": 5.0,
+                    "points": 13.0,
+                },
+            )
+        ]
+        round_start = RoundStart(
+            round_id=round_id,
+            round_number=99,
+            league=LeagueInfo(id=league_id, name="L", commissioner_key="container"),
+            divisions=[],
+            memberships=[
+                MembershipInfo(
+                    id=uuid4(),
+                    league_id=league_id,
+                    division_id=division_id,
+                    policy_version_id=policy_id,
+                    player_id=player_id,
+                    status="active",
+                )
+            ],
+            recent_results=[
+                RecentResult(
+                    round_id=round_id,
+                    division_id=division_id,
+                    round_number=99,
+                    policy_version_id=policy_id,
+                    rank=1,
+                    score=13.0,
+                )
+            ],
+            variants=[],
+            state=state,
+        )
+
+        leaderboards, next_state = commissioner._competition_win_leaderboards(
+            incoming_state=state,
+            division_id=division_id,
+            round_id=round_id,
+            rankings=ranking_entries,
+            round_start=round_start,
+        )
+        row = leaderboards[0].views[0].rows[0]
+        self.assertAlmostEqual(float(row.values["score"]), 13.0, places=9)
+        self.assertEqual(
+            next_state[comm._WIN_ROUND_POINTS_STATE_KEY][f"{round_id}:{player_id}"],
+            13.0,
+        )
+        self.assertEqual(next_state[comm._WIN_HISTORY_STATE_KEY][0]["points"], 13.0)
 
 
 class NonCompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):
