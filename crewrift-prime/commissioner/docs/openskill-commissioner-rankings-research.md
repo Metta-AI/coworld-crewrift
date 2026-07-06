@@ -100,8 +100,9 @@ Files changed are all in `app_backend` (backend read path) + `web/softmax.com`
     PR would change *that* fallback if the vendored package were updated — but
     Crewrift Prime's Competition board never hits it).
 - **`_complete_competition_round` (`:509-599`)**: sets each entrant's per-round
-  `score = imposter_wins + crew_wins` (1 pt per winning seat), records `wins`,
-  `imposter_wins`, `crew_wins` in `result_metadata`.
+  `score` to the role-weighted won-episode points (3 pts per episode won as
+  imposter, 1 pt per episode won as crew; each episode scored at most once),
+  records `wins`, `points`, `imposter_wins`, `crew_wins` in `result_metadata`.
 - **`rank_division` input** is a `DivisionLeaderboardContext` (vendored
   `models.py:449`): `completed_rounds`, `recent_rounds`, and **`round_results:
   list[LeaderboardRoundResultSnapshot]`** where each row carries `player_id`,

@@ -53,7 +53,8 @@ infra failures and missing/unfetchable results JSON HOLD-retry (never DQ) — th
 is no qualifier division to hold IN, so the hold keeps the membership
 ``qualifying`` in place.
 
-Competition scoring: 1 point per winning PLAYER (seat), by role (unchanged).
+Competition scoring: role-weighted points per WON EPISODE — 3 points for an
+imposter win, 1 point for a crew win (each episode scores at most once).
 
 Observability (see decision.py for the pure decision function)
 --------------------------------------------------------------
@@ -185,6 +186,38 @@ STANDINGS_WINDOW_HOURS = _standings_window_hours()
 # player-legible: describe the behavior change, not the code.
 PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
     CommissionerChangelogEntry(
+        date="2026-07-05",
+        category="scoring",
+        title="Imposter wins now score 3 points",
+        detail=(
+            "Round scores are role-weighted: an episode won as imposter scores 3 "
+            "points and an episode won as crew scores 1 point (each episode still "
+            "scores at most once). The Standings win rate is unchanged — it keeps "
+            "counting a won episode once regardless of role."
+        ),
+    ),
+    CommissionerChangelogEntry(
+        date="2026-07-05",
+        category="scheduling",
+        title="Rounds grew to 36 episodes",
+        detail=(
+            "Each Competition round now schedules 36 episodes (up from 12), so a "
+            "single round samples each player across more games and both roles."
+        ),
+    ),
+    CommissionerChangelogEntry(
+        date="2026-07-05",
+        category="eligibility",
+        title="$10 LLM spend cap per pod per episode",
+        detail=(
+            "Each player pod may spend at most $10 (estimated) on LLM calls per "
+            "episode. The cap is enforced by the platform's Bedrock sidecar: once "
+            "a pod reaches the limit, further model calls fail with a standard "
+            "Bedrock throttling error for the rest of the episode, so players "
+            "should handle throttling gracefully."
+        ),
+    ),
+    CommissionerChangelogEntry(
         date="2026-07-02",
         category="scoring",
         title="Standings show all rounds again",
@@ -250,6 +283,23 @@ _WIN_HISTORY_STATE_KEY = "crewrift_prime_mmr_history"
 # as a filler — is EXCLUDED from scoring and never represented as a real entrant.
 _FILLER_SEATS_TAG = "filler_seats"
 _FILLER_POLICY_IDS_TAG = "filler_policy_version_ids"
+# Max USD a single PLAYER POD may spend per episode (LLM/sidecar usage etc.).
+# Enforced the way the platform (`Metta-AI/metta`) does it: the league's
+# ``episode_player_pod_llm_spend_limit_usd`` setting (``leagues.settings``) is
+# read at episode dispatch and injected into each player pod's Bedrock sidecar
+# (``BEDROCK_SIDECAR_SPEND_LIMIT_USD``), which meters estimated token spend and
+# rejects further LLM calls with a Bedrock ``ThrottlingException`` once the cap
+# is hit. The commissioner keeps that league setting in sync with this value
+# (see :meth:`CrewriftPrimeSkillCommissioner._sync_league_spend_limit`) and also
+# stamps every scheduled episode with the ``max_spend_per_pod_usd`` tag for
+# observability; env-overridable without a rebuild.
+MAX_SPEND_PER_POD_USD = float(os.getenv("CREWRIFT_PRIME_MAX_SPEND_PER_POD_USD", "10"))
+_MAX_SPEND_TAG = "max_spend_per_pod_usd"
+# The platform LeagueSettings field carrying the enforced per-episode
+# per-player-pod LLM spend ceiling (see Metta-AI/metta
+# app_backend/v2/league_settings.py); plumbed into the pod's Bedrock sidecar
+# at dispatch by the platform's job dispatcher.
+_LEAGUE_SPEND_LIMIT_SETTING = "episode_player_pod_llm_spend_limit_usd"
 # Statuses a freshly submitted (not-yet-qualified) policy carries; these are the
 # memberships the event-driven gate runs the xp-request qualification loop for.
 _SUBMITTED_STATUSES = ("submitted", "qualifying")
@@ -540,10 +590,65 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             return []
         return api_ids
 
+    # Sync the league-settings spend limit at most once per commissioner process;
+    # the setting is persistent platform state, so one successful write suffices.
+    _spend_limit_synced: bool = False
+
+    def _sync_league_spend_limit(self, league_id: Any) -> None:
+        """Ensure the platform enforces the per-pod per-episode LLM spend cap.
+
+        This is the SAME mechanism the platform (`Metta-AI/metta`) uses for
+        Bedrock spend caps: the league's
+        ``episode_player_pod_llm_spend_limit_usd`` setting (``leagues.settings``,
+        ``POST /v2/leagues/{league_id}/settings``) is resolved by the job
+        dispatcher at episode dispatch and injected into each player pod's
+        Bedrock sidecar as ``BEDROCK_SIDECAR_SPEND_LIMIT_USD``; the sidecar
+        meters estimated token spend and rejects further LLM calls with a
+        standard Bedrock ``ThrottlingException`` once the cap is reached.
+
+        The commissioner writes ``MAX_SPEND_PER_POD_USD`` into that setting
+        (read-merge-write so other team-configured settings — episodes per
+        round, round interval — are never clobbered) the first time it schedules
+        a Competition round. Best-effort: any API/auth/network failure logs a
+        warning and is retried on the next round — a settings sync must never
+        crash scheduling. The ``max_spend_per_pod_usd`` episode tag remains as
+        observability metadata alongside the enforced setting.
+        """
+        if self._spend_limit_synced or league_id is None:
+            return
+        try:
+            client = self._xp_request_client()
+            get_settings = getattr(client, "get_league_settings", None)
+            update_settings = getattr(client, "update_league_settings", None)
+            if get_settings is None or update_settings is None:
+                return  # injected test double without the settings API
+            settings = dict(get_settings(str(league_id)))
+            current = settings.get(_LEAGUE_SPEND_LIMIT_SETTING)
+            if current is not None and float(current) == MAX_SPEND_PER_POD_USD:
+                self._spend_limit_synced = True
+                return
+            settings[_LEAGUE_SPEND_LIMIT_SETTING] = MAX_SPEND_PER_POD_USD
+            update_settings(str(league_id), settings)
+            self._spend_limit_synced = True
+            print(
+                "crewrift-prime: set league "
+                f"{league_id} {_LEAGUE_SPEND_LIMIT_SETTING}="
+                f"{MAX_SPEND_PER_POD_USD:g} (enforced per player pod per episode "
+                "by the Bedrock sidecar).",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort; never crash scheduling.
+            print(
+                "WARNING: crewrift-prime: league spend-limit sync failed for league "
+                f"{league_id} ({exc}); the platform keeps its current setting — "
+                "will retry next round.",
+                flush=True,
+            )
+
     # ---- division detection ---------------------------------------------------
 
     def _is_competition_round(self, view: RoundStartView) -> bool:
-        """True for the Competition division — scored by winning players (1 pt/player, by role)."""
+        """True for the Competition division — scored by won episodes (3 pts imposter / 1 pt crew)."""
         return str(getattr(view.current_division, "type", "")) == _COMPETITION_DIVISION_TYPE
 
     def _competition_variant_id(self, round_start: CommissionerRoundStart) -> str:
@@ -612,6 +717,9 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             for entry in entries
         }
         league_id = getattr(round_start.league, "id", None)
+        # Keep the platform-enforced per-pod per-episode LLM spend cap in sync
+        # (league setting -> Bedrock sidecar; best-effort, never blocks a round).
+        self._sync_league_spend_limit(league_id)
         filler_ids = self._filler_policy_version_ids(league_id)
         episodes = [
             self._competition_episode(
@@ -715,6 +823,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "competition": "1",
                 _FILLER_SEATS_TAG: ",".join(str(seat) for seat in filler_seats),
                 _FILLER_POLICY_IDS_TAG: ",".join(sorted(filler_policy_ids)),
+                # Per-episode spend cap for each player pod (USD), enforced platform-side.
+                _MAX_SPEND_TAG: f"{MAX_SPEND_PER_POD_USD:g}",
             },
         )
 
@@ -1001,7 +1111,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             ],
         )
 
-    # ---- Competition division: score = winning players (1 pt/player, by role) ---
+    # ---- Competition division: score = role-weighted won episodes (3 imposter / 1 crew) ---
 
     def _complete_competition_round(
         self,
@@ -1010,14 +1120,16 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         episode_results: list[CommissionerProtocolEpisodeResult],
         scheduled_episodes: list[CommissionerProtocolEpisodeRequest] | None = None,
     ) -> CommissionerRoundComplete:
-        """Score a Competition round by WON EPISODES: 1 point per episode won.
+        """Score a Competition round by WON EPISODES, role-weighted: 3 points per
+        episode won as imposter, 1 point per episode won as crew.
 
-        A player scores one point for each episode in which at least one of its
-        (non-filler) seats won, capped at 1 per episode regardless of how many of
-        its seats won. The imposter/crew split of the winning seats is surfaced in
-        the decision log, result_metadata, and round_display for observability. The
-        per-round score (the count of won episodes) feeds the win-rate
-        leaderboard (see ``rank_division``).
+        A player scores points for each episode in which at least one of its
+        (non-filler) seats won — each episode is scored at most once regardless of
+        how many of its seats won: 3 points if any winning seat was an imposter,
+        else 1 point for a crew win. The imposter/crew split of the winning seats
+        is surfaced in the decision log, result_metadata, and round_display for
+        observability. The per-round win count (won episodes, role-agnostic) feeds
+        the win-rate leaderboard (see ``rank_division``).
 
         FILLER/duplicate seats (the top-up seats this round scheduled to fill a
         closed-roster 8-seat game when fewer than ``NUM_SEATS`` real entrants are
@@ -1148,9 +1260,12 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                         RANKED_SCORE_COUNT_METADATA_KEY: max(rec.episodes_counted, 1),
                         "score_kind": _COMPETITION_SCORE_KIND,
                         "wins": rec.wins,
+                        "points": rec.points,
                         "episode_wins": rec.episode_wins,
                         "imposter_wins": rec.imposter_wins,
                         "crew_wins": rec.crew_wins,
+                        "imposter_episode_wins": rec.imposter_episode_wins,
+                        "crew_episode_wins": rec.crew_episode_wins,
                     },
                 )
             )
@@ -1163,8 +1278,11 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                     "player_name": display_names.get(pid, {}).get("player_name"),
                     "policy_label": display_names.get(pid, {}).get("policy_label"),
                     "wins": rec.wins,
+                    "points": rec.points,
                     "imposter_wins": rec.imposter_wins,
                     "crew_wins": rec.crew_wins,
+                    "imposter_episode_wins": rec.imposter_episode_wins,
+                    "crew_episode_wins": rec.crew_episode_wins,
                     "episodes_counted": completed_counts[pid],
                 }
             )
@@ -1284,7 +1402,15 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                         # Tainted/unranked entries are kept so the participant stays
                         # visible, but contribute 0 wins / 0 played episodes and are
                         # excluded from the win-rate numerator/denominator below.
-                        "score": 0.0 if tainted else entry.score,
+                        #
+                        # NOTE: the round-ranking ``entry.score`` is now the
+                        # ROLE-WEIGHTED point total (3/imposter win, 1/crew win), so
+                        # the win-rate numerator must be the role-agnostic EPISODE
+                        # WIN count from result_metadata (falls back to the score
+                        # for legacy rows recorded before role weighting).
+                        "score": 0.0
+                        if tainted
+                        else float(entry.result_metadata.get("episode_wins", entry.score)),
                         # Episodes the player PLAYED this round — the win-rate
                         # denominator. Persisted so the replayed board matches
                         # what rank_division computes from result_metadata.
@@ -1379,9 +1505,10 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "so players are graded on their current form rather than stale results."
             )
             description.scoring_mechanics = (
-                "Competition scores by WINS: one point per episode the entrant won "
-                "this round (capped at 1 per episode, role-agnostic; filler seats "
-                f"never count). The leaderboard score is the player's WIN RATE = "
+                "Competition scores by ROLE-WEIGHTED WINS: 3 points per episode the "
+                "entrant won as imposter, 1 point per episode won as crew (each "
+                "episode scores at most once; filler seats never count). The "
+                f"leaderboard score is the player's WIN RATE = "
                 f"episodes won / episodes played over {window}, always between 0 and "
                 "1. Void/disconnected games in which every player policy scored 0 are "
                 "not counted toward wins or episodes played. The commissioner computes "
@@ -1396,9 +1523,10 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         """Competition leaderboard = all-time (or windowed) WIN RATE, collapsed to player.
 
         Each player's score is the fraction of episodes they won across the
-        division's completed rounds (episodes won / episodes played; one point per
-        won episode, capped per episode, fillers excluded — see
-        ``_complete_competition_round``). The score is always in ``[0, 1]``. Players
+        division's completed rounds (episodes won / episodes played; a won episode
+        counts once regardless of role, fillers excluded — round POINTS are
+        role-weighted separately, see ``_complete_competition_round``). The score
+        is always in ``[0, 1]``. Players
         are ranked by descending win rate; ``rounds_played`` is the number of
         counted completed rounds the player participated in.
 
@@ -1469,9 +1597,14 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 continue
             pvids_by_player.setdefault(result.player_id, set()).add(result.policy_version_id)
             key = (result.player_id, result.round_id)
+            # Win-rate numerator: the role-agnostic EPISODE WIN count. The ranking
+            # ``result.score`` is now the ROLE-WEIGHTED point total (3/imposter win,
+            # 1/crew win) so it can no longer feed the win rate directly; fall back
+            # to the score only for legacy rows recorded before role weighting.
+            wins = float(result.result_metadata.get("episode_wins", result.score))
             prior = round_score.get(key)
-            if prior is None or result.score > prior:
-                round_score[key] = result.score
+            if prior is None or wins > prior:
+                round_score[key] = wins
                 round_episodes[key] = int(
                     result.result_metadata.get(COMPLETED_EPISODE_COUNT_METADATA_KEY, 0)
                 )

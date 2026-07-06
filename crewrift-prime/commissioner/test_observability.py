@@ -9,8 +9,9 @@ Covers (event-driven rework):
     failure holds (no DQ),
   - ``migrate_league`` qualifies every submitted/qualifying membership and leaves
     competing memberships untouched,
-  - the Competition division scores by WON EPISODES (1 pt per episode won, capped
-    at 1 per episode, role-agnostic) and ranks by all-time WIN RATE.
+  - the Competition division scores by WON EPISODES, role-weighted (3 pts per
+    episode won as imposter, 1 pt per episode won as crew, each episode scored
+    at most once) and ranks by all-time WIN RATE.
 
 The xp-request client is MOCKED — no network calls. We inject a fake
 :class:`XpRequestClient` whose ``get_episode_results`` returns a scripted per-slot
@@ -110,16 +111,21 @@ class _FakeXpClient:
 
     def __init__(self, *, run: XpRequestRun | None = None, run_error: Exception | None = None,
                  results: dict | None = None, results_error: Exception | None = None,
-                 filler_ids: list[str] | None = None, filler_error: Exception | None = None) -> None:
+                 filler_ids: list[str] | None = None, filler_error: Exception | None = None,
+                 league_settings: dict | None = None, settings_error: Exception | None = None) -> None:
         self._run = run
         self._run_error = run_error
         self._results = results
         self._results_error = results_error
         self._filler_ids = filler_ids or []
         self._filler_error = filler_error
+        self._league_settings = dict(league_settings or {})
+        self._settings_error = settings_error
         self.created: list[tuple[str, str]] = []
         self.filler_lookups: list[str] = []
         self.results_lookups: list[str] = []
+        self.settings_lookups: list[str] = []
+        self.settings_updates: list[tuple[str, dict]] = []
 
     def run_qualifier(self, *, division_id: str, policy_version_id: str, **_kw) -> XpRequestRun:
         self.created.append((division_id, policy_version_id))
@@ -140,6 +146,19 @@ class _FakeXpClient:
             raise self._results_error
         assert self._results is not None
         return self._results
+
+    def get_league_settings(self, league_id: str) -> dict:
+        self.settings_lookups.append(str(league_id))
+        if self._settings_error is not None:
+            raise self._settings_error
+        return dict(self._league_settings)
+
+    def update_league_settings(self, league_id: str, settings: dict) -> dict:
+        if self._settings_error is not None:
+            raise self._settings_error
+        self._league_settings = dict(settings)
+        self.settings_updates.append((str(league_id), dict(settings)))
+        return dict(settings)
 
 
 class _FakeInterviewTransport:
@@ -455,8 +474,10 @@ class CompetitionWinScoringTest(unittest.TestCase):
         )
         rankings = complete.results[0].rankings
         by_policy = {str(r.policy_version_id): r for r in rankings}
-        self.assertEqual(by_policy[str(policy_a)].score, 2.0)
+        # Two episodes won as imposter -> 2 x 3 = 6 role-weighted points.
+        self.assertEqual(by_policy[str(policy_a)].score, 6.0)
         self.assertEqual(by_policy[str(policy_a)].result_metadata["imposter_wins"], 2)
+        self.assertEqual(by_policy[str(policy_a)].result_metadata["episode_wins"], 2)
         self.assertEqual(by_policy[str(policy_b)].score, 0.0)
         self.assertEqual(by_policy[str(policy_a)].rank, 1)
         self.assertIn("competition_wins", complete.round_display)
@@ -833,6 +854,85 @@ class CompetitionSchedulingTest(unittest.TestCase):
                 len(real_seats), len(set(real_seats)),
                 "no policy occupies two REAL (scored) seats",
             )
+
+
+class LeagueSpendLimitSyncTest(unittest.TestCase):
+    """Scheduling a Competition round must sync the platform-enforced LLM spend cap.
+
+    The $10/pod/episode cap is enforced the way the platform (Metta-AI/metta) does
+    it: the league's ``episode_player_pod_llm_spend_limit_usd`` setting is injected
+    into each player pod's Bedrock sidecar (``BEDROCK_SIDECAR_SPEND_LIMIT_USD``) at
+    episode dispatch. The commissioner writes MAX_SPEND_PER_POD_USD into that
+    setting (read-merge-write) when it schedules; failures degrade gracefully.
+    """
+
+    def _round_start(self, entrants: list[UUID]) -> RoundStart:
+        return CompetitionSchedulingTest._competition_round_start(self, entrants)  # type: ignore[arg-type]
+
+    def test_scheduling_writes_spend_limit_league_setting(self) -> None:
+        from crewrift_prime_skill_commissioner import MAX_SPEND_PER_POD_USD
+
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(league_settings={})
+        rs = self._round_start([uuid4(), uuid4(), uuid4()])
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes)
+        self.assertEqual(len(commissioner._xp_client.settings_updates), 1)
+        league_id, stored = commissioner._xp_client.settings_updates[0]
+        self.assertEqual(league_id, str(rs.league.id))
+        self.assertEqual(
+            stored["episode_player_pod_llm_spend_limit_usd"], MAX_SPEND_PER_POD_USD
+        )
+        # Every scheduled episode still carries the advisory tag alongside the
+        # enforced league setting.
+        for ep in schedule.episodes:
+            self.assertEqual(ep.tags["max_spend_per_pod_usd"], f"{MAX_SPEND_PER_POD_USD:g}")
+
+    def test_sync_merges_existing_settings(self) -> None:
+        # POST /settings replaces the stored settings, so the sync must carry the
+        # team-configured scheduling knobs through unchanged.
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            league_settings={"episodes_per_round": 36, "round_interval_minutes": 60}
+        )
+        rs = self._round_start([uuid4()])
+        commissioner.schedule_episodes_for_round_start(rs)
+        self.assertEqual(len(commissioner._xp_client.settings_updates), 1)
+        _league_id, stored = commissioner._xp_client.settings_updates[0]
+        self.assertEqual(stored["episodes_per_round"], 36)
+        self.assertEqual(stored["round_interval_minutes"], 60)
+        self.assertIn("episode_player_pod_llm_spend_limit_usd", stored)
+
+    def test_sync_skips_write_when_already_set(self) -> None:
+        from crewrift_prime_skill_commissioner import MAX_SPEND_PER_POD_USD
+
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            league_settings={"episode_player_pod_llm_spend_limit_usd": MAX_SPEND_PER_POD_USD}
+        )
+        rs = self._round_start([uuid4()])
+        commissioner.schedule_episodes_for_round_start(rs)
+        self.assertEqual(commissioner._xp_client.settings_updates, [])
+
+    def test_sync_runs_once_per_process(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(league_settings={})
+        rs = self._round_start([uuid4()])
+        commissioner.schedule_episodes_for_round_start(rs)
+        commissioner.schedule_episodes_for_round_start(rs)
+        self.assertEqual(len(commissioner._xp_client.settings_lookups), 1)
+        self.assertEqual(len(commissioner._xp_client.settings_updates), 1)
+
+    def test_sync_failure_never_blocks_scheduling(self) -> None:
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            settings_error=XpRequestInfraError("settings API down")
+        )
+        rs = self._round_start([uuid4(), uuid4()])
+        schedule = commissioner.schedule_episodes_for_round_start(rs)
+        self.assertTrue(schedule.episodes, "a failed settings sync must not crash the round")
+        # Not marked synced -> retried on the next round.
+        self.assertFalse(commissioner._spend_limit_synced)
 
 
 class XpRequestPayloadTest(unittest.TestCase):

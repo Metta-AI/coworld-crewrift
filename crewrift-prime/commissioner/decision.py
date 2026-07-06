@@ -178,12 +178,13 @@ SKILL_GATE_EXPLAINER: dict[str, Any] = {
         "overall verdict appear in the Qualifier Skill Gate panel."
     ),
     "scoring_blurb": (
-        "Competition scores by WINS: one point per episode the entrant won this round "
-        "(capped at 1 per episode, role-agnostic; filler seats never count). The "
-        "leaderboard ranks by win rate over the last 6 hours (episodes won / episodes "
-        "played within the window), so players are graded on their current form rather "
-        "than stale results. Void/disconnected games in which every player policy "
-        "scored 0 are not counted toward wins or episodes played."
+        "Competition scores by ROLE-WEIGHTED WINS: 3 points per episode won as "
+        "imposter, 1 point per episode won as crew (each episode scores at most "
+        "once; filler seats never count). The leaderboard ranks by win rate over "
+        "the last 6 hours (episodes won / episodes played within the window), so "
+        "players are graded on their current form rather than stale results. "
+        "Void/disconnected games in which every player policy scored 0 are not "
+        "counted toward wins or episodes played."
     ),
 }
 
@@ -673,69 +674,96 @@ def evaluate_combined_game_with_interview(
 
 
 # ============================================================================
-# Competition division scoring (2026-06-28): "1 point per WON EPISODE".
+# Competition division scoring (2026-07-05): ROLE-WEIGHTED points per WON EPISODE.
 #
-# In the Competition division an entrant scores ONE point for each episode it
-# wins and zero for an episode it does not win — the maximum any player can earn
-# in a single episode is 1, regardless of how many seats it held. An episode is
-# WON if any of the entrant's (non-filler) seats has its per-slot ``win`` boolean
-# True. The role of each winning seat (imposter vs crew) is still tracked from the
-# per-slot ``imposter``/``crew`` arrays for observability, but it does NOT inflate
-# the score past 1 per episode. The round score is the count of won episodes; the
-# leaderboard ranks by WIN RATE over the last 6 hours (episodes won / episodes
-# played within the window; see ``STANDINGS_WINDOW_HOURS`` in the commissioner).
+# In the Competition division an entrant scores points for each episode it wins
+# and zero for an episode it does not win. The points depend on the ROLE the
+# entrant won with: an IMPOSTER win is worth ``IMPOSTER_WIN_POINTS`` (3) and a
+# CREW win is worth ``CREW_WIN_POINTS`` (1). An episode is WON if any of the
+# entrant's (non-filler) seats has its per-slot ``win`` boolean True; the role is
+# read from the per-slot ``imposter``/``crew`` arrays. Each episode is scored
+# AT MOST ONCE (no per-seat multiplier): if any winning seat was an imposter the
+# episode scores 3, otherwise it scores 1 — regardless of how many of the
+# entrant's seats won. The round score is the sum of those per-episode points.
+# The leaderboard still ranks by WIN RATE (episodes won / episodes played; a win
+# is a win regardless of role — see ``STANDINGS_WINDOW_HOURS`` in the
+# commissioner), while the displayed cumulative Score column accumulates the
+# role-weighted points.
 # VOID/DISCONNECTED episodes (every non-filler player seat scored 0) are dropped
 # by the commissioner BEFORE this scoring (see ``episode_is_void``), so they never
 # reach the win-rate numerator or denominator.
 # ============================================================================
+
+# Role-weighted per-episode win points: an imposter win is worth 3, a crew win 1.
+IMPOSTER_WIN_POINTS = 3
+CREW_WIN_POINTS = 1
 
 
 @dataclass
 class CompetitionWinRecord:
     """One entrant's win-points across a Competition round.
 
-    Scoring is WIN-ONLY and capped at 1 point per episode: an entrant scores 1
-    for each episode in which at least one of its (non-filler) seats won, and 0
-    for an episode it did not win. ``episode_wins`` is that capped count and is
-    the round score (the leaderboard aggregates these per-round totals into a
-    win rate over the last 6 hours: episodes won / episodes played within the
-    window).
+    Scoring is WIN-ONLY and ROLE-WEIGHTED, capped at one scoring event per
+    episode: an entrant that wins an episode earns ``IMPOSTER_WIN_POINTS`` (3)
+    when any of its winning (non-filler) seats was an imposter, else
+    ``CREW_WIN_POINTS`` (1) for a crew win, and 0 for an episode it did not win.
+    ``episode_wins`` is the capped count of won episodes (role-agnostic) and is
+    the win-rate numerator (the leaderboard ranks by episodes won / episodes
+    played); ``score`` is the role-weighted point total for the round.
 
     ``imposter_wins``/``crew_wins`` remain as OBSERVABILITY counts of the
     individual winning seats by role (a single episode can contribute to at most
-    one of them per seat); they explain HOW an episode was won but do NOT inflate
-    the score beyond 1 per episode.
+    one of them per seat); they explain HOW an episode was won.
+    ``imposter_episode_wins``/``crew_episode_wins`` count each won EPISODE once,
+    attributed to the imposter role when any winning seat was an imposter — they
+    are what the point total is computed from.
     """
 
     imposter_wins: int
     crew_wins: int
     episode_wins: int
     episodes_counted: int
+    # Won episodes attributed by role (each won episode counts exactly once:
+    # imposter if ANY winning seat was an imposter, else crew).
+    imposter_episode_wins: int = 0
+    crew_episode_wins: int = 0
 
     @property
     def wins(self) -> int:
-        """Episodes won (capped 1 per episode) = the score."""
+        """Episodes won (capped 1 per episode) = the win-rate numerator."""
         return self.episode_wins
 
     @property
+    def points(self) -> int:
+        """Role-weighted round points: 3 per imposter episode win, 1 per crew."""
+        return (
+            IMPOSTER_WIN_POINTS * self.imposter_episode_wins
+            + CREW_WIN_POINTS * self.crew_episode_wins
+        )
+
+    @property
     def score(self) -> float:
-        return float(self.episode_wins)
+        return float(self.points)
 
     @property
     def reason(self) -> str:
         return (
-            f"{self.episode_wins} winning episode(s) in {self.episodes_counted} game(s) "
-            f"({self.imposter_wins} winning seat(s) as imposter, "
-            f"{self.crew_wins} as crew)"
+            f"{self.points} point(s) from {self.episode_wins} winning episode(s) in "
+            f"{self.episodes_counted} game(s) "
+            f"({self.imposter_episode_wins} won as imposter x {IMPOSTER_WIN_POINTS} pt, "
+            f"{self.crew_episode_wins} as crew x {CREW_WIN_POINTS} pt)"
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "score": self.score,
+            "points": self.points,
             "wins": self.wins,
             "episode_wins": self.episode_wins,
             "imposter_wins": self.imposter_wins,
             "crew_wins": self.crew_wins,
+            "imposter_episode_wins": self.imposter_episode_wins,
+            "crew_episode_wins": self.crew_episode_wins,
             "episodes_counted": self.episodes_counted,
             "reason": self.reason,
         }
@@ -784,37 +812,47 @@ def episode_is_void(
 def count_competition_wins(
     episodes_with_seats: list[tuple[dict[str, Any], list[int]]],
 ) -> CompetitionWinRecord:
-    """Win-points for an entrant: 1 per WON EPISODE (capped), split tracked by role.
+    """Win-points for an entrant: role-weighted per WON EPISODE (scored at most once).
 
     ``episodes_with_seats`` pairs each episode's ``game_results`` with the seat
     indices that belong to the entrant in that episode (in Competition seating an
     entrant occupies a subset of seats; in self-play it occupies all 8). An
-    entrant WINS an episode if ANY of its seats has ``win`` True — and that scores
-    exactly ONE point for the episode regardless of how many of its seats won.
-    The role split (imposter/crew) counts the individual winning seats for
-    observability only; it never increases the score past 1 per episode.
+    entrant WINS an episode if ANY of its seats has ``win`` True — and the episode
+    is scored exactly ONCE regardless of how many of its seats won: it is worth
+    ``IMPOSTER_WIN_POINTS`` (3) if any winning seat was an imposter, else
+    ``CREW_WIN_POINTS`` (1). The per-seat role split (imposter_wins/crew_wins)
+    counts the individual winning seats for observability only.
     """
     imposter_wins = crew_wins = episode_wins = 0
+    imposter_episode_wins = crew_episode_wins = 0
     for game_results, seats in episodes_with_seats:
         win = game_results.get("win")
         imposter = game_results.get("imposter")
         crew = game_results.get("crew")
         episode_won = False
+        episode_won_as_imposter = False
         for seat in seats:
             if not _seat_flag(win, seat):
                 continue
             episode_won = True
             if _seat_flag(imposter, seat):
                 imposter_wins += 1
+                episode_won_as_imposter = True
             if _seat_flag(crew, seat):
                 crew_wins += 1
         if episode_won:
             episode_wins += 1
+            if episode_won_as_imposter:
+                imposter_episode_wins += 1
+            else:
+                crew_episode_wins += 1
     return CompetitionWinRecord(
         imposter_wins=imposter_wins,
         crew_wins=crew_wins,
         episode_wins=episode_wins,
         episodes_counted=len(episodes_with_seats),
+        imposter_episode_wins=imposter_episode_wins,
+        crew_episode_wins=crew_episode_wins,
     )
 
 
@@ -1045,8 +1083,9 @@ def build_competition_report(
 ) -> dict[str, Any]:
     """Structured + HTML observability report for a Competition (win-count) round.
 
-    ``win_breakdown`` items: {policy_version_id, player_id?, wins, imposter_wins,
-    crew_wins, episodes_counted}.
+    ``win_breakdown`` items: {policy_version_id, player_id?, wins, points?,
+    imposter_wins, crew_wins, imposter_episode_wins?, crew_episode_wins?,
+    episodes_counted}.
     """
     notes = notes or []
     entrants = []
@@ -1055,21 +1094,23 @@ def build_competition_report(
         imp = int(row.get("imposter_wins", 0))
         crew = int(row.get("crew_wins", 0))
         eps = int(row.get("episodes_counted", 0))
+        points = int(row.get("points", wins))
         entrants.append(
             {
                 "policy_version_id": row.get("policy_version_id"),
                 "player_id": row.get("player_id"),
                 "player_name": row.get("player_name"),
                 "policy_label": row.get("policy_label"),
-                "outcome": f"{wins} win{'s' if wins != 1 else ''}",
-                "score": float(wins),
+                "outcome": f"{points} pt{'s' if points != 1 else ''} ({wins} win{'s' if wins != 1 else ''})",
+                "score": float(points),
                 "summary": f"{imp} as imposter · {crew} as crew · {eps} game{'s' if eps != 1 else ''}",
             }
         )
     entrants.sort(key=lambda e: -float(e.get("score") or 0))
     rule_description = (
-        "Competition scores by WINS: one point per episode the entrant won this round "
-        "(capped at 1 per episode, role-agnostic; filler seats never count). The "
+        "Competition scores by ROLE-WEIGHTED WINS: 3 points per episode the entrant "
+        "won as imposter, 1 point per episode won as crew (each episode scores at "
+        "most once, no per-seat multiplier; filler seats never count). The "
         "leaderboard ranks by win rate over the last 6 hours (episodes won / episodes "
         "played within the window). Void/disconnected games in which every player "
         "policy scored 0 are not counted toward wins or episodes played."
