@@ -7,6 +7,10 @@
       "video_url": "https://softmax-public.s3.amazonaws.com/promo/crewrift_prime/promo.mp4"
     }
   },
+  "grader": [],
+  "reporter": [],
+  "diagnoser": [],
+  "optimizer": [],
   "variants": [
     {
       "id": "default",
