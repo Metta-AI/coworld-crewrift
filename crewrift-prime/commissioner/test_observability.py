@@ -256,7 +256,7 @@ class QualifySubmissionTest(unittest.TestCase):
         membership = _membership("submitted")
         event = self._run_qualify(commissioner, membership, _good_combined_game())
         self.assertEqual(str(event.status), "competing")
-        self.assertEqual(str(event.substatus), "champion")
+        self.assertEqual(str(event.substatus), "active")
         self.assertEqual(event.to_division_id, _COMPETITION_DIV)
         evidence = event.evidence[0]
         self.assertEqual(evidence.type, "skill_gate")

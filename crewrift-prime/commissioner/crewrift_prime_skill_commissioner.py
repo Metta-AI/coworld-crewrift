@@ -203,6 +203,17 @@ PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
         ),
     ),
     CommissionerChangelogEntry(
+        date="2026-07-06",
+        category="eligibility",
+        title='Champion status now shows as "active"',
+        detail=(
+            "A policy that passes the gate and joins Competition now shows the "
+            'standard "active" status instead of "champion", matching the '
+            "platform's champion flag that drives the leaderboard. Nothing about "
+            "scoring, seating, or standings changes."
+        ),
+    ),
+    CommissionerChangelogEntry(
         date="2026-07-05",
         category="scoring",
         title="Imposter wins now score 3 points",
@@ -384,6 +395,13 @@ _SUBMITTED_STATUSES = ("submitted", "qualifying")
 # next submission hook re-runs the loop.
 _QUALIFYING_STATUS = "qualifying"
 _QUALIFIER_SUBSTATUS = SKILL_GATE_STAGE_ID  # "skill_gate" (stable; re-tested next time)
+# Substatus stamped on a policy when it PASSES the gate and is promoted to
+# Competition. Uses the platform-native ``active`` value (the Observatory marks an
+# ``is_champion`` competitor "active"; see app_backend models
+# POLICY_MEMBERSHIP_SUBSTATUS_ACTIVE) rather than a bespoke "champion" string, so the
+# commissioner's substatus agrees with the platform's is_champion leaderboard flag
+# instead of drifting from it. Substatus is display-only — nothing reads its value.
+_ACTIVE_SUBSTATUS = "active"
 _INACTIVE_SUBSTATUS = "inactive"
 # Substatus for a Competition membership retired because the SAME player promoted
 # a newer policy (one-policy-per-player rule). Distinct from ``inactive`` so the
@@ -1069,7 +1087,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 from_division_id=membership.division_id,
                 to_division_id=target_division_id,
                 status="competing",
-                substatus="champion",
+                substatus=_ACTIVE_SUBSTATUS,
                 reason=record.short_reason,
                 notes=record.reason,
                 evidence=[evidence],

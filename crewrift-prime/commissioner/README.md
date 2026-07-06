@@ -41,7 +41,7 @@ commissioner runs the qualification loop itself (`migrate_league` →
 | hunting | `imposter_kills` | `>= 0.5` (`CREWRIFT_PRIME_HUNT_KILLS_MIN`) → ≥1 kill | total `kills` landed by the imposter seat(s) (`imposter`==1) in the game |
 | tasks | `crew_tasks_mean` | `>= 1.0` (`CREWRIFT_PRIME_TASK_TASKS_MIN`) | mean `tasks` across the crew seats (`crew`==1) in the game |
 
-4. **Promote** (→ Competition, `status=competing` / `substatus=champion`) iff ALL
+4. **Promote** (→ Competition, `status=competing` / `substatus=active`) iff ALL
    three pass. Otherwise the submission **does not qualify**: it is held
    `status=qualifying` / `substatus=skill_gate` (in place — there is no qualifier
    division to hold in) and re-evaluated on its next submission.

@@ -116,7 +116,9 @@ async def promote(membership_public_id: str, *, champion: bool, reason: str, dry
             from_division_id=membership.division_id,
             to_division_id=competition_division_id if moving_division else None,
             status=PolicyMembershipStatus.competing,
-            substatus="champion" if champion else None,
+            # Platform-native champion substatus (matches the commissioner's
+            # _ACTIVE_SUBSTATUS and the Observatory is_champion badge). Not "champion".
+            substatus="active" if champion else None,
             reason=reason,
             notes=reason,
         )
