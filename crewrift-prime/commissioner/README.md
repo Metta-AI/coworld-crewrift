@@ -58,6 +58,34 @@ commissioner runs the qualification loop itself (`migrate_league` →
 > hook) when a policy is submitted for qualification to fire promptly. See the
 > repo-root `crewrift-prime/README.md` "Qualifier" section.
 
+### One policy per player (Competition roster rule)
+
+A player may field **at most ONE active policy** in the Competition division at
+any time. After qualification events are drafted, `migrate_league` runs
+`_enforce_one_policy_per_player`: it projects which memberships would be
+actively `competing` in Competition once this migration's events apply, groups
+them by `player_id`, and for any player holding more than one seat emits a
+retire event for every membership except the keeper:
+
+- **Keeper**: a membership promoted *in this migration* wins over a pre-existing
+  one (the newer submission replaces the old); among equals the latest in the
+  platform's membership list wins (creation order → "keep the newest").
+- **Retire event**: `status=disqualified` / `substatus=superseded` /
+  `end_time=now`, with `crewrift_prime_one_policy_per_player` evidence naming
+  the kept policy — distinct from `inactive` so the Observatory can tell
+  "replaced by the player's newer submission" from a real skill DQ. A
+  `COMMISSIONER_DECISION {"decision":"ONE_POLICY_PER_PLAYER_SUPERSEDE", ...}`
+  line is logged per retirement.
+- **Untouched**: other players' seats, non-Competition memberships, and
+  memberships with no `player_id` (the rule attributes seats to players; an
+  unattributed seat cannot be safely retired). A resubmission that *fails* the
+  gate never displaces the player's current competing policy.
+- **Kill switch**: `CREWRIFT_PRIME_ONE_POLICY_PER_PLAYER=0` disables the rule
+  (ON by default).
+
+Pre-existing duplicates (seeded before this rule) are swept the same way on the
+next `migrate_league` invocation.
+
 ## Competition division — score = role-weighted WON EPISODES, ranked by WIN RATE
 
 Once promoted, a policy competes in the **Competition** division. In short:

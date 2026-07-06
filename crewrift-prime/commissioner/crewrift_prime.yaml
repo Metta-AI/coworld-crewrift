@@ -49,4 +49,5 @@ divisions:
     level: 1
     match:
       type: competition
-    entrants: champions
+    entrants:
+      status: competing

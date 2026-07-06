@@ -430,6 +430,123 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
         self.assertEqual(len(commissioner._xp_client.created), 2)
 
 
+class OnePolicyPerPlayerTest(unittest.TestCase):
+    """Tournament rule: a player fields at most ONE active Competition policy.
+
+    ``migrate_league`` must retire (supersede) a player's older competing
+    membership when their newer policy promotes, sweep pre-existing duplicates,
+    and never touch other players' seats or unattributed memberships.
+    """
+
+    @staticmethod
+    def _ctx(memberships: list[MembershipSnapshot], league_id: UUID) -> LeagueMigrationContext:
+        return LeagueMigrationContext(
+            league=LeagueSnapshot(id=league_id, commissioner_key="container", commissioner_config=None),
+            divisions=_division_snapshots(league_id),
+            memberships=memberships,
+        )
+
+    @staticmethod
+    def _competing(league_id: UUID, player_id: str | None) -> MembershipSnapshot:
+        return MembershipSnapshot(
+            id=uuid4(), league_id=league_id, division_id=_COMPETITION_DIV,
+            policy_version_id=uuid4(), player_id=player_id,
+            status=PolicyMembershipStatus.competing, substatus="champion", is_champion=True,
+        )
+
+    def _passing_commissioner(self):
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
+        _wire_interview(commissioner)
+        return commissioner
+
+    def test_new_promotion_supersedes_players_old_policy(self) -> None:
+        commissioner = self._passing_commissioner()
+        league_id = uuid4()
+        old = self._competing(league_id, "ply_a")
+        new = MembershipSnapshot(
+            id=uuid4(), league_id=league_id, division_id=_COMPETITION_DIV,
+            policy_version_id=uuid4(), player_id="ply_a",
+            status=PolicyMembershipStatus.submitted, substatus=None,
+        )
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(self._ctx([old, new], league_id))
+        events_by_id = {e.league_policy_membership_id: e for e in result.policy_membership_events}
+        # The new policy promoted...
+        self.assertEqual(str(events_by_id[new.id].status), "competing")
+        self.assertEqual(events_by_id[new.id].to_division_id, _COMPETITION_DIV)
+        # ...and the old one was retired as superseded (not a skill DQ).
+        superseded = events_by_id[old.id]
+        self.assertEqual(str(superseded.status), "disqualified")
+        self.assertEqual(superseded.substatus, "superseded")
+        self.assertIsNotNone(superseded.end_time)
+        self.assertEqual(superseded.evidence[0].type, "crewrift_prime_one_policy_per_player")
+        self.assertEqual(
+            superseded.evidence[0].metadata["kept_policy_version_id"],
+            str(new.policy_version_id),
+        )
+
+    def test_other_players_seats_are_untouched(self) -> None:
+        commissioner = self._passing_commissioner()
+        league_id = uuid4()
+        other = self._competing(league_id, "ply_b")
+        unattributed = self._competing(league_id, None)
+        new = MembershipSnapshot(
+            id=uuid4(), league_id=league_id, division_id=_COMPETITION_DIV,
+            policy_version_id=uuid4(), player_id="ply_a",
+            status=PolicyMembershipStatus.submitted, substatus=None,
+        )
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(self._ctx([other, unattributed, new], league_id))
+        touched = {e.league_policy_membership_id for e in result.policy_membership_events}
+        self.assertNotIn(other.id, touched)
+        self.assertNotIn(unattributed.id, touched)
+
+    def test_preexisting_duplicates_are_swept_keeping_newest(self) -> None:
+        # No new submission at all: two competing memberships for one player
+        # (e.g. seeded before the rule) — the migration retires the OLDER one.
+        commissioner = _commissioner()
+        league_id = uuid4()
+        older = self._competing(league_id, "ply_a")
+        newer = self._competing(league_id, "ply_a")
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(self._ctx([older, newer], league_id))
+        events_by_id = {e.league_policy_membership_id: e for e in result.policy_membership_events}
+        self.assertIn(older.id, events_by_id)
+        self.assertNotIn(newer.id, events_by_id)
+        self.assertEqual(events_by_id[older.id].substatus, "superseded")
+
+    def test_failed_qualification_does_not_supersede(self) -> None:
+        # A resubmission that FAILS the gate must leave the player's current
+        # competing policy alone.
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_failing_combined_game())
+        _wire_interview(commissioner)
+        league_id = uuid4()
+        old = self._competing(league_id, "ply_a")
+        new = MembershipSnapshot(
+            id=uuid4(), league_id=league_id, division_id=_COMPETITION_DIV,
+            policy_version_id=uuid4(), player_id="ply_a",
+            status=PolicyMembershipStatus.submitted, substatus=None,
+        )
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(self._ctx([old, new], league_id))
+        events_by_id = {e.league_policy_membership_id: e for e in result.policy_membership_events}
+        self.assertNotIn(old.id, events_by_id)  # old seat untouched
+        self.assertEqual(str(events_by_id[new.id].status), "qualifying")  # held, not promoted
+
+    def test_env_kill_switch_disables_rule(self) -> None:
+        commissioner = _commissioner()
+        league_id = uuid4()
+        older = self._competing(league_id, "ply_a")
+        newer = self._competing(league_id, "ply_a")
+        with unittest.mock.patch(
+            "crewrift_prime_skill_commissioner._ONE_POLICY_PER_PLAYER", False
+        ), redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(self._ctx([older, newer], league_id))
+        self.assertEqual(result.policy_membership_events, [])
+
+
 class CompetitionWinScoringTest(unittest.TestCase):
     def test_competition_round_scores_by_wins(self) -> None:
         commissioner = _commissioner()

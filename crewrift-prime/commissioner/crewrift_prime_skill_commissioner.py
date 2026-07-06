@@ -218,6 +218,16 @@ PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
         ),
     ),
     CommissionerChangelogEntry(
+        date="2026-07-03",
+        category="matchmaking",
+        title="Every competing entrant is seated each round",
+        detail=(
+            "Competition rounds now seat every competing entrant each round instead of "
+            "only the current champion, so all active policies play and are scored each "
+            "round rather than waiting on the sidelines."
+        ),
+    ),
+    CommissionerChangelogEntry(
         date="2026-07-02",
         category="scoring",
         title="Standings show all rounds again",
@@ -310,6 +320,20 @@ _SUBMITTED_STATUSES = ("submitted", "qualifying")
 _QUALIFYING_STATUS = "qualifying"
 _QUALIFIER_SUBSTATUS = SKILL_GATE_STAGE_ID  # "skill_gate" (stable; re-tested next time)
 _INACTIVE_SUBSTATUS = "inactive"
+# Substatus for a Competition membership retired because the SAME player promoted
+# a newer policy (one-policy-per-player rule). Distinct from ``inactive`` so the
+# Observatory can tell "replaced by the player's newer submission" from a real DQ.
+_SUPERSEDED_SUBSTATUS = "superseded"
+_ONE_POLICY_EVIDENCE_TYPE = "crewrift_prime_one_policy_per_player"
+# ONE POLICY PER PLAYER (tournament rule): a player may field at most ONE active
+# policy in the Competition division at any time. Enforced in ``migrate_league``
+# (the only seam that sees every membership and can emit membership events):
+# when a player's newer policy qualifies, their older competing policy is retired
+# (superseded), and any pre-existing duplicates are swept the same way. ON by
+# default; set CREWRIFT_PRIME_ONE_POLICY_PER_PLAYER=0 (or false/no/off) to disable.
+_ONE_POLICY_PER_PLAYER = os.getenv(
+    "CREWRIFT_PRIME_ONE_POLICY_PER_PLAYER", "1"
+).strip().lower() not in ("0", "false", "no", "off")
 # How many self-play episodes the qualifier xp request runs (env-overridable). One
 # game already exercises every role in self-play; more reduces single-game variance.
 _QUALIFIER_NUM_EPISODES = max(int(os.getenv("CREWRIFT_PRIME_QUALIFIER_EPISODES", "1")), 1)
@@ -877,6 +901,13 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         submission, the platform must invoke this migration hook when a policy is
         submitted. There is no other commissioner entrypoint that observes a new
         submission (see module docstring / README).
+
+        TOURNAMENT RULE — one policy per player: after qualification events are
+        drafted, :func:`_enforce_one_policy_per_player` retires (supersedes) any
+        OLDER active Competition membership held by a player whose newer policy
+        just promoted, and sweeps pre-existing duplicates, so a player never
+        fields two policies in the Competition division at once. Env-disable
+        with ``CREWRIFT_PRIME_ONE_POLICY_PER_PLAYER=0``.
         """
         result = super().migrate_league(ctx)
         events = list(result.policy_membership_events)
@@ -886,6 +917,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             if status not in _SUBMITTED_STATUSES:
                 continue
             events.append(self.qualify_submission(membership, target_division_id))
+        if _ONE_POLICY_PER_PLAYER:
+            events = _enforce_one_policy_per_player(ctx, events, target_division_id)
         return LeagueMigrationResult(policy_membership_events=events)
 
     def qualify_submission(
@@ -2049,6 +2082,124 @@ def _status_str(status: Any) -> str:
     """Normalize a membership status (enum or str) to its lowercase value."""
     value = status.value if hasattr(status, "value") else str(status)
     return value.lower()
+
+
+def _enforce_one_policy_per_player(
+    ctx: LeagueMigrationContext,
+    events: list[ModelsPolicyMembershipEventChange],
+    competition_division_id: UUID | None,
+) -> list[ModelsPolicyMembershipEventChange]:
+    """Tournament rule: a player fields at most ONE active Competition policy.
+
+    Pure function over the migration snapshot + the events drafted so far.
+    Projects which memberships would be actively ``competing`` in the Competition
+    division AFTER ``events`` apply, groups them by ``player_id``, and for any
+    player holding more than one seat APPENDS a retire event (status
+    ``disqualified``, substatus ``superseded``, ``end_time=now``) for every
+    membership except the one being kept. Appending (never rewriting) keeps the
+    qualification events' audit trail intact — a policy that passed the gate
+    still shows its promotion, followed by its supersession.
+
+    Which one is kept: a membership promoted IN THIS migration outranks any
+    pre-existing membership (the newer submission replaces the old); among
+    equals, the one latest in ``ctx.memberships`` wins (the platform lists
+    memberships in creation order, so this is "keep the newest"). Memberships
+    with no ``player_id`` are left alone — the rule attributes seats to players,
+    and an unattributed seat cannot be safely retired.
+    """
+    if competition_division_id is None:
+        return events
+
+    # Index the drafted events by membership id (last event wins, matching how
+    # the platform applies them sequentially).
+    drafted: dict[UUID, ModelsPolicyMembershipEventChange] = {}
+    for event in events:
+        drafted[event.league_policy_membership_id] = event
+
+    promoted_ids: set[UUID] = set()
+    active: list[MembershipSnapshot] = []
+    for membership in ctx.memberships:
+        event = drafted.get(membership.id)
+        if event is not None:
+            # Project the membership's post-event state from the drafted event.
+            if (
+                event.to_division_id == competition_division_id
+                and _status_str(event.status) == "competing"
+            ):
+                was_already_competing = (
+                    membership.division_id == competition_division_id
+                    and _status_str(membership.status) == "competing"
+                )
+                if not was_already_competing:
+                    promoted_ids.add(membership.id)
+                active.append(membership)
+            continue
+        if (
+            membership.division_id == competition_division_id
+            and _status_str(membership.status) == "competing"
+        ):
+            active.append(membership)
+
+    by_player: dict[str, list[MembershipSnapshot]] = {}
+    for membership in active:
+        player_id = membership.player_id
+        if player_id is None:
+            continue
+        by_player.setdefault(str(player_id), []).append(membership)
+
+    out = list(events)
+    order = {m.id: i for i, m in enumerate(ctx.memberships)}
+    for player_id, seats in by_player.items():
+        if len(seats) <= 1:
+            continue
+        # Newest submission wins: freshly promoted first, then latest snapshot order.
+        keeper = max(seats, key=lambda m: (m.id in promoted_ids, order.get(m.id, -1)))
+        for membership in seats:
+            if membership.id == keeper.id:
+                continue
+            _emit_decision_log(
+                {
+                    "decision": "ONE_POLICY_PER_PLAYER_SUPERSEDE",
+                    "player_id": player_id,
+                    "superseded_policy_version_id": str(membership.policy_version_id),
+                    "kept_policy_version_id": str(keeper.policy_version_id),
+                    "reason": "player may field only one Competition policy at a time",
+                }
+            )
+            out.append(
+                ModelsPolicyMembershipEventChange(
+                    league_policy_membership_id=membership.id,
+                    from_division_id=competition_division_id,
+                    to_division_id=None,
+                    status="disqualified",
+                    substatus=_SUPERSEDED_SUBSTATUS,
+                    reason="Superseded by the player's newer policy (one policy per player)",
+                    end_time=_now_utc(),
+                    notes=(
+                        "Tournament rule: a player may field at most one active policy in "
+                        f"the Competition division. Policy {membership.policy_version_id} was "
+                        f"retired in favor of {keeper.policy_version_id} (same player "
+                        f"{player_id}). This is NOT a skill disqualification."
+                    ),
+                    evidence=[
+                        ModelsPolicyMembershipEventEvidence(
+                            type=_ONE_POLICY_EVIDENCE_TYPE,
+                            title="One policy per player (Competition)",
+                            summary=(
+                                "Retired: the same player promoted a newer policy into the "
+                                "Competition division."
+                            ),
+                            metadata={
+                                "player_id": player_id,
+                                "superseded_policy_version_id": str(membership.policy_version_id),
+                                "kept_policy_version_id": str(keeper.policy_version_id),
+                                "kept_league_policy_membership_id": str(keeper.id),
+                            },
+                        )
+                    ],
+                )
+            )
+    return out
 
 
 def _distinct_topup(
