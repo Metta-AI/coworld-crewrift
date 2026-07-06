@@ -131,8 +131,10 @@ An excluded round logs `COMMISSIONER_DECISION {"decision":"VOID_GAMES_EXCLUDED",
   A player's row aggregates their policy versions' won and played episodes.
   `_complete_competition_round` publishes the SAME win-rate board on
   `RoundComplete.leaderboards` (built from an append-only per-round win history —
-  carrying each round's `score` and `episodes_played` — in commissioner state), so
-  both platform writers persist an identical board and the standings never flip.
+  carrying each round's `episode_wins`, `points`, and `episodes_played` — in
+  commissioner state, plus a persisted per-(round, player) points map seeded from
+  platform `recent_results` so gap-era history rows recover role-weighted scores),
+  so both platform writers persist an identical board and the standings never flip.
   Other divisions keep the stock ranking. A
   `COMMISSIONER_DECISION {"decision":"WIN_RATE_RANK", ...}` line is logged per
   player with `win_rate`/`wins`/`episodes_played`/`rounds_played`/`rank`. The

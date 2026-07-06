@@ -115,8 +115,10 @@ from commissioners.common.utils import (
 
 from game_results_loader import coerce_results_schema, has_results_schema_arrays
 from decision import (
+    CREW_WIN_POINTS,
     DECISION_LOG_TAG,
     EXCLUDE_VOID_GAMES,
+    IMPOSTER_WIN_POINTS,
     SKILL_GATE_EVIDENCE_TYPE,
     SKILL_GATE_STAGE_ID,
     build_competition_report,
@@ -196,7 +198,8 @@ PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
             "matchmaking (all entrants seated, anti-collusion seating, one policy per "
             "player), void/filler exclusion, and all-time win-rate standings with true "
             "WIN % on the board. Standings Score is the cumulative sum of role-weighted "
-            "round points. See crewrift-prime/CHANGELOG.md for the full list."
+            "round points; gap-era win history is backfilled from platform recent_results. "
+            "See crewrift-prime/CHANGELOG.md for the full list."
         ),
     ),
     CommissionerChangelogEntry(
@@ -341,6 +344,12 @@ _WIN_HISTORY_RECORDED_AT_KEY = "recorded_at"
 # the scheduling tick writes — the leaderboard-flip bug. (The state key string is
 # kept for backward compatibility with already-persisted commissioner state.)
 _WIN_HISTORY_STATE_KEY = "crewrift_prime_mmr_history"
+# Per-(round_id, player_id) role-weighted point totals persisted across round
+# completions. Win-history rows recorded before PR #125 stored only episode-win
+# counts in ``score``; this map is seeded from platform ``recent_results`` (which
+# carry the authoritative role-weighted round score) plus live rankings so the
+# round-complete board matches ``rank_division`` even for gap-era history rows.
+_WIN_ROUND_POINTS_STATE_KEY = "crewrift_prime_round_points"
 # Episode-request tag names recording how the closed-roster 8-seat game was topped
 # up. ``filler_seats`` is the comma-separated 0-based seat indices that are NOT a
 # real, uniquely-seated entrant; ``filler_policy_version_ids`` is the comma-
@@ -1425,6 +1434,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             division_id=view.current_division.id,
             round_id=round_start.round_id,
             rankings=rankings,
+            round_start=round_start,
         )
         return CommissionerRoundComplete(
             results=[CommissionerDivisionRanking(division_id=view.current_division.id, rankings=rankings)],
@@ -1456,6 +1466,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         division_id: UUID,
         round_id: UUID,
         rankings: list[CommissionerRankingEntry],
+        round_start: CommissionerRoundStart | None = None,
     ) -> tuple[list[CommissionerDivisionLeaderboard], dict[str, Any]]:
         """Accumulate the division's per-round win history and publish the board.
 
@@ -1501,6 +1512,12 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                         "points": 0.0
                         if tainted
                         else float(entry.result_metadata.get("points", entry.score)),
+                        "imposter_episode_wins": 0
+                        if tainted
+                        else int(entry.result_metadata.get("imposter_episode_wins", 0)),
+                        "crew_episode_wins": 0
+                        if tainted
+                        else int(entry.result_metadata.get("crew_episode_wins", 0)),
                         # Legacy field: episode-win count (pre-role-weighting history
                         # stored only this key).
                         "score": 0.0
@@ -1520,6 +1537,17 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                     }
                 )
         state[_WIN_HISTORY_STATE_KEY] = history
+
+        policy_to_player = _player_id_by_policy(round_start.memberships if round_start else [])
+        points_map = _sync_round_points_state(
+            state,
+            history=history,
+            rankings=rankings,
+            round_id_str=round_id_str,
+            recent_results=list(round_start.recent_results) if round_start else [],
+            policy_to_player=policy_to_player,
+            division_id=division_id,
+        )
 
         # STANDINGS RECENCY WINDOW: consider only history rows whose round was
         # scored within the last STANDINGS_WINDOW_HOURS hours, mirroring the
@@ -1549,7 +1577,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             prior = round_wins.get(key)
             if prior is None or wins > prior:
                 round_wins[key] = wins
-                round_points[key] = _history_points(row)
+                round_points[key] = _history_points(row, points_map)
                 round_episodes[key] = int(row.get("episodes_played", 0))
 
         snapshots = self._win_total_board(
@@ -1961,6 +1989,117 @@ def _clamped_win_rate(wins: float, episodes_played: int) -> float:
     return max(0.0, min(1.0, wins / episodes_played))
 
 
+def _round_points_map_key(round_id: Any, player_id: Any) -> str:
+    return f"{round_id}:{player_id}"
+
+
+def _points_from_ranking_entry(entry: CommissionerRankingEntry) -> float:
+    return float(entry.result_metadata.get("points", entry.score))
+
+
+def _player_id_by_policy(memberships: list[Any]) -> dict[str, str]:
+    return {
+        str(membership.policy_version_id): str(membership.player_id)
+        for membership in memberships
+        if getattr(membership, "player_id", None) is not None
+    }
+
+
+def _recompute_points_from_role_wins(row: dict[str, Any]) -> float | None:
+    """Reconstruct role-weighted points when imposter/crew episode counts are stored."""
+    if "imposter_episode_wins" not in row and "crew_episode_wins" not in row:
+        return None
+    return float(
+        IMPOSTER_WIN_POINTS * int(row.get("imposter_episode_wins", 0))
+        + CREW_WIN_POINTS * int(row.get("crew_episode_wins", 0))
+    )
+
+
+def _sync_round_points_state(
+    state: dict[str, Any],
+    *,
+    history: list[dict[str, Any]],
+    rankings: list[CommissionerRankingEntry],
+    round_id_str: str,
+    recent_results: list[Any],
+    policy_to_player: dict[str, str],
+    division_id: UUID,
+) -> dict[str, float]:
+    """Maintain the authoritative per-(round, player) role-weighted points map.
+
+    Gap-era win-history rows stored only episode-win counts in ``score``; the
+    platform's ``recent_results`` on ``RoundStart`` carry the role-weighted round
+    scores the DB already has, so we seed/backfill from those before replaying
+    history for the round-complete board.
+    """
+    points_map: dict[str, float] = {
+        str(key): float(value)
+        for key, value in dict(state.get(_WIN_ROUND_POINTS_STATE_KEY, {})).items()
+    }
+
+    def _set_points(round_id: Any, player_id: Any, points: float) -> None:
+        if player_id is None:
+            return
+        points_map[_round_points_map_key(round_id, player_id)] = float(points)
+
+    for row in history:
+        if row.get("tainted"):
+            continue
+        player_id = row.get("player_id")
+        round_id = row.get("round_id")
+        if player_id is None or round_id is None:
+            continue
+        if "points" in row:
+            _set_points(round_id, player_id, float(row["points"]))
+            continue
+        recomputed = _recompute_points_from_role_wins(row)
+        if recomputed is not None:
+            _set_points(round_id, player_id, recomputed)
+            row["points"] = recomputed
+
+    for recent in recent_results:
+        if getattr(recent, "division_id", None) != division_id:
+            continue
+        player_id = policy_to_player.get(str(recent.policy_version_id))
+        if player_id is None:
+            continue
+        _set_points(recent.round_id, player_id, float(recent.score))
+
+    for entry in rankings:
+        if entry.player_id is None:
+            continue
+        if int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0:
+            continue
+        points = _points_from_ranking_entry(entry)
+        _set_points(round_id_str, entry.player_id, points)
+        for row in history:
+            if str(row.get("round_id")) != round_id_str:
+                continue
+            if str(row.get("player_id")) != str(entry.player_id):
+                continue
+            row["points"] = points
+            if "imposter_episode_wins" not in row:
+                row["imposter_episode_wins"] = int(
+                    entry.result_metadata.get("imposter_episode_wins", 0)
+                )
+            if "crew_episode_wins" not in row:
+                row["crew_episode_wins"] = int(entry.result_metadata.get("crew_episode_wins", 0))
+
+    for row in history:
+        if row.get("tainted"):
+            continue
+        player_id = row.get("player_id")
+        round_id = row.get("round_id")
+        if player_id is None or round_id is None or "points" in row:
+            continue
+        map_key = _round_points_map_key(round_id, player_id)
+        if map_key in points_map:
+            row["points"] = points_map[map_key]
+
+    state[_WIN_ROUND_POINTS_STATE_KEY] = points_map
+    return points_map
+
+
 def _round_episode_wins_from_result(result: Any) -> float:
     """Role-agnostic episode win count from a round-result row."""
     return float(result.result_metadata.get("episode_wins", result.score))
@@ -1976,9 +2115,22 @@ def _history_episode_wins(row: dict[str, Any]) -> float:
     return float(row.get("episode_wins", row.get("score", 0)))
 
 
-def _history_points(row: dict[str, Any]) -> float:
+def _history_points(row: dict[str, Any], points_map: dict[str, float] | None = None) -> float:
     """Role-weighted points from a persisted win-history row."""
-    return float(row.get("points", row.get("score", 0)))
+    if "points" in row:
+        return float(row["points"])
+    points_map = points_map or {}
+    map_key = _round_points_map_key(row.get("round_id"), row.get("player_id"))
+    if map_key in points_map:
+        return float(points_map[map_key])
+    recomputed = _recompute_points_from_role_wins(row)
+    if recomputed is not None:
+        return recomputed
+    # Pre-role-weighted legacy: only ``score`` was stored and wins == points.
+    if "episode_wins" not in row:
+        return float(row.get("score", 0))
+    # Role-weighted gap row (``score`` holds wins, not points) with no map entry.
+    return 0.0
 
 
 def _aggregate_win_metrics(
