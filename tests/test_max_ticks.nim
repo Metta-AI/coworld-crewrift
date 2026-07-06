@@ -116,10 +116,14 @@ suite "max ticks":
     sim.step(inputs, inputs)
     check sim.phase == GameOver
     check sim.winner == Crewmate
-    check sim.timeLimitReached
+    # Reaching the tick limit is a genuine crew win, not a draw.
+    check not sim.timeLimitReached
 
     for player in sim.players:
-      check player.reward == 0
+      if player.role == Crewmate:
+        check player.reward == WinReward
+      else:
+        check player.reward == 0
 
   test "meeting voting and result screens do not spend max ticks":
     var config = defaultGameConfig()
@@ -170,4 +174,5 @@ suite "max ticks":
     sim.step(inputs, inputs)
     check sim.phase == GameOver
     check sim.gameTicksElapsed() == 2
-    check sim.timeLimitReached
+    check not sim.timeLimitReached
+    check sim.winner == Crewmate

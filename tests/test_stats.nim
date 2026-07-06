@@ -155,6 +155,10 @@ suite "stats":
     check sim.phase == GameOver
     check sim.players[playerIndex].reward == TaskReward + WinReward
     check sim.accountFor("last-task").tasks == 1
+    # Crew win by finishing tasks: winning crew slot scores CrewWinPoints (1).
+    let results = parseJson(sim.playerResultsJson())
+    check results["win"][0].getBool()
+    check results["scores"][0].getInt() == 1
 
   test "connect timeout draws and penalizes missing slot":
     var config = defaultGameConfig()
@@ -463,6 +467,54 @@ suite "stats":
         check account.winsImposter == 0
       else:
         check account.winsCrewmate == 1
+
+    # Crew win by ejecting the imposter: every winning crew slot scores
+    # CrewWinPoints (1); the ejected imposter scores 0.
+    let results = parseJson(sim.playerResultsJson())
+    for i in 0 ..< sim.players.len:
+      if sim.players[i].role == Imposter:
+        check results["scores"][i].getInt() == 0
+        check not results["win"][i].getBool()
+      else:
+        check results["scores"][i].getInt() == 1
+        check results["win"][i].getBool()
+
+  test "crew win via max ticks scores crew one point":
+    var config = defaultGameConfig()
+    config.minPlayers = 3
+    config.imposterCount = 1
+    config.autoImposterCount = false
+    config.maxTicks = 2
+    config.tasksPerPlayer = 1
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+
+    var sim = initCrewriftForTest(config)
+    discard sim.addPlayer("p1")
+    discard sim.addPlayer("p2")
+    discard sim.addPlayer("p3")
+
+    var inputs = newSeq[InputState](sim.players.len)
+    sim.step(inputs, inputs)
+    check sim.phase == Playing
+
+    sim.step(inputs, inputs)
+    sim.step(inputs, inputs)
+    check sim.phase == GameOver
+    check sim.winner == Crewmate
+    # Outlasting the imposters to the tick limit is a crew WIN, not a draw.
+    check not sim.timeLimitReached
+
+    let results = parseJson(sim.playerResultsJson())
+    for i in 0 ..< sim.players.len:
+      checkpoint sim.players[i].address
+      if sim.players[i].role == Imposter:
+        check results["scores"][i].getInt() == 0
+        check not results["win"][i].getBool()
+      else:
+        check results["scores"][i].getInt() == 1
+        check results["win"][i].getBool()
+        check sim.accountFor(sim.players[i].address).winsCrewmate == 1
 
   test "user config crew win":
     var config = defaultGameConfig()

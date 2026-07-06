@@ -150,10 +150,11 @@ Checked every Playing tick and after each vote result by
 
 The winner is finalized in `sim.nim:finishGame` (moves to `GameOver`, pays
 `WinReward`). **Time limit:** if `gameTicksElapsed >= MaxTicks` while in a
-playing-family phase, the game ends as a **draw recorded as a Crewmate finish with
-`timeLimitReached = true`** (`sim.nim:checkMaxTicks` → `finishGame(Crewmate,
-timeLimitReached = true)`) — note a time-limit draw **does not pay `WinReward`**
-(`finishGame` returns early when `timeLimitReached`).
+playing-family phase, the game ends as a **Crewmate win** (`sim.nim:checkMaxTicks`
+→ `finishGame(Crewmate)`) — crew outlasted the imposters, so `WinReward` and win
+points are paid to crew. Only infrastructure endings (connect/disconnect
+timeouts, roster aborts) finish with `timeLimitReached = true`, which records a
+**draw**: `finishGame` returns early, pays no `WinReward`, and every slot scores 0.
 
 ---
 

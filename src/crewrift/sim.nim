@@ -3753,7 +3753,11 @@ proc maxTicksReached(sim: SimServer): bool =
 
 proc checkMaxTicks(sim: var SimServer) =
   if sim.maxTicksReached():
-    sim.finishGame(Crewmate, timeLimitReached = true)
+    # Outlasting the imposters to the tick limit is a genuine CREW WIN (win
+    # flags, WinReward, and win points are awarded), not a draw. Only
+    # infrastructure endings (connect/disconnect timeouts, roster aborts)
+    # finish with ``timeLimitReached = true`` and score as draws.
+    sim.finishGame(Crewmate)
 
 proc shouldAbortFiniteMatch*(sim: SimServer): bool =
   ## Returns true when a finite match cannot continue after roster loss.
