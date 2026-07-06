@@ -164,8 +164,8 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
         self.assertEqual({row.subject_id for row in rows}, {"ply_a", "ply_b"})
         by_player = {row.subject_id: row for row in rows}
         # The consistent winner is rank 1 (ranking is still by WIN RATE: it won all
-        # 8 episodes it played => 1.0 win rate). The displayed SCORE is now the
-        # floored cumulative sum of per-round win scores: ply_a won 1 episode in
+        # 8 episodes it played => 1.0 win rate). The displayed SCORE is the
+        # floored cumulative sum of per-round points: ply_a won 1 crew episode in
         # each of its 8 rounds => 8.0; ply_b never won => 0.0.
         self.assertEqual(by_player["ply_a"].values["rank"], 1)
         self.assertEqual(by_player["ply_a"].values["score"], 8.0)
@@ -467,8 +467,8 @@ class WinRateIsEpisodesWonOverPlayedTest(unittest.TestCase):
         )
         snapshots = commissioner.rank_division(ctx)
         by_player = {str(s.player_id): s for s in snapshots}
-        # The displayed SCORE is now the floored cumulative sum of per-round win
-        # scores. With a single round, that equals this round's win count.
+        # The displayed SCORE is the floored cumulative sum of per-round points.
+        # With a single round and 1 pt/crew win, that equals this round's win count.
         for pid, (wins, played) in plan.items():
             self.assertAlmostEqual(by_player[pid].score, float(wins), places=9)
         # The non-top players still earned wins, so their score is NOT zeroed.

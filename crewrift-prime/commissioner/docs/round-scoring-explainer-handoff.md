@@ -217,7 +217,7 @@ these columns and per-row `values`, and sets the view's `primary_column` to
 | `win_rate` | percent | **`episodes_won / episodes_played`, clamped `[0, 1]`. THE per-player rate.** The `percent` type tells the UI to render it as a whole-number percentage (0.2 → "20%"); it is the view's `primary_column`, so it is the Standings headline. | **YES — this IS the `WIN %` column.** |
 | `wins` | number | All-time episodes the player won (capped 1/episode). | (derivation source) |
 | `episodes_played` | integer | All-time episodes the player played (win-rate denominator). | (derivation source) |
-| `score` | number | DISPLAY-ONLY cumulative won-episode **count**, floored at 0. **Not a rate.** | **NO — never `score / Σ score`.** |
+| `score` | number | DISPLAY-ONLY cumulative **role-weighted points** (sum of per-round scores: 3/imposter win, 1/crew win), floored at 0. **Not a rate.** | **NO — never `score / Σ score`.** |
 | `rounds_played` | integer | Rounds the player appears in. | — |
 
 Render `WIN %` as `win_rate * 100` (it is already `[0, 1]`). If you prefer to

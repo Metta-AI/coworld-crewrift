@@ -1,15 +1,14 @@
-"""Leaderboard ``score`` = floored cumulative sum of per-round scores.
+"""Leaderboard ``score`` = floored cumulative sum of per-round role-weighted points.
 
-The displayed leaderboard ``score`` column is now the ABSOLUTE CUMULATIVE SUM of
-a player's per-round scores across ALL completed rounds, floored at 0 (never
-negative) — NOT the prior 6h-half-life EWMA (non-competition) nor the win RATE
-(competition). The win-rate metric and the win-rate RANKING for the Competition
-division are unchanged: only the value placed in ``score`` differs.
+The displayed leaderboard ``score`` column is the ABSOLUTE CUMULATIVE SUM of
+a player's per-round role-weighted points (3 per imposter win, 1 per crew win)
+across ALL completed rounds, floored at 0 (never negative). The win-rate metric
+and the win-rate RANKING for the Competition division are unchanged.
 
 These tests assert, for BOTH publishing paths:
 
 * Competition (``CrewriftPrimeSkillCommissioner.rank_division`` over a competition
-  division) publishes ``score = max(0, sum of per-round win scores)``, that the
+  division) publishes ``score = max(0, sum of per-round points)``, that the
   RANKING still follows descending win rate (so the cumulative score does NOT
   change the order), and that a raw-negative total floors to 0.
 * The stock/non-competition path (``rank_division`` deferring to
@@ -69,6 +68,8 @@ def _result(
     ranked_score_count: int = 1,
     policy_version_id: UUID | None = None,
     score_kind: str | None = None,
+    episode_wins: float | None = None,
+    points: float | None = None,
 ) -> LeaderboardRoundResultSnapshot:
     metadata = {
         RANKED_SCORE_COUNT_METADATA_KEY: ranked_score_count,
@@ -76,6 +77,10 @@ def _result(
     }
     if score_kind is not None:
         metadata["score_kind"] = score_kind
+    if episode_wins is not None:
+        metadata["episode_wins"] = episode_wins
+    if points is not None:
+        metadata["points"] = points
     return LeaderboardRoundResultSnapshot(
         round_id=round_id,
         policy_version_id=policy_version_id or uuid4(),
@@ -129,7 +134,7 @@ class CompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):
         snapshots = commissioner.rank_division(_ctx("competition", completed, round_results))
         by_player = {str(s.player_id): s for s in snapshots}
 
-        # SCORE = floored cumulative sum of per-round win scores.
+        # SCORE = floored cumulative sum of per-round points (here 1 pt/win legacy).
         self.assertEqual(by_player["ply_hi"].score, 3.0)
         self.assertEqual(by_player["ply_low"].score, 4.0)
         # RANKING is by WIN RATE: ply_hi (0.75) outranks ply_low (0.25) even though
@@ -176,6 +181,29 @@ class CompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):
         by_player = {str(s.player_id): s for s in snapshots}
         # Only the ranked round (2.0) counts; the tainted row is skipped.
         self.assertEqual(by_player["ply"].score, 2.0)
+
+    def test_score_sums_role_weighted_points_not_episode_wins(self) -> None:
+        """Standings score aggregates role-weighted points; win rate uses episode wins."""
+        commissioner = _commissioner()
+        r1, r2 = uuid4(), uuid4()
+        # ply_imp: 2 imposter wins in r1 -> 6 pts, 1 crew win in r2 -> 1 pt => 7 pts, 3 wins.
+        # ply_crew: 3 crew wins across both rounds -> 3 pts, 3 wins (same win rate).
+        round_results = [
+            _result(r1, "ply_imp", 6.0, played=4, episode_wins=2.0, points=6.0),
+            _result(r2, "ply_imp", 1.0, played=4, episode_wins=1.0, points=1.0),
+            _result(r1, "ply_crew", 2.0, played=4, episode_wins=2.0, points=2.0),
+            _result(r2, "ply_crew", 1.0, played=4, episode_wins=1.0, points=1.0),
+        ]
+        completed = [_round(r1, 1, None), _round(r2, 2, None)]
+        snapshots = commissioner.rank_division(_ctx("competition", completed, round_results))
+        by_player = {str(s.player_id): s for s in snapshots}
+
+        self.assertEqual(by_player["ply_imp"].score, 7.0)
+        self.assertEqual(by_player["ply_crew"].score, 3.0)
+        self.assertEqual(by_player["ply_imp"].episode_wins, 3.0)
+        self.assertEqual(by_player["ply_crew"].episode_wins, 3.0)
+        # Same win rate; imposter-heavy player has higher cumulative points.
+        self.assertGreater(by_player["ply_imp"].score, by_player["ply_crew"].score)
 
 
 class NonCompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):

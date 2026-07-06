@@ -195,7 +195,8 @@ PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
             "role-weighted round scores, enforced $10/pod/episode LLM caps, fair "
             "matchmaking (all entrants seated, anti-collusion seating, one policy per "
             "player), void/filler exclusion, and all-time win-rate standings with true "
-            "WIN % on the board. See crewrift-prime/CHANGELOG.md for the full list."
+            "WIN % on the board. Standings Score is the cumulative sum of role-weighted "
+            "round points. See crewrift-prime/CHANGELOG.md for the full list."
         ),
     ),
     CommissionerChangelogEntry(
@@ -1491,11 +1492,17 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                         # visible, but contribute 0 wins / 0 played episodes and are
                         # excluded from the win-rate numerator/denominator below.
                         #
-                        # NOTE: the round-ranking ``entry.score`` is now the
-                        # ROLE-WEIGHTED point total (3/imposter win, 1/crew win), so
-                        # the win-rate numerator must be the role-agnostic EPISODE
-                        # WIN count from result_metadata (falls back to the score
-                        # for legacy rows recorded before role weighting).
+                        # ``entry.score`` is the role-weighted point total; win-rate
+                        # uses role-agnostic episode wins from metadata. Both are
+                        # persisted so the replayed board matches ``rank_division``.
+                        "episode_wins": 0.0
+                        if tainted
+                        else float(entry.result_metadata.get("episode_wins", entry.score)),
+                        "points": 0.0
+                        if tainted
+                        else float(entry.result_metadata.get("points", entry.score)),
+                        # Legacy field: episode-win count (pre-role-weighting history
+                        # stored only this key).
                         "score": 0.0
                         if tainted
                         else float(entry.result_metadata.get("episode_wins", entry.score)),
@@ -1523,11 +1530,11 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         cutoff = _standings_window_cutoff()
         windowed_history = [row for row in history if _history_row_in_window(row, cutoff)]
 
-        # Best per-round win score per player + the player's policy versions, then
-        # collapse to the all-time win-rate board with the shared helper. Every
-        # player in the windowed history is a participant (tainted rows included) so
-        # nobody in-window is dropped; tainted rows just don't feed the win rate.
-        round_score: dict[tuple[Any, Any], float] = {}
+        # Best per-round wins/points per player, then collapse with the shared helper.
+        # Every player in the windowed history is a participant (tainted rows
+        # included) so nobody in-window is dropped; tainted rows don't feed metrics.
+        round_wins: dict[tuple[Any, Any], float] = {}
+        round_points: dict[tuple[Any, Any], float] = {}
         round_episodes: dict[tuple[Any, Any], int] = {}
         pvids_by_player: dict[Any, set] = {}
         participants: set = set()
@@ -1538,14 +1545,16 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             if row.get("tainted"):
                 continue
             key = (player_id, row["round_id"])
-            prior = round_score.get(key)
-            score = float(row["score"])
-            if prior is None or score > prior:
-                round_score[key] = score
+            wins = _history_episode_wins(row)
+            prior = round_wins.get(key)
+            if prior is None or wins > prior:
+                round_wins[key] = wins
+                round_points[key] = _history_points(row)
                 round_episodes[key] = int(row.get("episodes_played", 0))
 
         snapshots = self._win_total_board(
-            round_score,
+            round_wins,
+            round_points,
             name_by_player={},
             pvids_by_player=pvids_by_player,
             recent=lambda _pid: None,
@@ -1570,7 +1579,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             _win_rate_leaderboard(
                 division_id=division_id,
                 entries=entries,
-                win_metrics=_win_metrics_by_player(round_score, round_episodes, participants),
+                win_metrics=_win_metrics_by_player(round_wins, round_episodes, participants),
             )
         ]
         return leaderboards, state
@@ -1593,14 +1602,14 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 "so players are graded on their current form rather than stale results."
             )
             description.scoring_mechanics = (
-                "Competition scores by ROLE-WEIGHTED WINS: 3 points per episode the "
-                "entrant won as imposter, 1 point per episode won as crew (each "
-                "episode scores at most once; filler seats never count). The "
-                f"leaderboard score is the player's WIN RATE = "
-                f"episodes won / episodes played over {window}, always between 0 and "
-                "1. Void/disconnected games in which every player policy scored 0 are "
-                "not counted toward wins or episodes played. The commissioner computes "
-                "the ranking and the platform serves it."
+                "Competition round scores are ROLE-WEIGHTED: 3 points per episode won "
+                "as imposter, 1 point per episode won as crew (each episode scores at "
+                "most once; filler seats never count). Standings are RANKED by WIN RATE "
+                f"= episodes won / episodes played over {window}. The displayed Score "
+                "column is the cumulative sum of each player's role-weighted round "
+                "points. Void/disconnected games in which every player policy scored 0 "
+                "are not counted toward wins or episodes played. The commissioner "
+                "computes the ranking and the platform serves it."
             )
         # Publish the commissioner changelog on every division so operators and
         # players can see how the commissioner works and what functionality changed.
@@ -1610,13 +1619,11 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     def rank_division(self, ctx: DivisionLeaderboardContext) -> list[DivisionLeaderboardSnapshot]:
         """Competition leaderboard = all-time (or windowed) WIN RATE, collapsed to player.
 
-        Each player's score is the fraction of episodes they won across the
-        division's completed rounds (episodes won / episodes played; a won episode
-        counts once regardless of role, fillers excluded — round POINTS are
-        role-weighted separately, see ``_complete_competition_round``). The score
-        is always in ``[0, 1]``. Players
-        are ranked by descending win rate; ``rounds_played`` is the number of
-        counted completed rounds the player participated in.
+        Players are RANKED by descending win rate (episodes won / episodes played;
+        a won episode counts once regardless of role, fillers excluded). The
+        displayed ``score`` is the cumulative sum of role-weighted round points
+        (3/imposter win, 1/crew win). ``rounds_played`` is the number of counted
+        completed rounds the player participated in.
 
         By DEFAULT every completed round counts (all-time board). An OPTIONAL recency
         window (``CREWRIFT_PRIME_STANDINGS_WINDOW_HOURS`` > 0) restricts the count to
@@ -1664,13 +1671,10 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         # surviving ranked round must still be shown (zero win rate), so the board
         # never silently drops an active player (the "6 active players, 5 rows" bug).
         participant_pvids: dict[Any, set] = {}
-        # (player_id, round_id) -> best win score for that player in that round, so
-        # a multi-episode round contributes one per-round total per player and the
-        # win-rate aggregation is over ROUNDS, not raw result rows.
-        round_score: dict[tuple[Any, Any], float] = {}
-        # Parallel map of episodes the player PLAYED in that round, used as the
-        # win-rate denominator (one entry per (player, round), matching the row
-        # whose win score we keep).
+        # (player_id, round_id) -> best per-round wins and role-weighted points.
+        round_wins: dict[tuple[Any, Any], float] = {}
+        round_points: dict[tuple[Any, Any], float] = {}
+        # Episodes the player PLAYED that round (win-rate denominator).
         round_episodes: dict[tuple[Any, Any], int] = {}
         pvids_by_player: dict[Any, set] = {}
         for result in ctx.round_results:
@@ -1685,14 +1689,12 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                 continue
             pvids_by_player.setdefault(result.player_id, set()).add(result.policy_version_id)
             key = (result.player_id, result.round_id)
-            # Win-rate numerator: the role-agnostic EPISODE WIN count. The ranking
-            # ``result.score`` is now the ROLE-WEIGHTED point total (3/imposter win,
-            # 1/crew win) so it can no longer feed the win rate directly; fall back
-            # to the score only for legacy rows recorded before role weighting.
-            wins = float(result.result_metadata.get("episode_wins", result.score))
-            prior = round_score.get(key)
+            wins = _round_episode_wins_from_result(result)
+            points = _round_points_from_result(result)
+            prior = round_wins.get(key)
             if prior is None or wins > prior:
-                round_score[key] = wins
+                round_wins[key] = wins
+                round_points[key] = points
                 round_episodes[key] = int(
                     result.result_metadata.get(COMPLETED_EPISODE_COUNT_METADATA_KEY, 0)
                 )
@@ -1724,7 +1726,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             pvids_by_player.setdefault(player_id, set()).update(pvids)
 
         return self._win_total_board(
-            round_score,
+            round_wins,
+            round_points,
             name_by_player,
             pvids_by_player,
             recent,
@@ -1734,22 +1737,23 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
 
     def _win_total_board(
         self,
-        round_score: dict[tuple[Any, Any], float],
+        round_wins: dict[tuple[Any, Any], float],
+        round_points: dict[tuple[Any, Any], float],
         name_by_player: dict[Any, str | None],
         pvids_by_player: dict[Any, set],
         recent,
         round_episodes: dict[tuple[Any, Any], int] | None = None,
         participants: set | None = None,
     ) -> list[DivisionLeaderboardSnapshot]:
-        """Collapse per-(player, round) win scores into the all-time WIN-RATE board.
+        """Collapse per-(player, round) metrics into the all-time WIN-RATE board.
 
         Single source of truth for the board shape so ``rank_division`` (full
         history, with recent-round strips) and ``_complete_competition_round``
         (replayed history, ``recent`` returns None) emit IDENTICAL standings —
         which is what keeps both platform writers persisting the SAME board (no
-        flip). ``round_score`` maps (player_id, round_id) -> the episodes that
-        player WON in the round; ``round_episodes`` maps the same key -> episodes
-        the player PLAYED in the round.
+        flip). ``round_wins`` maps (player_id, round_id) -> episodes WON;
+        ``round_points`` maps the same key -> role-weighted POINTS (3/imposter,
+        1/crew); ``round_episodes`` maps the same key -> episodes PLAYED.
 
         ``participants`` lists every player who took part in a completed round,
         including those whose only rounds were tainted/unranked. Such players are
@@ -1761,18 +1765,17 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         rate = rank 1), with a stable player-id tiebreak.
 
         The displayed ``score`` is DISPLAY-ONLY and is the player's ABSOLUTE
-        CUMULATIVE SUM of per-round scores across ALL completed rounds, FLOORED AT
-        0 (never negative): ``max(0.0, sum of per-round win scores)``. In the
-        Competition path the per-round score is the count of episodes the player
-        won that round, so the cumulative sum is the player's all-time won-episode
-        total. The win RATE is still what orders the board; only the value placed
-        in ``score`` differs from the rate. ``rounds_played`` is the number of
-        rounds the player appears in.
+        CUMULATIVE SUM of per-round role-weighted POINTS across ALL completed
+        rounds, FLOORED AT 0 (never negative): ``max(0.0, sum of per-round
+        points)``. The win RATE orders the board; ``score`` mirrors the per-round
+        Rankings point total aggregated over time. ``rounds_played`` is the number
+        of rounds the player appears in.
         """
         round_episodes = round_episodes or {}
         wins_total, episodes_total, rounds_played = _aggregate_win_metrics(
-            round_score, round_episodes, participants
+            round_wins, round_episodes, participants
         )
+        points_total = _aggregate_cumulative_points(round_points, participants)
 
         def _win_rate(player_id: Any) -> float:
             return _clamped_win_rate(
@@ -1795,12 +1798,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         snapshots: list[DivisionLeaderboardSnapshot] = []
         for rank, player_id in enumerate(ordered, start=1):
             win_rate = _win_rate(player_id)
-            # DISPLAY-ONLY score: absolute cumulative sum of the player's per-round
-            # win scores across ALL completed rounds, floored at 0. Ranking above is
-            # still by win RATE; this only changes the number shown in the Score
-            # column (per-round score is the won-episode count, so this is the
-            # player's all-time won-episode total).
-            cumulative_score = max(0.0, wins_total.get(player_id, 0.0))
+            # DISPLAY-ONLY score: cumulative role-weighted points, floored at 0.
+            cumulative_score = max(0.0, points_total.get(player_id, 0.0))
             _emit_decision_log(
                 {
                     "division": "Competition",
@@ -1962,8 +1961,28 @@ def _clamped_win_rate(wins: float, episodes_played: int) -> float:
     return max(0.0, min(1.0, wins / episodes_played))
 
 
+def _round_episode_wins_from_result(result: Any) -> float:
+    """Role-agnostic episode win count from a round-result row."""
+    return float(result.result_metadata.get("episode_wins", result.score))
+
+
+def _round_points_from_result(result: Any) -> float:
+    """Role-weighted round points from a round-result row."""
+    return float(result.result_metadata.get("points", result.score))
+
+
+def _history_episode_wins(row: dict[str, Any]) -> float:
+    """Episode wins from a persisted win-history row (legacy rows used ``score``)."""
+    return float(row.get("episode_wins", row.get("score", 0)))
+
+
+def _history_points(row: dict[str, Any]) -> float:
+    """Role-weighted points from a persisted win-history row."""
+    return float(row.get("points", row.get("score", 0)))
+
+
 def _aggregate_win_metrics(
-    round_score: dict[tuple[Any, Any], float],
+    round_wins: dict[tuple[Any, Any], float],
     round_episodes: dict[tuple[Any, Any], int],
     participants: set | None,
 ) -> tuple[dict[Any, float], dict[Any, int], dict[Any, int]]:
@@ -1980,8 +1999,8 @@ def _aggregate_win_metrics(
         wins_total.setdefault(player_id, 0.0)
         episodes_total.setdefault(player_id, 0)
         rounds_played.setdefault(player_id, 0)
-    for (player_id, round_id), score in round_score.items():
-        wins_total[player_id] = wins_total.get(player_id, 0.0) + score
+    for (player_id, round_id), wins in round_wins.items():
+        wins_total[player_id] = wins_total.get(player_id, 0.0) + wins
         episodes_total[player_id] = episodes_total.get(player_id, 0) + int(
             round_episodes.get((player_id, round_id), 0)
         )
@@ -1989,8 +2008,21 @@ def _aggregate_win_metrics(
     return wins_total, episodes_total, rounds_played
 
 
+def _aggregate_cumulative_points(
+    round_points: dict[tuple[Any, Any], float],
+    participants: set | None,
+) -> dict[Any, float]:
+    """Sum per-(player, round) role-weighted points into all-time per-player totals."""
+    points_total: dict[Any, float] = {}
+    for player_id in participants or set():
+        points_total.setdefault(player_id, 0.0)
+    for (player_id, _round_id), points in round_points.items():
+        points_total[player_id] = points_total.get(player_id, 0.0) + points
+    return points_total
+
+
 def _win_metrics_by_player(
-    round_score: dict[tuple[Any, Any], float],
+    round_wins: dict[tuple[Any, Any], float],
     round_episodes: dict[tuple[Any, Any], int],
     participants: set | None,
 ) -> dict[str, tuple[float, int, float]]:
@@ -2000,7 +2032,7 @@ def _win_metrics_by_player(
     UI renders are exactly the values the board is ranked by.
     """
     wins_total, episodes_total, _ = _aggregate_win_metrics(
-        round_score, round_episodes, participants
+        round_wins, round_episodes, participants
     )
     return {
         str(player_id): (
@@ -2024,8 +2056,8 @@ def _win_rate_leaderboard(
     platform persists it verbatim instead of re-synthesizing it). The board is
     RANKED by all-time win rate (see ``_win_total_board``), but the ``score``
     column carries the DISPLAY-ONLY absolute cumulative sum of each player's
-    per-round scores (floored at 0), not the win rate — so the column is labeled
-    "Score" accordingly.
+    per-round role-weighted points (floored at 0), not the win rate — so the
+    column is labeled "Score" accordingly.
 
     ``win_metrics`` maps ``player_id -> (wins, episodes_played, win_rate)`` and is
     surfaced as explicit ``win_rate``/``wins``/``episodes_played`` columns so the

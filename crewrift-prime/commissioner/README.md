@@ -139,7 +139,7 @@ An excluded round logs `COMMISSIONER_DECISION {"decision":"VOID_GAMES_EXCLUDED",
   published board exposes `win_rate` (= `episodes_won / episodes_played`, clamped
   `[0, 1]`) plus the `wins`/`episodes_played` it derives from as explicit columns,
   so the Observatory renders the TRUE per-player `WIN %` directly — it must NOT
-  derive it from `score` (a cumulative win COUNT) as a share that sums to 100%.
+  derive it from `score` (cumulative role-weighted points) as a share that sums to 100%.
   See [`docs/round-scoring-explainer-handoff.md`](docs/round-scoring-explainer-handoff.md).
 
 > **Note on matchmaking:** seat assignment is **round-robin** — every real entrant
