@@ -7890,6 +7890,8 @@ proc shouldSwitchCrewVote(
     nextPile = bot.visibleVoteCountFor(nextVote)
     isPile = reason.startsWith("joining social vote pile")
   if ownVote == VoteSkip:
+    if bot.criticalCrewVote():
+      return true
     if isPile:
       return nextPile >= SocialCrewBrigadeVotes and
         bot.votePileTargetPlausible(nextVote)
@@ -8231,6 +8233,17 @@ proc desiredVotingDecision(
       bot.imposterKnown(),
       forced and not weakButton
     )
+  if bot.role == RoleCrewmate and
+      bot.criticalCrewVote() and
+      bot.socialDecisionSafe(decision) and
+      decision.target == bot.votePlayerCount:
+    let fallback = bot.fallbackVotingTarget()
+    if fallback.found:
+      return (
+        fallback.target,
+        "critical crew cannot skip, " & fallback.reason,
+        true
+      )
   if bot.imposterKnown() and
       bot.socialDecisionSafe(decision) and
       decision.target == bot.votePlayerCount:
