@@ -253,10 +253,10 @@ class CombinedSingleGameTest(unittest.TestCase):
 
 
 class CompetitionWinCountTest(unittest.TestCase):
-    def test_winning_episodes_score_one_each(self) -> None:
+    def test_winning_episodes_score_role_weighted(self) -> None:
         # Entrant occupies seat 0 in each episode (one seat per game). It won 3 of
-        # the 5 episodes, so it scores 3 (one point per WON episode). The role
-        # split still counts the winning seats for observability.
+        # the 5 episodes: 1 as imposter (3 pts) + 2 as crew (1 pt each) = 5 points.
+        # ``episode_wins`` (the win-rate numerator) stays the role-agnostic count.
         won_imposter = {"win": [True], "imposter": [1], "crew": [0]}
         won_crew = {"win": [True], "imposter": [0], "crew": [1]}
         lost = {"win": [False], "imposter": [0], "crew": [1]}
@@ -270,16 +270,19 @@ class CompetitionWinCountTest(unittest.TestCase):
         rec = count_competition_wins(episodes)
         self.assertEqual(rec.wins, 3)  # episodes won
         self.assertEqual(rec.episode_wins, 3)
-        self.assertEqual(rec.score, 3.0)
+        self.assertEqual(rec.imposter_episode_wins, 1)
+        self.assertEqual(rec.crew_episode_wins, 2)
+        self.assertEqual(rec.points, 5)  # 1*3 + 2*1
+        self.assertEqual(rec.score, 5.0)
         self.assertEqual(rec.imposter_wins, 1)
         self.assertEqual(rec.crew_wins, 2)
         self.assertEqual(rec.episodes_counted, 5)
 
-    def test_multiple_winning_seats_score_one_per_episode(self) -> None:
+    def test_multiple_winning_seats_score_once_per_episode(self) -> None:
         # 8-seat self-play game where the crew team (seats 2..7) won: the entrant
-        # occupies all 8 seats, but winning ONE episode scores exactly 1 (capped),
-        # regardless of how many of its seats won. The 6 winning crew seats are
-        # tracked as crew_wins for observability only.
+        # occupies all 8 seats, but winning ONE episode scores exactly once —
+        # a crew win is 1 point regardless of how many of its seats won. The 6
+        # winning crew seats are tracked as crew_wins for observability only.
         gr = _combined_game()
         gr["win"] = [False, False, True, True, True, True, True, True]
         rec = count_competition_wins([(gr, list(range(8)))])
@@ -287,12 +290,16 @@ class CompetitionWinCountTest(unittest.TestCase):
         self.assertEqual(rec.imposter_wins, 0)
         self.assertEqual(rec.episode_wins, 1)
         self.assertEqual(rec.wins, 1)
+        self.assertEqual(rec.crew_episode_wins, 1)
+        self.assertEqual(rec.imposter_episode_wins, 0)
+        self.assertEqual(rec.points, 1)
         self.assertEqual(rec.score, 1.0)
 
     def test_imposter_and_crew_players_both_score_one_episode(self) -> None:
         # Both imposter seats (0,1) and four crew seats win in one self-play game.
-        # That is still ONE won episode => score 1; the role split records the
-        # winning seats (2 imposter, 4 crew) for observability.
+        # That is still ONE won episode, attributed to the imposter role (any
+        # winning imposter seat makes it an imposter win) => 3 points; the role
+        # split records the winning seats (2 imposter, 4 crew) for observability.
         gr = _combined_game()
         gr["win"] = [True, True, True, True, True, True, False, False]
         rec = count_competition_wins([(gr, list(range(8)))])
@@ -300,6 +307,10 @@ class CompetitionWinCountTest(unittest.TestCase):
         self.assertEqual(rec.crew_wins, 4)
         self.assertEqual(rec.episode_wins, 1)
         self.assertEqual(rec.wins, 1)
+        self.assertEqual(rec.imposter_episode_wins, 1)
+        self.assertEqual(rec.crew_episode_wins, 0)
+        self.assertEqual(rec.points, 3)
+        self.assertEqual(rec.score, 3.0)
 
 
 class ObservabilityReportTest(unittest.TestCase):

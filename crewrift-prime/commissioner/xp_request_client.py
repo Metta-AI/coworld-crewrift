@@ -387,6 +387,46 @@ class XpRequestClient:
                 ids.append(str(row["policy_version_id"]))
         return ids
 
+    def get_league_settings(self, league_id: str) -> dict[str, Any]:
+        """Fetch a league's team-configurable settings (``leagues.settings``).
+
+        Calls ``GET /v2/leagues/{league_id}/settings`` (the same league-config API
+        that serves the filler policies) and returns the ``settings`` payload — the
+        platform's ``LeagueSettings`` shape (``episodes_per_round``,
+        ``round_interval_minutes``, ``episode_player_pod_llm_spend_limit_usd``).
+        The spend-limit field is the platform's enforced per-episode per-player-pod
+        LLM (Bedrock) ceiling: at episode dispatch it is injected into each player
+        pod's Bedrock sidecar (``BEDROCK_SIDECAR_SPEND_LIMIT_USD``), which meters
+        token spend and rejects further calls once the cap is reached.
+
+        Any HTTP/auth/network failure is normalized to
+        :class:`XpRequestInfraError` (callers treat the sync as best-effort).
+        """
+        path = f"/v2/leagues/{urllib.parse.quote(_prefixed_league_id(league_id))}/settings"
+        payload = self._get(path)
+        if not isinstance(payload, dict):
+            raise XpRequestInfraError(f"league settings for {league_id}: unexpected shape {type(payload)}")
+        settings = payload.get("settings")
+        return settings if isinstance(settings, dict) else {}
+
+    def update_league_settings(self, league_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+        """Store a league's team-configurable settings (full-replace semantics).
+
+        Calls ``POST /v2/leagues/{league_id}/settings`` with the platform's
+        ``LeagueSettings`` body. The platform REPLACES the stored settings with the
+        posted non-null fields, so callers must merge the current settings (from
+        :meth:`get_league_settings`) before posting a single-field change — e.g.
+        setting ``episode_player_pod_llm_spend_limit_usd`` must not clobber a
+        team-configured ``episodes_per_round``. Returns the stored ``settings``
+        payload echoed by the platform.
+        """
+        path = f"/v2/leagues/{urllib.parse.quote(_prefixed_league_id(league_id))}/settings"
+        payload = self._post(path, settings)
+        if not isinstance(payload, dict):
+            raise XpRequestInfraError(f"update league settings for {league_id}: unexpected shape {type(payload)}")
+        stored = payload.get("settings")
+        return stored if isinstance(stored, dict) else {}
+
     def get_run_detail(self, xreq_id: str) -> dict[str, Any]:
         detail = self._get(f"/v2/experience-requests/{xreq_id}")
         if not isinstance(detail, dict):

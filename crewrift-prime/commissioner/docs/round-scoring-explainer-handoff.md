@@ -23,11 +23,12 @@ holds no Crewrift-specific copy.**
 ### Which numbers the commissioner owns (important)
 
 - **Per-ROUND `SCORE` (RANKINGS panel):** the commissioner computes this. It is
-  the flat number of **games the entrant won** this round — 1 point for an
-  imposter win, 1 point for a crew win, with **no per-seat multiplier** (winning a
-  game scores once no matter how many seats the entrant held). This is what the
+  the **role-weighted** sum of the games the entrant won this round — **3 points
+  for an imposter win, 1 point for a crew win**, with **no per-seat multiplier**
+  (winning a game scores once no matter how many seats the entrant held; if any
+  winning seat was an imposter the game scores 3, else 1). This is what the
   new explainer describes. `imposter_wins`/`crew_wins` are an informational split
-  of those won games by the winning seat's role.
+  of the winning seats by role.
 - **Per-EPISODE scores (EPISODES panel, e.g. `63.0000`):** these are the **raw
   game scores** (`EpisodeResult.scores[].score`) produced by the GAME and passed
   through by the platform. The commissioner does **not** compute or rank by them;
@@ -71,10 +72,10 @@ like `skill_gate` — the UI keys off this string, never a Crewrift-specific one
 {
   "type": "round_scoring",
   "method": "competition_games_won",
-  "method_label": "Games won (1 point per won game — a win is a win)",
-  "summary": "This round's score for each entrant is the number of games it won — one point for an imposter win and one point for a crew win, with no per-seat multiplier (winning a game scores once no matter how many seats the entrant held). Filler / duplicate top-up seats are excluded, so an entrant is only credited for the games it legitimately won as a real entrant. Entrants are ordered by this round score; that finishing position is then fed to the OpenSkill (mu - 3 sigma) rating that ranks the standings, so the leaderboard reflects skill over time rather than a raw all-time win sum.",
-  "per_episode_note": "Each completed game this round contributes one point if the entrant won it; the round score is the sum across all of the round's games.",
-  "score_formula": "round_score = number of games won (summed over the round's games)",
+  "method_label": "Games won (role-weighted: 3 points per imposter win, 1 per crew win)",
+  "summary": "This round's score for each entrant is the role-weighted sum of the games it won — three points for an imposter win and one point for a crew win, with no per-seat multiplier (winning a game scores once no matter how many seats the entrant held; if any winning seat was an imposter the game scores 3, else 1). Filler / duplicate top-up seats are excluded, so an entrant is only credited for the games it legitimately won as a real entrant. Entrants are ordered by this round score; that finishing position is then fed to the OpenSkill (mu - 3 sigma) rating that ranks the standings, so the leaderboard reflects skill over time rather than a raw all-time win sum.",
+  "per_episode_note": "Each completed game this round contributes 3 points if the entrant won it as imposter, 1 point if it won as crew, and 0 otherwise; the round score is the sum across all of the round's games.",
+  "score_formula": "round_score = 3 x games won as imposter + 1 x games won as crew (summed over the round's games)",
   "games_scored": 3,
   "results_available": true,
   "notes": [],
@@ -85,13 +86,13 @@ like `skill_gate` — the UI keys off this string, never a Crewrift-specific one
       "player_name": "crewborg-aaln",
       "policy_label": null,
       "rank": 1,
-      "score": 2.0,
+      "score": 4.0,
       "imposter_wins": 1,
       "crew_wins": 1,
       "episodes_counted": 3,
-      "explanation": "Won 2 of 3 games this round (1 as imposter, 1 as crew).",
+      "explanation": "Won 2 of 3 games this round (1 as imposter x 3 pts, 1 as crew x 1 pt = 4 points).",
       "per_episode": [
-        { "request_id": "competition:r212:0", "points": 1, "imposter_wins": 1, "crew_wins": 0, "had_results": true },
+        { "request_id": "competition:r212:0", "points": 3, "imposter_wins": 1, "crew_wins": 0, "had_results": true },
         { "request_id": "competition:r212:1", "points": 1, "imposter_wins": 0, "crew_wins": 1, "had_results": true },
         { "request_id": "competition:r212:2", "points": 0, "imposter_wins": 0, "crew_wins": 0, "had_results": true }
       ]
@@ -118,11 +119,11 @@ like `skill_gate` — the UI keys off this string, never a Crewrift-specific one
 | `entrants[].player_id` | string \| null | Player id (for joining to the standings row). |
 | `entrants[].player_name` / `policy_label` | string \| null | Display name when the commissioner had one; else fall back to `player_id`/short id. |
 | `entrants[].rank` | int | Finishing rank this round. |
-| `entrants[].score` | number | The round `SCORE` shown in the RANKINGS panel (= number of games won). |
-| `entrants[].imposter_wins` / `crew_wins` | int | Informational role split of the won games (a game won across both roles increments both; they do NOT sum to `score`). |
+| `entrants[].score` | number | The round `SCORE` shown in the RANKINGS panel (= 3 × games won as imposter + 1 × games won as crew). |
+| `entrants[].imposter_wins` / `crew_wins` | int | Informational role split of the winning seats (a game won across both roles increments both; they do NOT sum to `score`). |
 | `entrants[].episodes_counted` | int | Scored games the entrant had a real (non-filler) seat in. |
 | `entrants[].explanation` | string | One-sentence human derivation. Render verbatim as the expanded explainer body. |
-| `entrants[].per_episode[]` | object[] | One row per scored game: `request_id`, `points` (0 or 1), `imposter_wins`, `crew_wins`, `had_results`. |
+| `entrants[].per_episode[]` | object[] | One row per scored game: `request_id`, `points` (0, 1, or 3), `imposter_wins`, `crew_wins`, `had_results`. |
 
 ## How the round view should render it (mirror the `skill_gate` explainer)
 
@@ -207,12 +208,13 @@ Two strong players can both be at 80% — these rates do **not** sum to 100%.
 
 The Competition board (`RoundComplete.leaderboards[0]`, built by
 `_win_rate_leaderboard` in `crewrift_prime_skill_commissioner.py`) now declares
-these columns and per-row `values`:
+these columns and per-row `values`, and sets the view's `primary_column` to
+`win_rate` so the compact **Standings** board headlines Win % (not the raw score):
 
 | Column key | `value_type` | Meaning | Use for `WIN %`? |
 |---|---|---|---|
 | `rank` | integer | Standings position (1 = best win rate). | — |
-| `win_rate` | number | **`episodes_won / episodes_played`, clamped `[0, 1]`. THE per-player rate.** | **YES — render this as `WIN %` (× 100).** |
+| `win_rate` | percent | **`episodes_won / episodes_played`, clamped `[0, 1]`. THE per-player rate.** The `percent` type tells the UI to render it as a whole-number percentage (0.2 → "20%"); it is the view's `primary_column`, so it is the Standings headline. | **YES — this IS the `WIN %` column.** |
 | `wins` | number | All-time episodes the player won (capped 1/episode). | (derivation source) |
 | `episodes_played` | integer | All-time episodes the player played (win-rate denominator). | (derivation source) |
 | `score` | number | DISPLAY-ONLY cumulative won-episode **count**, floored at 0. **Not a rate.** | **NO — never `score / Σ score`.** |

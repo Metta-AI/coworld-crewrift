@@ -86,21 +86,22 @@ retire event for every membership except the keeper:
 Pre-existing duplicates (seeded before this rule) are swept the same way on the
 next `migrate_league` invocation.
 
-## Competition division — score = WON EPISODES (per round), ranked by WIN RATE
+## Competition division — score = role-weighted WON EPISODES, ranked by WIN RATE
 
 Once promoted, a policy competes in the **Competition** division. In short:
-**Competition scores by WINS — one point per episode the entrant won this round
-(capped at 1 per episode, role-agnostic; filler seats never count). The
-leaderboard ranks by win rate over the last 6 hours (episodes won / episodes
-played within the window).**
+**Competition scores by ROLE-WEIGHTED WINS — 3 points per episode the entrant won
+as imposter, 1 point per episode won as crew (each episode scores at most once;
+filler seats never count). The leaderboard ranks by win rate over the last 6
+hours (episodes won / episodes played within the window).**
 
-Each round's **score** counts **the number of episodes the entrant won**: **1
-point per won episode, capped at 1 per episode** regardless of how many of its
-seats won (role-agnostic — winning as imposter or crew counts the same). An
-entrant wins an episode if any of its (non-filler) seats has its per-slot
-`game_results.win` True. The role split of the winning seats
-(`imposter_wins`/`crew_wins`) is tracked for observability only and does **not**
-inflate the score past 1 per episode.
+Each round's **score** is the role-weighted sum over the episodes the entrant
+won: **3 points for an imposter win, 1 point for a crew win, scored at most once
+per episode** regardless of how many of its seats won (if any winning seat was an
+imposter the episode scores 3, else 1). An entrant wins an episode if any of its
+(non-filler) seats has its per-slot `game_results.win` True. The per-seat role
+split of the winning seats (`imposter_wins`/`crew_wins`) is tracked for
+observability; the win-rate leaderboard counts a won episode once regardless of
+role.
 
 **Void/disconnected games are not counted.** Many episodes disconnect mid-game;
 in those broken episodes the game emits no winner and **every player policy
@@ -115,8 +116,9 @@ paths consume — keeping `rank_division` and the round-complete board in lockst
 An excluded round logs `COMMISSIONER_DECISION {"decision":"VOID_GAMES_EXCLUDED", ...}`.
 
 - `_complete_competition_round` (subclass override) sets each entrant's per-round
-  score = won episodes that round, with `episode_wins`/`imposter_wins`/`crew_wins`
-  in `result_metadata` and a `competition_wins` breakdown in `round_display`. A
+  score = 3 × episodes won as imposter + 1 × episodes won as crew that round, with
+  `episode_wins`/`imposter_wins`/`crew_wins`/`points` in `result_metadata` and a
+  `competition_wins` breakdown in `round_display`. A
   `COMMISSIONER_DECISION {"decision":"COMPETITION_WINS", ...}` line is logged per
   entrant.
 - `rank_division` (subclass override) ranks the Competition leaderboard by each
@@ -143,6 +145,32 @@ An excluded round logs `COMMISSIONER_DECISION {"decision":"VOID_GAMES_EXCLUDED",
 > **Note on matchmaking:** seat assignment is **round-robin** — every real entrant
 > plays every round (empty seats topped up with fillers). There is no skill-based
 > matching; the leaderboard only affects displayed standings.
+
+### Per-pod LLM spend cap — $10 per episode, enforced by the Bedrock sidecar
+
+Each player pod may spend at most **$10 (estimated USD) on LLM/Bedrock calls per
+episode** (`MAX_SPEND_PER_POD_USD`, env-overridable via
+`CREWRIFT_PRIME_MAX_SPEND_PER_POD_USD`; the default is baked into the image ENV).
+Enforcement uses the **platform's own Bedrock spend-cap mechanism** (see
+`Metta-AI/metta` — `app_backend/v2/league_settings.py` and
+`job_runner/dispatcher.py`):
+
+1. The commissioner writes the cap into the league's
+   `episode_player_pod_llm_spend_limit_usd` setting
+   (`POST /v2/leagues/{league_id}/settings`, read-merge-write so the
+   team-configured `episodes_per_round`/`round_interval_minutes` are never
+   clobbered) the first time it schedules a Competition round
+   (`_sync_league_spend_limit`). The sync is best-effort: a failed API call logs
+   a warning and is retried next round, never crashing scheduling.
+2. At episode dispatch the platform's job dispatcher resolves that league
+   setting and injects it into every player pod's **Bedrock sidecar** as
+   `BEDROCK_SIDECAR_SPEND_LIMIT_USD`. The sidecar meters each call's token usage
+   against list prices and, once the pod's running total reaches the limit,
+   rejects further calls for the rest of the episode with a standard Bedrock
+   `ThrottlingException` (HTTP 429) — players that already handle throttling
+   need zero new code.
+3. Each scheduled episode also carries the `max_spend_per_pod_usd` tag as
+   observability metadata (what cap the commissioner intended for that episode).
 
 ### Seating — at most ONE real policy per seat, default fillers top up the rest
 

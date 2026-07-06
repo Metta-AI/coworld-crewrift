@@ -11,6 +11,13 @@
 #     platform interview-mode launcher is not wired yet, so an enabled gate would
 #     INFRA-HOLD every candidate forever; interview support will move into the game
 #     itself later). Qualification runs on the three-skill gate only until then.
+#   CREWRIFT_PRIME_MAX_SPEND_PER_POD_USD=10      -> $10 LLM spend cap per player
+#     pod per episode. Enforced via the platform's Bedrock-sidecar mechanism:
+#     the commissioner syncs this into the league's
+#     episode_player_pod_llm_spend_limit_usd setting (POST /v2/leagues/{id}/settings),
+#     which the dispatcher injects into each player pod's Bedrock sidecar as
+#     BEDROCK_SIDECAR_SPEND_LIMIT_USD; also stamped as the max_spend_per_pod_usd
+#     episode tag for observability.
 # The custom app module (app.py) imports the subclass (registering the key) then
 # builds commissioner_app(), which reads COMMISSIONER_KEY from the env.
 FROM --platform=linux/amd64 python:3.13-slim
@@ -19,7 +26,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     COMMISSIONER_KEY=crewrift_prime_skill \
     RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml \
-    CREWRIFT_PRIME_INTERVIEW_ENABLED=0
+    CREWRIFT_PRIME_INTERVIEW_ENABLED=0 \
+    CREWRIFT_PRIME_MAX_SPEND_PER_POD_USD=10
 
 WORKDIR /app
 
