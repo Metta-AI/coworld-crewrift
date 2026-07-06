@@ -152,11 +152,6 @@ proc cliConfigFromArgs(): ReplayCliConfig {.used.} =
     else:
       paths[0].absolutePath()
 
-proc replayConfig(data: ReplayData): GameConfig =
-  ## Returns the game config embedded in a replay.
-  result = defaultGameConfig()
-  result.update(data.configJson)
-
 proc player(sim: SimServer, i: int): string =
   ## Returns color and username for one player.
   let p = sim.players[i]
@@ -1122,7 +1117,7 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
   setCurrentDir(GameDir)
   try:
     var
-      sim = initSimServer(data.replayConfig())
+      sim = initSimServer(data.replayGameConfig())
       replay = initReplayPlayer(data)
       alive: seq[bool]
       tasks: seq[int]
