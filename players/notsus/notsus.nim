@@ -7139,6 +7139,17 @@ proc imposterCounterVoteTarget(
   if not danger.found:
     return
   let scores = bot.effectiveSusScores()
+  if bot.meetingCallCallerColor >= 0 and
+      bot.meetingCallCallerColor < bot.voteChoices.len and
+      bot.voteChoices[bot.meetingCallCallerColor] == danger.slot:
+    let callerTarget = bot.voteSlotForColor(bot.meetingCallCallerColor)
+    if bot.voteTargetSafeForRole(callerTarget):
+      return (
+        true,
+        callerTarget,
+        "countering votes on " & playerColorName(danger.colorIndex) &
+          " with meeting caller " & bot.voteTargetName(callerTarget)
+      )
   var
     pileTarget = VoteUnknown
     pileCount = 0

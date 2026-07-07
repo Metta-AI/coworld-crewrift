@@ -784,8 +784,8 @@ proc chooseSocialVote*(
       return SocialVoteDecision(
         found: true,
         target: state.playerCount,
-        reason: "defending accused imposter " &
-          socialColorName(pressure.colorIndex) & " early with skip",
+        reason: "early partner pressure skip for " &
+          socialColorName(pressure.colorIndex),
         instant: true
       )
   let best = state.bestSocialTarget(scores, roleImposter)
