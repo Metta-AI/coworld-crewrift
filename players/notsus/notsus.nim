@@ -8927,12 +8927,16 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
       bot.playerWorldY()
     ).found
   let actionMask =
-    if nearVent:
+    if fakeTask:
+      0'u8
+    elif nearVent:
       0'u8
     else:
       ButtonA
   bot.intent =
-    if nearVent:
+    if fakeTask:
+      "faking task at " & name & " hold=" & $bot.taskHoldTicks
+    elif nearVent:
       "faking task at " & name & " hold=" & $bot.taskHoldTicks &
         " no action near vent"
     else:
