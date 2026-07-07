@@ -68,7 +68,7 @@ const
   GhostMinStablePixels = 6
   GhostMinTintPixels = 6
   KillTapExtraRadius = 28
-  KillTapRepeatTicks = 6
+  KillTapRepeatTicks = 2
   KillWitnessAvoidRadius = 96
   KillWitnessSelfRadius = 72
   KillWitnessAllowAliveCrew = 1
@@ -581,6 +581,7 @@ type
     knownImposters: array[PlayerColorCount, bool]
     socialGraph: SocialMatrix
     socialClaimKeys: seq[string]
+    hs1ChatSeen: bool
     followingTicks: array[PlayerColorCount, int]
     activeHunterColor: int
     moveAwayUntilTick: int
@@ -1358,6 +1359,10 @@ proc voteTargetName(bot: Bot, target: int): string
 
 proc knownDeadVoteCount(bot: Bot): int
 
+proc criticalCrewVote(bot: Bot): bool
+
+proc urgentCrewVote(bot: Bot): bool
+
 proc imposterKnown(bot: Bot): bool
 
 proc voteTargetSafeForRole(bot: Bot, target: int): bool
@@ -2132,6 +2137,7 @@ proc resetRoundState(bot: var Bot) =
   bot.imposterFakeUntilTick = -1
   bot.imposterWasHunting = false
   bot.imposterProwlIndex = -1
+  bot.hs1ChatSeen = false
   bot.clearFakeTasks()
   bot.cameraLock = NoLock
   bot.cameraScore = 0
@@ -2922,8 +2928,14 @@ proc applyProtocolVotingState(
       bot.voteNavCursor = cursor
   if selfSlot >= 0 and selfSlot < playerCount:
     bot.selfColorIndex = slots[selfSlot].colorIndex
+  var sawHs1 = false
   for line in chatLines:
     bot.voteChatLines.add(line)
+    if line.text.startsWith("HS1 "):
+      sawHs1 = true
+  if sawHs1 and not bot.hs1ChatSeen:
+    bot.hs1ChatSeen = true
+    bot.logEvent("notsus observed HS1 chat, unsafe hunt enabled")
   bot.voteChatText = voteChatTextFromLines(bot.voteChatLines)
   bot.applyMeetingCallToVoting()
   bot.applyVotedAgainstEvidence()
@@ -4673,7 +4685,9 @@ proc voteTargetBaseSafeForRole(bot: Bot, target: int): bool =
       return false
     if directScore < EmergencyButtonStrongSusScore:
       if colorIndex < bot.bodyReportColors.len and
-          bot.bodyReportColors[colorIndex]:
+          bot.bodyReportColors[colorIndex] and
+          not bot.urgentCrewVote() and
+          not bot.criticalCrewVote():
         return false
       if bot.meetingCallKind == VoteCalledButton and
           colorIndex == bot.meetingCallCallerColor:
@@ -9524,7 +9538,9 @@ proc decideImposterMask(bot: var Bot): uint8 {.measure.} =
   bot.taskHoldIndex = -1
   bot.fakeTaskHoldIndex = -1
   bot.imposterFakeUntilTick = -1
-  let hunted = bot.nearestUnclaimedCrewmate(requireSafeKill = true)
+  let hunted = bot.nearestUnclaimedCrewmate(
+    requireSafeKill = not bot.hs1ChatSeen
+  )
   if hunted.found:
     return bot.attackTrackedCrewmate(
       hunted.track,
