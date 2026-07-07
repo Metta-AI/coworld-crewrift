@@ -8744,9 +8744,11 @@ proc reportableBodyVisible(bot: Bot): bool =
   let body = bot.nearestBody()
   body.found and bot.inReportRange(body.x, body.y)
 
-proc imposterActionWouldReportBody(bot: Bot): bool =
-  ## Returns true when an imposter action tap risks reporting a body.
-  bot.reportableBodyVisible() or bot.imposterBodyActionUnsafe().found
+proc imposterActionWouldTriggerMeeting(bot: Bot): bool =
+  ## Returns true when imposter action taps could start a meeting.
+  bot.reportableBodyVisible() or
+    bot.imposterBodyActionUnsafe().found or
+    bot.playerOnButton()
 
 proc reportGoalForBody(
   bot: var Bot,
@@ -9151,7 +9153,7 @@ proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
   ## Returns movement plus a forced kill button tap.
   if bot.frameTick - bot.lastKillTapTick < KillTapRepeatTicks:
     return moveMask and not ButtonA
-  if bot.imposterActionWouldReportBody():
+  if bot.imposterActionWouldTriggerMeeting():
     return moveMask and not ButtonA
   bot.forceActionTap = true
   bot.lastKillTapTick = bot.frameTick
@@ -9766,7 +9768,10 @@ proc sanitizeImposterActionMask(bot: var Bot, mask: uint8): uint8 =
   if (result and ButtonA) == 0:
     return
   let unsafe = bot.imposterBodyActionUnsafe()
-  if not unsafe.found and not bot.reportableBodyVisible():
+  let buttonUnsafe = bot.playerOnButton()
+  if not unsafe.found and
+      not bot.reportableBodyVisible() and
+      not buttonUnsafe:
     return
   result = result and not ButtonA
   bot.desiredMask = bot.desiredMask and not ButtonA
@@ -9777,7 +9782,7 @@ proc sanitizeImposterActionMask(bot: var Bot, mask: uint8): uint8 =
   bot.fakeTaskHoldIndex = -1
   if unsafe.found:
     bot.rememberImposterBodyEscape(unsafe.x, unsafe.y)
-  bot.intent = "suppressing imposter body report tap"
+  bot.intent = "suppressing imposter meeting tap"
   bot.thought(bot.intent)
 
 proc stepUnpackedFrame*(
