@@ -2136,7 +2136,7 @@ proc resetRoundState(bot: var Bot) =
   bot.ghostWanderGoalX = 0
   bot.ghostWanderGoalY = 0
   bot.ghostWanderNextTick = 0
-  bot.role = RoleCrewmate
+  bot.role = RoleUnknown
   bot.isGhost = false
   bot.ghostIconFrames = 0
   bot.imposterKillReady = false
@@ -2496,7 +2496,7 @@ proc updateLocation(bot: var Bot) {.measure.} =
     elif protocolTextReady:
       if bot.voting:
         bot.clearVotingState()
-      if bot.interstitialText == "CREWMATE" and bot.role == RoleUnknown:
+      if bot.interstitialText == "CREWMATE":
         bot.role = RoleCrewmate
       elif bot.interstitialText == "IMPS":
         bot.role = RoleImposter
@@ -3237,7 +3237,10 @@ proc updateProtocolDetections(bot: var Bot, client: ProtocolClient) {.measure.} 
       meetingBodyColor,
       meetingButtonSeen
     )
-  if bot.protocolInterstitialText == "IMPS":
+  if bot.protocolInterstitialText == "CREWMATE":
+    bot.role = RoleCrewmate
+  elif bot.protocolInterstitialText == "IMPS":
+    bot.role = RoleImposter
     for colorIndex, seen in revealImposters:
       if seen:
         bot.knownImposters[colorIndex] = true
@@ -9171,8 +9174,7 @@ proc killCrewmateAction(
   moveMask = bot.applyJiggle(moveMask)
   bot.intent = "kill " & name
   bot.desiredMask = bot.killTapMask(moveMask)
-  if (bot.desiredMask and ButtonA) != 0 and
-      bot.inKillRange(track.x, track.y):
+  if (bot.desiredMask and ButtonA) != 0:
     bot.rememberImposterBodyHazard(
       track.colorIndex,
       track.x,
@@ -9504,6 +9506,7 @@ proc navigateSafeHide(bot: var Bot): uint8 =
 
 proc pathKillCrewmateAction(
   bot: var Bot,
+  track: PlayerTrack,
   chaseX,
   chaseY: int,
   name: string
@@ -9515,6 +9518,12 @@ proc pathKillCrewmateAction(
   bot.imposterFakeUntilTick = -1
   bot.intent = "kill-ready " & pathIntent
   bot.desiredMask = bot.killTapMask(moveMask)
+  if (bot.desiredMask and ButtonA) != 0:
+    bot.rememberImposterBodyHazard(
+      track.colorIndex,
+      chaseX,
+      chaseY
+    )
   bot.controllerMask = bot.desiredMask
   bot.thought(name & " kill ready, tapping while closing")
   bot.controllerMask
@@ -9536,7 +9545,7 @@ proc attackTrackedCrewmate(
           bot.inKillTapRange(track.x, track.y) or
           bot.inKillTapRange(chase.x, chase.y):
         return bot.killCrewmateAction(track, name)
-      return bot.pathKillCrewmateAction(chase.x, chase.y, name)
+      return bot.pathKillCrewmateAction(track, chase.x, chase.y, name)
   bot.goalIndex = -2
   bot.navigateToPoint(chase.x, chase.y, name, 0)
 
