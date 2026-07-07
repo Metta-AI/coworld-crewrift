@@ -142,6 +142,7 @@ const
   BodyEscapeArrivalRadius = 20
   BodyEscapeCommitTicks = sim.TargetFps * 2
   BodyEscapeIgnoreTicks = sim.TargetFps * 10
+  BodyReportSafetyMargin = 16
   SafeHideSearchRadius = 48
   SafeHideArrivalRadius = 4
   ProwlPointSearchRadius = 48
@@ -8632,6 +8633,18 @@ proc inReportRange(bot: Bot, targetX, targetY: int): bool =
     targetY
   )
 
+proc inReportDangerRange(bot: Bot, targetX, targetY: int): bool =
+  ## Returns true when action taps could accidentally report a body.
+  let
+    ax = bot.playerWorldX() + CollisionW div 2
+    ay = bot.playerWorldY() + CollisionH div 2
+    bx = targetX + CollisionW div 2
+    by = targetY + CollisionH div 2
+    dx = ax - bx
+    dy = ay - by
+    range = bot.sim.config.reportRange + BodyReportSafetyMargin
+  dx * dx + dy * dy <= range * range
+
 proc rememberImposterBodyHazard(
   bot: var Bot,
   colorIndex,
@@ -8669,6 +8682,40 @@ proc imposterBodyHazardReportable(
       bestDistance = distance
       result = (true, x, y)
 
+proc imposterBodyActionUnsafe(
+  bot: Bot
+): tuple[found: bool, x: int, y: int] =
+  ## Returns a body point near enough to make imposter action unsafe.
+  if bot.isGhost:
+    return
+  var bestDistance = high(int)
+  for body in bot.visibleBodies:
+    if not bot.inReportDangerRange(body.x, body.y):
+      continue
+    let distance = heuristic(
+      bot.playerWorldX(),
+      bot.playerWorldY(),
+      body.x,
+      body.y
+    )
+    if distance < bestDistance:
+      bestDistance = distance
+      result = (true, body.x, body.y)
+  for i in 0 ..< bot.imposterBodyHazardKnown.len:
+    if not bot.imposterBodyHazardKnown[i]:
+      continue
+    let
+      x = bot.imposterBodyHazardX[i]
+      y = bot.imposterBodyHazardY[i]
+    if x == low(int) or y == low(int):
+      continue
+    if not bot.inReportDangerRange(x, y):
+      continue
+    let distance = heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y)
+    if distance < bestDistance:
+      bestDistance = distance
+      result = (true, x, y)
+
 proc inKillRange(bot: Bot, targetX, targetY: int): bool =
   ## Returns true when the target point is in imposter kill range.
   let
@@ -8699,7 +8746,7 @@ proc reportableBodyVisible(bot: Bot): bool =
 
 proc imposterActionWouldReportBody(bot: Bot): bool =
   ## Returns true when an imposter action tap risks reporting a body.
-  bot.reportableBodyVisible() or bot.imposterBodyHazardReportable().found
+  bot.reportableBodyVisible() or bot.imposterBodyActionUnsafe().found
 
 proc reportGoalForBody(
   bot: var Bot,
@@ -9713,6 +9760,28 @@ proc rememberedDownMask(bot: Bot, mask: uint8): uint8 =
   else:
     mask
 
+proc sanitizeImposterActionMask(bot: var Bot, mask: uint8): uint8 =
+  ## Removes action taps that could report a body as an imposter.
+  result = mask
+  if bot.interstitial or bot.isGhost or not bot.imposterKnown():
+    return
+  if (result and ButtonA) == 0:
+    return
+  let unsafe = bot.imposterBodyActionUnsafe()
+  if not unsafe.found and not bot.reportableBodyVisible():
+    return
+  result = result and not ButtonA
+  bot.desiredMask = bot.desiredMask and not ButtonA
+  bot.controllerMask = bot.controllerMask and not ButtonA
+  bot.forceActionTap = false
+  bot.taskHoldTicks = 0
+  bot.taskHoldIndex = -1
+  bot.fakeTaskHoldIndex = -1
+  if unsafe.found:
+    bot.rememberImposterBodyEscape(unsafe.x, unsafe.y)
+  bot.intent = "suppressing imposter body report tap"
+  bot.thought(bot.intent)
+
 proc stepUnpackedFrame*(
   bot: var Bot,
   frame: openArray[uint8]
@@ -9725,7 +9794,7 @@ proc stepUnpackedFrame*(
   for i, value in frame:
     bot.unpacked[i] = value and 0x0f
   inc bot.frameTick
-  result = bot.decideNextMask()
+  result = bot.sanitizeImposterActionMask(bot.decideNextMask())
   bot.lastMask = bot.rememberedDownMask(result)
 
 proc stepPackedFrame*(
@@ -9741,7 +9810,7 @@ proc stepPackedFrame*(
     bot.packed[i] = value
   unpack4bpp(bot.packed, bot.unpacked)
   inc bot.frameTick
-  result = bot.decideNextMask()
+  result = bot.sanitizeImposterActionMask(bot.decideNextMask())
   bot.lastMask = bot.rememberedDownMask(result)
 
 proc sheetSprite(sheet: Image, cellX, cellY: int): Sprite =
@@ -10679,6 +10748,7 @@ when not defined(italkalotLibrary):
           else:
             profileBlock "decide next mask":
               nextMask = bot.decideNextMask()
+          nextMask = bot.sanitizeImposterActionMask(nextMask)
           if nextMask != 0:
             bot.noteActionActivity()
           if not gui and profileShouldDump(bot.frameTick):
