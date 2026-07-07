@@ -338,6 +338,42 @@ suite "notsus social reasoning":
     check decision.target == state.playerCount
     check decision.instant
 
+  test "imposter skips when public skip already blocks ejection":
+    var
+      state = emptyVoteState()
+      scores: array[SocialPlayerCount, int]
+    state.selfSlot = 6
+    state.selfColor = 6
+    state.knownImposters[6] = true
+    state.knownImposters[7] = true
+    scores[2] = 300
+    state.choices[1] = SocialSkip
+    state.choices[2] = SocialSkip
+    state.choices[3] = SocialSkip
+    state.choices[4] = SocialSkip
+    let decision = chooseSocialVote(state, scores, true, false)
+    check decision.found
+    check decision.target == state.playerCount
+    check decision.instant
+
+  test "imposter does not skip when target pile can still win":
+    var
+      state = emptyVoteState()
+      scores: array[SocialPlayerCount, int]
+    state.selfSlot = 6
+    state.selfColor = 6
+    state.knownImposters[6] = true
+    state.knownImposters[7] = true
+    scores[2] = 300
+    state.choices[1] = SocialSkip
+    state.choices[2] = SocialSkip
+    state.choices[3] = 4
+    state.choices[5] = 4
+    let decision = chooseSocialVote(state, scores, true, false)
+    check decision.found
+    check decision.target == 4
+    check decision.instant
+
   test "imposter does not count committed partner as open skip":
     var
       state = emptyVoteState()

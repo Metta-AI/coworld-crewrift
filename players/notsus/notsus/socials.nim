@@ -598,6 +598,40 @@ proc bestBrigadeTarget(
   if tied:
     result.found = false
 
+proc imposterSkipLocked(state: SocialVoteState): bool =
+  ## Returns true when visible skip votes already prevent an ejection.
+  var
+    targetCounts: array[SocialMaxSlots, int]
+    aliveCount = 0
+    visibleCount = 0
+    skipCount = 0
+    bestTargetCount = 0
+  for slot in 0 ..< state.playerCount:
+    if state.slotAlive[slot]:
+      inc aliveCount
+  for voterColor, choice in state.choices:
+    if voterColor == state.selfColor:
+      continue
+    let voterSlot = state.slotForSocialColor(voterColor)
+    if voterSlot < 0 or
+        voterSlot >= state.playerCount or
+        not state.slotAlive[voterSlot]:
+      continue
+    if choice == SocialUnknown:
+      continue
+    inc visibleCount
+    if choice == SocialSkip:
+      inc skipCount
+    elif choice >= 0 and
+        choice < state.playerCount and
+        state.slotAlive[choice]:
+      inc targetCounts[choice]
+  for count in targetCounts:
+    bestTargetCount = max(bestTargetCount, count)
+  let remainingCount = max(0, aliveCount - visibleCount)
+  skipCount >= SocialImposterBrigadeVotes and
+    skipCount >= bestTargetCount + remainingCount
+
 proc imposterSkipDefense(
   state: SocialVoteState
 ): tuple[found: bool, colorIndex: int, count: int] =
@@ -667,6 +701,13 @@ proc chooseSocialVote*(
         1
       else:
         SocialCrewBrigadeVotes
+  if roleImposter and state.imposterSkipLocked():
+    return SocialVoteDecision(
+      found: true,
+      target: state.playerCount,
+      reason: "visible skip pile already blocks ejection",
+      instant: true
+    )
   if brigade.found and (
     (not roleImposter and brigade.count >= crewBrigadeVotes) or
     (roleImposter and (forced or brigade.count >= SocialImposterBrigadeVotes))
