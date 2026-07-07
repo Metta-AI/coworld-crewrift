@@ -58,6 +58,10 @@ type
     tickCount*: int
     hashFailed*: bool
     failTick*: int
+    # Authoritative end state read straight off the re-simulated engine.
+    gameOver*: bool               # the game reached GameOver in this re-sim
+    winner*: PlayerRole           # winning side (only meaningful once gameOver)
+    timeLimitReached*: bool       # gameOver was a time-limit draw, not a win
 
   VisibilityObservation = object
     observerSlot: int
@@ -1163,6 +1167,13 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
         )
         if sim.phase == Voting:
           sim.addVoteCall(tick, result.events)
+        if sim.phase == GameOver:
+          # Latch the result the moment the game ends -- the replay keeps
+          # playing past GameOver (game-over screen, back to lobby), so the
+          # phase at the final tick is not a reliable signal.
+          result.gameOver = true
+          result.winner = sim.winner
+          result.timeLimitReached = sim.timeLimitReached
         phase = sim.phase
 
       sim.syncPlayers(
@@ -1198,6 +1209,18 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
   finally:
     setCurrentDir(previousDir)
 
+proc outcome*(timeline: ReplayTimeline): string =
+  ## The authoritative team result of the re-simulated game, taken from the
+  ## engine's end state rather than inferred from scores. A re-sim that never
+  ## reached GameOver (including one aborted by a hash failure) is "unknown"; a
+  ## time-limit finish is a "draw"; otherwise the winning side, "imposter" or
+  ## "crew". The draw check must precede the winner check because the engine
+  ## records a draw as finishGame(Crewmate, timeLimitReached = true).
+  if timeline.hashFailed or not timeline.gameOver: "unknown"
+  elif timeline.timeLimitReached: "draw"
+  elif timeline.winner == Imposter: "imposter"
+  else: "crew"
+
 proc printText(timeline: ReplayTimeline, path: string) =
   ## Prints one readable replay timeline.
   echo "replay ", path
@@ -1208,6 +1231,7 @@ proc printText(timeline: ReplayTimeline, path: string) =
     if timeline.hashFailed and tick == timeline.failTick:
       echo "  hash failed"
       fail("hash failed")
+  echo "outcome ", timeline.outcome()
   echo "done"
 
 proc printJsonl(timeline: ReplayTimeline) =
@@ -1235,11 +1259,13 @@ proc printJsonl(timeline: ReplayTimeline) =
     var complete = traceValue("replay")
     complete["complete"] = %false
     complete["fail_tick"] = %timeline.failTick
+    complete["outcome"] = %timeline.outcome()
     echo $standardRow(timeline.failTick, -1, "trace_complete", complete)
     fail("hash failed")
   var complete = traceValue("replay")
   complete["complete"] = %true
   complete["tick_count"] = %timeline.tickCount
+  complete["outcome"] = %timeline.outcome()
   echo $standardRow(timeline.tickCount, -1, "trace_complete", complete)
 
 proc expandReplay(config: ReplayCliConfig) {.used.} =
