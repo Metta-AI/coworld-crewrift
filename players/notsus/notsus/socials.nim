@@ -678,6 +678,51 @@ proc imposterSkipDefense(
       skipCount + openImposterSkips >= result.count:
     result.found = true
 
+proc imposterPartnerPressure(
+  state: SocialVoteState
+): tuple[found: bool, colorIndex: int, count: int] =
+  ## Returns an imposter teammate with any visible vote pressure.
+  var
+    counts: array[SocialMaxSlots, int]
+    skipCount = 0
+    openImposterSkips = 0
+  result.colorIndex = SocialUnknown
+  for voterColor, choice in state.choices:
+    if voterColor == state.selfColor:
+      continue
+    if choice == SocialSkip:
+      inc skipCount
+      continue
+    if choice < 0 or choice >= state.playerCount:
+      continue
+    let targetColor = state.slotColors[choice]
+    if targetColor < 0 or
+        targetColor >= state.knownImposters.len or
+        not state.knownImposters[targetColor] or
+        not state.slotAlive[choice]:
+      continue
+    inc counts[choice]
+  for colorIndex, known in state.knownImposters:
+    if not known:
+      continue
+    let slot = state.slotForSocialColor(colorIndex)
+    if slot < 0 or slot >= state.playerCount or not state.slotAlive[slot]:
+      continue
+    let choice = state.choices[colorIndex]
+    if colorIndex == state.selfColor and (
+      choice == SocialUnknown or choice == SocialSkip
+    ):
+      inc openImposterSkips
+    elif colorIndex != state.selfColor and choice == SocialUnknown:
+      inc openImposterSkips
+  for slot in 0 ..< state.playerCount:
+    if counts[slot] <= result.count:
+      continue
+    result.count = counts[slot]
+    result.colorIndex = state.slotColors[slot]
+  if result.count > 0 and skipCount + openImposterSkips >= result.count:
+    result.found = true
+
 proc chooseSocialVote*(
   state: SocialVoteState,
   scores: openArray[int],
@@ -732,6 +777,15 @@ proc chooseSocialVote*(
         target: state.playerCount,
         reason: "defending accused imposter " &
           socialColorName(defense.colorIndex) & " with skip",
+        instant: true
+      )
+    let pressure = state.imposterPartnerPressure()
+    if pressure.found:
+      return SocialVoteDecision(
+        found: true,
+        target: state.playerCount,
+        reason: "defending accused imposter " &
+          socialColorName(pressure.colorIndex) & " early with skip",
         instant: true
       )
   let best = state.bestSocialTarget(scores, roleImposter)

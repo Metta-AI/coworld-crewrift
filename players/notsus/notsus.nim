@@ -94,8 +94,8 @@ const
   VentSusWindowTicks = sim.TargetFps * 4
   VentSusScore = 300
   FollowingTriggerTicks = 2
-  RunawayTriggerRadius = 32
-  RunawayCooldownPercent = 80
+  RunawayTriggerRadius = 48
+  RunawayCooldownPercent = 50
   MoveAwayTicks = 24
   RunawayLoopTicks = MoveAwayTicks * 5
   RunawayRestartDelayTicks = sim.TargetFps * 8
@@ -1368,6 +1368,8 @@ proc urgentCrewVote(bot: Bot): bool
 
 proc imposterKnown(bot: Bot): bool
 
+proc sameOwnerColor(bot: Bot, colorIndex: int): bool
+
 proc voteTargetSafeForRole(bot: Bot, target: int): bool
 
 proc votingEvidenceText(bot: Bot): string
@@ -1866,11 +1868,13 @@ proc playerDistanceSqToSelf(bot: Bot, colorIndex: int): int =
     dy = bot.playerWorldY() - track.y
   dx * dx + dy * dy
 
-proc closestPlayerWithin(bot: Bot, radius: int): int =
-  ## Returns the closest tracked player inside one radius.
+proc closestRunawayThreatWithin(bot: Bot, radius: int): int =
+  ## Returns the closest opponent-owner player inside one radius.
   var bestDistance = radius * radius + 1
   result = VoteUnknown
   for colorIndex in 0 ..< PlayerColorCount:
+    if bot.sameOwnerColor(colorIndex):
+      continue
     let distance = bot.playerDistanceSqToSelf(colorIndex)
     if distance > radius * radius:
       continue
@@ -5354,7 +5358,7 @@ proc updateRunawayState(bot: var Bot) =
     if bot.activeHunterColor != VoteUnknown:
       bot.clearRunawayState()
     return
-  let threatColor = bot.closestPlayerWithin(RunawayTriggerRadius)
+  let threatColor = bot.closestRunawayThreatWithin(RunawayTriggerRadius)
   if bot.runawayActive():
     return
   if bot.moveAwayActive():
