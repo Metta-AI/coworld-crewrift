@@ -68,7 +68,7 @@ const
   GhostMinStablePixels = 6
   GhostMinTintPixels = 6
   KillTapExtraRadius = 28
-  KillTapRepeatTicks = 2
+  KillTapRepeatTicks = 1
   KillWitnessAvoidRadius = 96
   KillWitnessSelfRadius = 72
   KillWitnessAllowAliveCrew = 1
@@ -104,7 +104,7 @@ const
   EmergencyButtonCooldownPercent = 95
   EmergencyButtonFollowingTicks = sim.TargetFps div 2
   EmergencyButtonStalkerScore = StalkerMaxScore div 2
-  ImposterHuntCooldownPercent = 50
+  ImposterHuntCooldownPercent = 20
   VoteDeadlineTicks = sim.VoteTimerTicks
   VoteListenBaseTicks = VoteDeadlineTicks div 4
   VoteListenJitterTicks = VoteDeadlineTicks div 16
@@ -9671,9 +9671,7 @@ proc decideImposterMask(bot: var Bot): uint8 {.measure.} =
   bot.taskHoldIndex = -1
   bot.fakeTaskHoldIndex = -1
   bot.imposterFakeUntilTick = -1
-  let hunted = bot.nearestUnclaimedCrewmate(
-    requireSafeKill = not bot.hs1ChatSeen
-  )
+  let hunted = bot.nearestUnclaimedCrewmate()
   if hunted.found:
     return bot.attackTrackedCrewmate(
       hunted.track,
