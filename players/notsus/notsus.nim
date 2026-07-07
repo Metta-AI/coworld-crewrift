@@ -548,6 +548,9 @@ type
     lastKillBodyY: int
     lastImposterBodyX: int
     lastImposterBodyY: int
+    imposterBodyHazardKnown: array[PlayerColorCount, bool]
+    imposterBodyHazardX: array[PlayerColorCount, int]
+    imposterBodyHazardY: array[PlayerColorCount, int]
     imposterBodyEscapeUntilTick: int
     imposterBodyIgnoreUntilTick: int
     bodySusColor: int
@@ -2171,6 +2174,10 @@ proc resetRoundState(bot: var Bot) =
   bot.lastKillBodyY = low(int)
   bot.lastImposterBodyX = low(int)
   bot.lastImposterBodyY = low(int)
+  for i in 0 ..< bot.imposterBodyHazardKnown.len:
+    bot.imposterBodyHazardKnown[i] = false
+    bot.imposterBodyHazardX[i] = low(int)
+    bot.imposterBodyHazardY[i] = low(int)
   bot.imposterBodyEscapeUntilTick = 0
   bot.imposterBodyIgnoreUntilTick = 0
   bot.bodySusColor = VoteUnknown
@@ -8610,6 +8617,43 @@ proc inReportRange(bot: Bot, targetX, targetY: int): bool =
     targetY
   )
 
+proc rememberImposterBodyHazard(
+  bot: var Bot,
+  colorIndex,
+  x,
+  y: int
+) =
+  ## Remembers a body point that an imposter must not report by accident.
+  if colorIndex < 0 or colorIndex >= bot.imposterBodyHazardKnown.len:
+    return
+  if not bot.isGhost:
+    bot.role = RoleImposter
+  bot.imposterBodyHazardKnown[colorIndex] = true
+  bot.imposterBodyHazardX[colorIndex] = x
+  bot.imposterBodyHazardY[colorIndex] = y
+
+proc imposterBodyHazardReportable(
+  bot: Bot
+): tuple[found: bool, x: int, y: int] =
+  ## Returns a remembered body that is currently in report range.
+  if bot.isGhost:
+    return
+  var bestDistance = high(int)
+  for i in 0 ..< bot.imposterBodyHazardKnown.len:
+    if not bot.imposterBodyHazardKnown[i]:
+      continue
+    let
+      x = bot.imposterBodyHazardX[i]
+      y = bot.imposterBodyHazardY[i]
+    if x == low(int) or y == low(int):
+      continue
+    if not bot.inReportRange(x, y):
+      continue
+    let distance = heuristic(bot.playerWorldX(), bot.playerWorldY(), x, y)
+    if distance < bestDistance:
+      bestDistance = distance
+      result = (true, x, y)
+
 proc inKillRange(bot: Bot, targetX, targetY: int): bool =
   ## Returns true when the target point is in imposter kill range.
   let
@@ -8637,6 +8681,10 @@ proc reportableBodyVisible(bot: Bot): bool =
   ## Returns true when tapping action would report a visible body.
   let body = bot.nearestBody()
   body.found and bot.inReportRange(body.x, body.y)
+
+proc imposterActionWouldReportBody(bot: Bot): bool =
+  ## Returns true when an imposter action tap risks reporting a body.
+  bot.reportableBodyVisible() or bot.imposterBodyHazardReportable().found
 
 proc reportGoalForBody(
   bot: var Bot,
@@ -8858,8 +8906,16 @@ proc holdTaskAction(bot: var Bot, name: string): uint8 =
   let fakeTask =
     bot.imposterKnown() and not bot.isGhost
   if fakeTask:
+    let hazard = bot.imposterBodyHazardReportable()
+    if hazard.found:
+      bot.taskHoldTicks = 0
+      bot.taskHoldIndex = -1
+      bot.fakeTaskHoldIndex = -1
+      bot.logEvent("notsus fake task canceled near remembered body")
+      return bot.escapeBodyAction(hazard.x, hazard.y)
     let body = bot.nearestBody()
     if body.found:
+      bot.rememberImposterBodyHazard(body.colorIndex, body.x, body.y)
       bot.taskHoldTicks = 0
       bot.taskHoldIndex = -1
       bot.fakeTaskHoldIndex = -1
@@ -9033,7 +9089,7 @@ proc killTapMask(bot: var Bot, moveMask: uint8): uint8 =
   ## Returns movement plus a forced kill button tap.
   if bot.frameTick - bot.lastKillTapTick < KillTapRepeatTicks:
     return moveMask and not ButtonA
-  if bot.reportableBodyVisible():
+  if bot.imposterActionWouldReportBody():
     return moveMask and not ButtonA
   bot.forceActionTap = true
   bot.lastKillTapTick = bot.frameTick
@@ -9051,6 +9107,13 @@ proc killCrewmateAction(
   moveMask = bot.applyJiggle(moveMask)
   bot.intent = "kill " & name
   bot.desiredMask = bot.killTapMask(moveMask)
+  if (bot.desiredMask and ButtonA) != 0 and
+      bot.inKillRange(track.x, track.y):
+    bot.rememberImposterBodyHazard(
+      track.colorIndex,
+      track.x,
+      track.y
+    )
   bot.controllerMask = bot.desiredMask
   bot.clearPath()
   bot.thought(name & " in range, tapping kill while closing")
@@ -9216,8 +9279,16 @@ proc visibleBodyAction(bot: var Bot): tuple[found: bool, mask: uint8] =
     return
   let body = bot.nearestBody()
   if not body.found:
+    let hazard = bot.imposterBodyHazardReportable()
+    if hazard.found:
+      return (true, bot.escapeBodyAction(hazard.x, hazard.y))
     return
   bot.updateKillEvidence()
+  if bot.imposterKnown():
+    bot.rememberImposterBodyHazard(body.colorIndex, body.x, body.y)
+  let hazard = bot.imposterBodyHazardReportable()
+  if hazard.found:
+    return (true, bot.escapeBodyAction(hazard.x, hazard.y))
   if not bot.imposterKnown():
     bot.queueBodySeen(body.x, body.y)
   if bot.imposterKnown():
@@ -9749,6 +9820,10 @@ proc initBot(mapPath = ""): Bot {.measure.} =
   result.lastBodyReportY = low(int)
   result.lastKillBodyX = low(int)
   result.lastKillBodyY = low(int)
+  for i in 0 ..< result.imposterBodyHazardKnown.len:
+    result.imposterBodyHazardKnown[i] = false
+    result.imposterBodyHazardX[i] = low(int)
+    result.imposterBodyHazardY[i] = low(int)
   result.lastKillTapTick = -KillTapRepeatTicks
   result.bodySusColor = VoteUnknown
   result.hadVisibleBody = false
