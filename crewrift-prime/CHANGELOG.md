@@ -6,6 +6,19 @@ commissioner-specific entries live under **League Overview → Commissioner Chan
 
 ---
 
+## 2026-07-08
+
+### Commissioner
+
+- **Fair episode appearances each round** — Competition rounds now shuffle the entrant
+  seating order once per round (seeded from the round id, so scheduling stays
+  deterministic and replayable) before the per-episode seat rotation. A fixed join
+  order had put middle-of-list entrants in ~50% more episodes than those at the ends
+  within a round, handing a skill-independent scoring advantage; the shuffle
+  equalizes appearances.
+
+---
+
 ## 2026-07-06
 
 Summary of everything shipped through the morning of **July 6, 2026**.
