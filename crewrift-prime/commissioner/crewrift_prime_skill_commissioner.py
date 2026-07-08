@@ -68,8 +68,10 @@ Thresholds are constants (env-overridable) in decision.py.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import random
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -813,6 +815,22 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         num_episodes = self._competition_num_episodes(view, len(entries))
         variant_id = self._competition_variant_id(round_start)
         entrant_ids = [entry.policy_version_id for entry in entries]
+        # Fairness: PERMUTE the entrant order once per round before the per-episode
+        # seat rotation below. `_competition_episode` seats a sliding window of the
+        # first NUM_SEATS distinct players, shifted by `episode_index`; with a FIXED
+        # entrant order that window is a rolling band over a stable seed order, so
+        # entrants near the MIDDLE of the list appear in ~50% more of a round's
+        # episodes than those at the ends (a bell curve over seed_order, which tracks
+        # join order). Appearances drive round score, so a stable order hands a
+        # standing, skill-independent advantage to whoever sits mid-list. Shuffling
+        # per round (seeded from round_id so it is deterministic and replayable, and
+        # differs every round so no entrant is permanently advantaged) precesses the
+        # band and equalizes per-entrant appearances across rounds — the
+        # `shuffled_window` principle applied to this closed-roster scheduler.
+        _seed = int.from_bytes(
+            hashlib.sha256(str(round_start.round_id).encode()).digest()[:8], "big"
+        )
+        random.Random(_seed).shuffle(entrant_ids)
         # Map each real entrant policy to its PLAYER so a single player can never
         # occupy two seats in one episode — even across two DIFFERENT policy
         # versions they submitted. Fillers (and any policy with no known player)
