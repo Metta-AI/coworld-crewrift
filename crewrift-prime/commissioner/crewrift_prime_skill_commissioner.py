@@ -191,6 +191,18 @@ STANDINGS_WINDOW_HOURS = _standings_window_hours()
 # player-legible: describe the behavior change, not the code.
 PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
     CommissionerChangelogEntry(
+        date="2026-07-08",
+        category="matchmaking",
+        title="Fair episode appearances each round",
+        detail=(
+            "Each Competition round now shuffles the entrant seating order (deterministically "
+            "per round, so replays match) before rotating who sits each episode. Previously "
+            "entrants near the middle of the join-order list appeared in roughly 50% more "
+            "episodes than those at the ends within a round, which gave a skill-independent "
+            "scoring advantage; the shuffle equalizes per-entrant appearances within every round."
+        ),
+    ),
+    CommissionerChangelogEntry(
         date="2026-07-06",
         category="overview",
         title="League update through Jul 6",
