@@ -176,6 +176,37 @@ NUM_CREW_SEATS = NUM_SEATS - NUM_IMPOSTER_SEATS
 # Episode-request tag marking a role-pinned division round (observability only).
 _ROLE_LEAGUE_TAG = "role_league"
 
+# --- Champions (advanced) division (2026-07-08) ------------------------------
+# The Champions division is the ADVANCED mixed game: identical seating/scoring to
+# the Competition ("Both") division, but only PROVEN policies are seated. A policy
+# earns a Champions seat by its recent Competition FORM: its mean role-weighted
+# round score across the platform's recent Competition results (``RoundStart.
+# recent_results``, which carry each policy's per-round role-weighted ``score``)
+# must be >= CHAMPION_MIN_MEAN_SCORE over at least CHAMPION_MIN_ROUNDS scored
+# rounds. Both are env-overridable on the hosted runnable with no rebuild. When
+# FEWER than 2 policies qualify, the Champions round has nothing to grade (a
+# 1-entrant mixed game is meaningless) and dispatches no episodes.
+#
+# NOTE ON THE METRIC: RoundStart.recent_results exposes only the per-(round,
+# policy) role-weighted ``score`` (not episodes played), so the gate uses MEAN
+# ROUND SCORE — the same role-weighted points the Standings board accumulates —
+# rather than raw win rate. A policy that consistently scores in Competition is,
+# by construction, one that consistently wins.
+def _f_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    try:
+        return float(raw) if raw is not None and raw.strip() else default
+    except ValueError:
+        return default
+
+
+CHAMPION_MIN_MEAN_SCORE = _f_env("CREWRIFT_PRIME_CHAMPION_MIN_MEAN_SCORE", 3.0)
+CHAMPION_MIN_ROUNDS = int(_f_env("CREWRIFT_PRIME_CHAMPION_MIN_ROUNDS", 2))
+# Episode-request tag marking a Champions (advanced) division round + the mean
+# Competition round score the seated entrant carried in (observability only).
+_CHAMPIONS_LEAGUE_TAG = "champions_league"
+_CHAMPION_MEAN_SCORE_TAG = "champion_mean_score"
+
 # --- Standings recency window (2026-07-02) -----------------------------------
 # The main Competition "Standings" board can optionally grade players on RECENT
 # merit only: when enabled, only rounds whose gameplay completed within the last
@@ -478,6 +509,26 @@ _ONE_POLICY_PER_PLAYER = os.getenv(
 # How many self-play episodes the qualifier xp request runs (env-overridable). One
 # game already exercises every role in self-play; more reduces single-game variance.
 _QUALIFIER_NUM_EPISODES = max(int(os.getenv("CREWRIFT_PRIME_QUALIFIER_EPISODES", "1")), 1)
+
+# Max submitted/qualifying memberships to qualify in a SINGLE migrate_league pass.
+#
+# `qualify_submission` BLOCKS on a real self-play qualifier game (~250s
+# create->complete) plus an LLM interview, all run SERIALLY. The platform's
+# qualify pass wraps the whole `migrate_league` call in a single request timeout
+# (`_QUALIFY_PASS_REQUEST_TIMEOUT_SECONDS`, ~2100s in metta). If more than a
+# handful of policies are pending, qualifying them ALL in one pass exceeds that
+# timeout: the pass raises TimeoutError, ZERO events are applied, the backlog
+# never drains, and — because the qualify pass and round scheduling contend for
+# the same per-league commissioner container — round scheduling is starved too
+# (no new rounds get created for ANY division).
+#
+# So we bound each pass to at most this many memberships (oldest-id first for a
+# stable, fair order); the remainder are picked up on subsequent passes. Each
+# pass then completes well within the timeout and the backlog drains
+# incrementally. Env-overridable without a rebuild; keep the product
+# (`_MAX_QUALIFY_PER_PASS` * per-game wall) safely under the platform's qualify
+# pass timeout.
+_MAX_QUALIFY_PER_PASS = max(int(os.getenv("CREWRIFT_PRIME_MAX_QUALIFY_PER_PASS", "3")), 1)
 
 # Default "filler" player policies used to TOP UP a Competition game to NUM_SEATS
 # when fewer than NUM_SEATS real entrants are competing. The closed-roster 8-seat
@@ -1375,6 +1426,13 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         Competition), a hold (stay qualifying), or a DQ. All other memberships
         defer to the stock migration (legacy division restructure).
 
+        BOUNDED PER PASS: qualification blocks on a real self-play game + interview
+        per membership, run serially, and the platform wraps the whole call in one
+        request timeout. We therefore qualify at most ``_MAX_QUALIFY_PER_PASS``
+        memberships per pass (oldest-id first), draining any larger backlog over
+        successive passes so a pass never times out (which would apply zero events
+        and starve round scheduling).
+
         NOTE for the platform: to make qualification fire promptly on each new
         submission, the platform must invoke this migration hook when a policy is
         submitted. There is no other commissioner entrypoint that observes a new
@@ -1390,10 +1448,18 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         result = super().migrate_league(ctx)
         events = list(result.policy_membership_events)
         target_division_id = _competition_division_id_from_snapshots(ctx.divisions)
-        for membership in ctx.memberships:
-            status = _status_str(membership.status)
-            if status not in _SUBMITTED_STATUSES:
-                continue
+        # Qualify at most `_MAX_QUALIFY_PER_PASS` memberships per pass. Each
+        # `qualify_submission` blocks on a ~250s self-play game + LLM interview run
+        # serially, and the platform wraps this whole call in one request timeout;
+        # qualifying an unbounded backlog in a single pass would time out, apply
+        # ZERO events (so the backlog never drains), and starve round scheduling
+        # (which shares the per-league commissioner container). We take a stable,
+        # fair slice (oldest-id first) and let later passes handle the rest.
+        pending = sorted(
+            (m for m in ctx.memberships if _status_str(m.status) in _SUBMITTED_STATUSES),
+            key=lambda m: str(m.id),
+        )
+        for membership in pending[:_MAX_QUALIFY_PER_PASS]:
             events.append(self.qualify_submission(membership, target_division_id))
         if _ONE_POLICY_PER_PLAYER:
             events = _enforce_one_policy_per_player(ctx, events, target_division_id)

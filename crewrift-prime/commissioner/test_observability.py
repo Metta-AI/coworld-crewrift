@@ -429,6 +429,33 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
         # both submitted/qualifying got an xp request created
         self.assertEqual(len(commissioner._xp_client.created), 2)
 
+    def test_migrate_league_bounds_qualifications_per_pass(self) -> None:
+        # A large pending backlog must be qualified in bounded slices so a single
+        # migrate_league pass can't exceed the platform's qualify-pass timeout
+        # (which would apply zero events and stall scheduling). Each pass qualifies
+        # at most _MAX_QUALIFY_PER_PASS memberships.
+        import crewrift_prime_skill_commissioner as mod
+
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
+        _wire_interview(commissioner)
+        league_id = uuid4()
+        pending = [_membership("qualifying") for _ in range(mod._MAX_QUALIFY_PER_PASS + 4)]
+        ctx = LeagueMigrationContext(
+            league=LeagueSnapshot(id=league_id, commissioner_key="container", commissioner_config=None),
+            divisions=_division_snapshots(league_id),
+            memberships=list(pending),
+        )
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(ctx)
+        # Only up to the cap run a qualifier this pass; the rest wait for later passes.
+        self.assertEqual(len(commissioner._xp_client.created), mod._MAX_QUALIFY_PER_PASS)
+        qualified_ids = {e.league_policy_membership_id for e in result.policy_membership_events}
+        self.assertEqual(len(qualified_ids), mod._MAX_QUALIFY_PER_PASS)
+        # The slice is a stable oldest-id-first prefix, so it's deterministic.
+        expected = {m.id for m in sorted(pending, key=lambda m: str(m.id))[: mod._MAX_QUALIFY_PER_PASS]}
+        self.assertEqual(qualified_ids, expected)
+
 
 class OnePolicyPerPlayerTest(unittest.TestCase):
     """Tournament rule: a player fields at most ONE active Competition policy.
