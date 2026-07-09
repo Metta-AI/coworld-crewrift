@@ -435,6 +435,24 @@ class XpRequestClient:
             raise XpRequestInfraError(f"run detail for {xreq_id}: unexpected shape")
         return detail
 
+    def list_my_experience_requests(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        """List the caller's own experience requests (most recent first).
+
+        Returns the raw ``entries`` rows from ``GET /v2/experience-requests?mine=true``.
+        Each row carries ``id``, ``status``, ``notes``, ``target_division_id`` and
+        ``policy_version_ids`` — the fields the commissioner uses to rediscover its own
+        in-flight qualifier runs WITHOUT blocking on a game or persisting an xreq map.
+        Any HTTP/auth/network failure is normalized to :class:`XpRequestInfraError`.
+        """
+        query = urllib.parse.urlencode({"mine": "true", "limit": str(max(1, min(limit, 1000)))})
+        payload = self._get(f"/v2/experience-requests?{query}")
+        if not isinstance(payload, dict):
+            raise XpRequestInfraError(f"list experience requests: unexpected shape {type(payload)}")
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            raise XpRequestInfraError("list experience requests: entries not a list")
+        return [row for row in entries if isinstance(row, dict)]
+
     def get_episodes(self, xreq_id: str) -> list[EpisodeRow]:
         rows = self._get(f"/v2/experience-requests/{xreq_id}/episodes")
         if not isinstance(rows, list):

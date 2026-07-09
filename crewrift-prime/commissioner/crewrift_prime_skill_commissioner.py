@@ -532,6 +532,19 @@ _QUALIFIER_NUM_EPISODES = max(int(os.getenv("CREWRIFT_PRIME_QUALIFIER_EPISODES",
 # (`_MAX_QUALIFY_PER_PASS` * per-game wall) safely under that timeout.
 _MAX_QUALIFY_PER_PASS = max(int(os.getenv("CREWRIFT_PRIME_MAX_QUALIFY_PER_PASS", "6")), 1)
 
+# Notes marker stamped on every qualifier experience request. `migrate_league` is
+# NON-BLOCKING: it launches a qualifier run and returns immediately, then on later
+# passes rediscovers its own in-flight/completed runs by listing the caller's
+# experience requests and matching this marker + the target division + the roster
+# policy_version. It must therefore be a stable, unique-enough sentinel. (The
+# platform surfaces `notes`, `target_division_id`, and `policy_version_ids` on the
+# experience-request list rows precisely so this correlation needs no per-membership
+# state channel, which `migrate_league` does not have.)
+_QUALIFIER_NOTES = "crewrift-prime qualifier (event-driven)"
+# Experience-request statuses that mean the qualifier run has settled (score it now)
+# vs. is still in flight (leave the membership qualifying, no event this pass).
+_TERMINAL_XREQ_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "error"})
+
 # Default "filler" player policies used to TOP UP a Competition game to NUM_SEATS
 # when fewer than NUM_SEATS real entrants are competing. The closed-roster 8-seat
 # crewrift game cannot dispatch with empty seats, so when e.g. only 3 real policies
@@ -1418,27 +1431,34 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
     # ---- event-driven qualification (submission -> xp request -> results JSON) -
 
     def migrate_league(self, ctx: LeagueMigrationContext) -> LeagueMigrationResult:
-        """Submission seam: qualify every submitted/qualifying policy.
+        """Submission seam: drive event-driven qualification WITHOUT blocking.
 
         The stock protocol carries no per-submission message, so ``migrate_league``
         — which receives every membership with its status and returns
-        ``policy_membership_events`` — is the seam we react on. For each membership
-        whose status is ``submitted``/``qualifying`` we run the full
-        xp-request -> replay-parse -> evaluate loop and emit a promotion (to
-        Competition), a hold (stay qualifying), or a DQ. All other memberships
-        defer to the stock migration (legacy division restructure).
+        ``policy_membership_events`` — is the seam we react on. All other
+        memberships defer to the stock migration (legacy division restructure).
 
-        BOUNDED PER PASS: qualification blocks on a real self-play game + interview
-        per membership, run serially, and the platform wraps the whole call in one
-        request timeout. We therefore qualify at most ``_MAX_QUALIFY_PER_PASS``
-        memberships per pass (oldest-id first), draining any larger backlog over
-        successive passes so a pass never times out (which would apply zero events
-        and starve round scheduling).
+        NON-BLOCKING (this is the important invariant): ``migrate_league`` is invoked
+        by TWO platform paths that send the IDENTICAL wire message — the structural
+        migration (tight ~240s request timeout) and the dedicated qualify pass
+        (~2100s). If this method blocked on a ~250s self-play qualifier game (as it
+        used to), the structural caller would TimeoutError, apply ZERO events, and —
+        because the platform then never advances ``commissioner_migration_version`` —
+        starve round scheduling for EVERY division indefinitely (the Crewrift Prime
+        stall). So we never block on a game here. Instead, per pending membership we:
 
-        NOTE for the platform: to make qualification fire promptly on each new
-        submission, the platform must invoke this migration hook when a policy is
-        submitted. There is no other commissioner entrypoint that observes a new
-        submission (see module docstring / README).
+        - LAUNCH a qualifier experience request and return immediately (no poll), or
+        - if one is already IN FLIGHT for that policy, leave the membership qualifying
+          (no event this pass), or
+        - if its qualifier run has SETTLED, score it from the completed episode's
+          results JSON (fast reads only) and emit promote/hold/DQ.
+
+        In-flight runs are rediscovered statelessly by listing the caller's own
+        experience requests and matching the ``_QUALIFIER_NOTES`` marker + target
+        division + roster ``policy_version`` (the platform surfaces these on the list
+        rows), so we need no per-membership state channel — which this hook lacks.
+        A bounded slice (``_MAX_QUALIFY_PER_PASS``, oldest-id first) is launched per
+        pass; because launches don't block, the whole call stays fast for both callers.
 
         TOURNAMENT RULE — one policy per player: after qualification events are
         drafted, :func:`_enforce_one_policy_per_player` retires (supersedes) any
@@ -1450,49 +1470,147 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         result = super().migrate_league(ctx)
         events = list(result.policy_membership_events)
         target_division_id = _competition_division_id_from_snapshots(ctx.divisions)
-        # Qualify at most `_MAX_QUALIFY_PER_PASS` memberships per pass. Each
-        # `qualify_submission` blocks on a ~250s self-play game + LLM interview run
-        # serially, and the platform wraps this whole call in one request timeout;
-        # qualifying an unbounded backlog in a single pass would time out, apply
-        # ZERO events (so the backlog never drains), and starve round scheduling
-        # (which shares the per-league commissioner container). We take a stable,
-        # fair slice (oldest-id first) and let later passes handle the rest.
+
         pending = sorted(
             (m for m in ctx.memberships if _status_str(m.status) in _SUBMITTED_STATUSES),
             key=lambda m: str(m.id),
         )
-        for membership in pending[:_MAX_QUALIFY_PER_PASS]:
-            events.append(self.qualify_submission(membership, target_division_id))
+        # Map policy_version_id -> its latest qualifier experience-request row, so we
+        # can tell "not started" from "in flight" from "settled" without blocking. A
+        # transport failure here is an infra non-signal: skip qualification this pass
+        # (never DQ), the round runner retries next cadence tick.
+        try:
+            qualifiers_by_policy = self._latest_qualifier_runs_by_policy()
+        except XpRequestInfraError:
+            qualifiers_by_policy = {}
+
+        launched = 0
+        for membership in pending:
+            policy_version_id = str(membership.policy_version_id)
+            existing = qualifiers_by_policy.get(policy_version_id)
+            if existing is None:
+                # No qualifier yet: launch one (non-blocking) up to the per-pass cap.
+                if launched >= _MAX_QUALIFY_PER_PASS:
+                    continue
+                if self._launch_qualifier(membership):
+                    launched += 1
+                # Either way, no decision this pass — we score it once it settles.
+                continue
+            status = str(existing.get("status") or "").lower()
+            if status not in _TERMINAL_XREQ_STATUSES:
+                # Still running: leave the membership qualifying, decide when it settles.
+                continue
+            # Settled: score it from the completed run (fast reads only, no game wait).
+            events.append(
+                self._score_settled_qualifier(
+                    membership, str(existing.get("id") or ""), target_division_id
+                )
+            )
+
         if _ONE_POLICY_PER_PLAYER:
             events = _enforce_one_policy_per_player(ctx, events, target_division_id)
         return LeagueMigrationResult(policy_membership_events=events)
+
+    def _latest_qualifier_runs_by_policy(self) -> dict[str, dict[str, Any]]:
+        """Map policy_version_id -> its most-recent qualifier experience-request row.
+
+        Lists the caller's own experience requests and keeps only this commissioner's
+        qualifiers (``notes == _QUALIFIER_NOTES``). Rows are returned newest-first, so
+        the first row seen per policy is the latest. Used to classify each pending
+        membership as not-started / in-flight / settled without blocking on a game.
+        """
+        latest: dict[str, dict[str, Any]] = {}
+        for row in self._xp_request_client().list_my_experience_requests():
+            if str(row.get("notes") or "") != _QUALIFIER_NOTES:
+                continue
+            for policy_version_id in row.get("policy_version_ids") or []:
+                pv_id = str(policy_version_id)
+                if pv_id not in latest:  # newest-first: keep the first (latest) row.
+                    latest[pv_id] = row
+        return latest
+
+    def _launch_qualifier(self, membership: MembershipSnapshot) -> bool:
+        """Create (do NOT poll) a self-play qualifier xp request for a membership.
+
+        Returns True if a run was launched. An infra failure (e.g. dispatch 5xx) is a
+        non-signal: return False so we retry on a later pass rather than DQ.
+        """
+        try:
+            self._xp_request_client().create_experience_request(
+                division_id=str(membership.division_id),
+                policy_version_id=str(membership.policy_version_id),
+                num_episodes=_QUALIFIER_NUM_EPISODES,
+                notes=_QUALIFIER_NOTES,
+            )
+            return True
+        except XpRequestInfraError:
+            return False
+
+    def _score_settled_qualifier(
+        self,
+        membership: MembershipSnapshot,
+        xreq_id: str,
+        target_division_id: UUID | None,
+    ) -> ModelsPolicyMembershipEventChange:
+        """Score an already-SETTLED qualifier run and return the membership event.
+
+        Fetches the settled run's episodes (fast; no poll) and evaluates the strict
+        gate — the same promote/hold/DQ decision as before, minus the blocking wait.
+        A transport failure is an infra hold (retry next pass, never DQ).
+        """
+        if not xreq_id:
+            return self._infra_hold_event(membership, "qualifier run missing id")
+        try:
+            detail = self._xp_request_client().get_run_detail(xreq_id)
+            episodes = self._xp_request_client().get_episodes(xreq_id)
+        except XpRequestInfraError as exc:
+            return self._infra_hold_event(membership, f"reading qualifier run failed: {exc}")
+        run = XpRequestRun(
+            xreq_id=xreq_id,
+            status=str(detail.get("status") or "").lower() or None,
+            episodes=episodes,
+            detail=detail,
+        )
+        return self._evaluate_qualifier_run(membership, run, target_division_id)
 
     def qualify_submission(
         self,
         membership: MembershipSnapshot,
         target_division_id: UUID | None,
     ) -> ModelsPolicyMembershipEventChange:
-        """Run the qualification loop for ONE submitted policy and return its event.
+        """BLOCKING create+poll+evaluate for ONE policy (kept for tests/ad-hoc use).
 
-        Steps: create + poll a self-play xp request for the policy, read its
-        per-slot results JSON, evaluate the strict gate, and return the membership
-        change — promote to ``target_division_id`` on pass, hold (status qualifying)
-        on infra/missing-results failure, DQ on a genuine non-completion. Emits the
-        same ``COMMISSIONER_DECISION`` log + evidence as the legacy path. Never
-        raises: infra failures become holds.
+        The production path is now non-blocking (``migrate_league`` launches and later
+        scores settled runs via :meth:`_evaluate_qualifier_run`); this wrapper runs the
+        full create->poll->evaluate loop end to end and is retained so a caller can
+        qualify a single policy synchronously. Never raises: infra failures become
+        holds.
         """
-        policy_version_id = str(membership.policy_version_id)
-        division_id = str(membership.division_id)
-
         try:
             run = self._xp_request_client().run_qualifier(
-                division_id=division_id,
-                policy_version_id=policy_version_id,
+                division_id=str(membership.division_id),
+                policy_version_id=str(membership.policy_version_id),
                 num_episodes=_QUALIFIER_NUM_EPISODES,
-                notes="crewrift-prime qualifier (event-driven)",
+                notes=_QUALIFIER_NOTES,
             )
         except XpRequestInfraError as exc:
             return self._infra_hold_event(membership, f"experience request failed: {exc}")
+        return self._evaluate_qualifier_run(membership, run, target_division_id)
+
+    def _evaluate_qualifier_run(
+        self,
+        membership: MembershipSnapshot,
+        run: XpRequestRun,
+        target_division_id: UUID | None,
+    ) -> ModelsPolicyMembershipEventChange:
+        """Score a completed qualifier ``run`` and return the membership event.
+
+        Reads the completed episode's per-slot results JSON, applies the strict gate
+        (+ optional LLM interview), and returns promote/hold/DQ. Contains NO network
+        wait on the game itself — the run is already terminal. Never raises: infra
+        failures become holds.
+        """
+        policy_version_id = str(membership.policy_version_id)
 
         game_results, parse_error = self._game_results_from_run(run)
         if parse_error is not None:
