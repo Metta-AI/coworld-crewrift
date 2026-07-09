@@ -133,6 +133,7 @@ from decision import (
     count_competition_wins,
     episode_is_void,
     evaluate_combined_game_with_interview,
+    is_roleless_game,
 )
 from interview import (
     InterviewInfraError,
@@ -525,10 +526,11 @@ _QUALIFIER_NUM_EPISODES = max(int(os.getenv("CREWRIFT_PRIME_QUALIFIER_EPISODES",
 # So we bound each pass to at most this many memberships (oldest-id first for a
 # stable, fair order); the remainder are picked up on subsequent passes. Each
 # pass then completes well within the timeout and the backlog drains
-# incrementally. Env-overridable without a rebuild; keep the product
-# (`_MAX_QUALIFY_PER_PASS` * per-game wall) safely under the platform's qualify
-# pass timeout.
-_MAX_QUALIFY_PER_PASS = max(int(os.getenv("CREWRIFT_PRIME_MAX_QUALIFY_PER_PASS", "3")), 1)
+# incrementally. Default 6 (6 * ~250s per-game wall ~= 1500s, comfortably under
+# the platform's ~2100s qualify-pass timeout with margin for container startup
+# and the WS round-trip). Env-overridable without a rebuild; keep the product
+# (`_MAX_QUALIFY_PER_PASS` * per-game wall) safely under that timeout.
+_MAX_QUALIFY_PER_PASS = max(int(os.getenv("CREWRIFT_PRIME_MAX_QUALIFY_PER_PASS", "6")), 1)
 
 # Default "filler" player policies used to TOP UP a Competition game to NUM_SEATS
 # when fewer than NUM_SEATS real entrants are competing. The closed-roster 8-seat
@@ -1499,6 +1501,21 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             # Run reached a terminal state but produced no completed/parseable
             # episode -> genuine non-completion (crash DQ).
             return self._crash_dq_event(membership, run)
+
+        # Degenerate game guard: a parseable results JSON in which NO seat reached
+        # role assignment (both the imposter and crew per-slot arrays are entirely
+        # zero) never played a real match — the self-play game ended before roles
+        # were assigned (e.g. a connect/dispatch artifact). Scoring it would fail
+        # hunting ("no imposter seat") AND tasks ("no crew seat") every time and
+        # permanently stick the submission at qualifying/skill_gate. Treat it as an
+        # infrastructure non-signal and HOLD for retry, exactly like a missing
+        # results JSON — never a silent skill failure.
+        if is_roleless_game(game_results):
+            return self._infra_hold_event(
+                membership,
+                "qualifier game produced no role assignments (all seats roleless -> "
+                "no imposter/crew seat); game did not reach a real match",
+            )
 
         # Interview hard gate: run the out-of-band LLM interview. An interview
         # INFRA failure holds for retry (never DQ), exactly like an xp-request
