@@ -133,6 +133,7 @@ from decision import (
     count_competition_wins,
     episode_is_void,
     evaluate_combined_game_with_interview,
+    is_roleless_game,
 )
 from interview import (
     InterviewInfraError,
@@ -1500,6 +1501,21 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             # Run reached a terminal state but produced no completed/parseable
             # episode -> genuine non-completion (crash DQ).
             return self._crash_dq_event(membership, run)
+
+        # Degenerate game guard: a parseable results JSON in which NO seat reached
+        # role assignment (both the imposter and crew per-slot arrays are entirely
+        # zero) never played a real match — the self-play game ended before roles
+        # were assigned (e.g. a connect/dispatch artifact). Scoring it would fail
+        # hunting ("no imposter seat") AND tasks ("no crew seat") every time and
+        # permanently stick the submission at qualifying/skill_gate. Treat it as an
+        # infrastructure non-signal and HOLD for retry, exactly like a missing
+        # results JSON — never a silent skill failure.
+        if is_roleless_game(game_results):
+            return self._infra_hold_event(
+                membership,
+                "qualifier game produced no role assignments (all seats roleless -> "
+                "no imposter/crew seat); game did not reach a real match",
+            )
 
         # Interview hard gate: run the out-of-band LLM interview. An interview
         # INFRA failure holds for retry (never DQ), exactly like an xp-request

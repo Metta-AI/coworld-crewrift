@@ -13,6 +13,7 @@ from decision import (
     count_competition_wins,
     evaluate_combined_game,
     evaluate_entrant,
+    is_roleless_game,
 )
 from game_results_loader import coerce_results_schema, has_results_schema_arrays, is_metadata_stub
 
@@ -250,6 +251,45 @@ class CombinedSingleGameTest(unittest.TestCase):
         record = evaluate_combined_game(None)
         self.assertFalse(record.passed)
         self.assertTrue(all(not v.passed for v in record.verdicts))
+
+
+class RolelessGameGuardTest(unittest.TestCase):
+    """A parseable game that never assigned roles must be an infra signal.
+
+    Regression for the qualifier-stuck bug (2026-07-09): a self-play qualifier
+    game that ended before role assignment writes a results JSON whose ``imposter``
+    and ``crew`` arrays are entirely zero. Scored as skills that would fail hunting
+    ("no imposter seat") AND tasks ("no crew seat") every time, permanently sticking
+    the submission at qualifying/skill_gate. ``is_roleless_game`` flags it so the
+    commissioner holds-for-retry instead of recording a false skill failure.
+    """
+
+    def test_all_zero_role_arrays_is_roleless(self) -> None:
+        gr = {
+            "imposter": [0, 0, 0, 0, 0, 0, 0, 0],
+            "crew": [0, 0, 0, 0, 0, 0, 0, 0],
+            "kills": [0, 0, 0, 0, 0, 0, 0, 0],
+            "tasks": [0, 0, 0, 0, 0, 0, 0, 0],
+            "scores": [0, 0, 0, 0, 0, 0, 0, 0],
+        }
+        self.assertTrue(is_roleless_game(gr))
+
+    def test_missing_role_arrays_is_roleless(self) -> None:
+        # Some seats scored, but the payload carries no role arrays at all.
+        self.assertTrue(is_roleless_game({"scores": [0, 0, 0, 0, 0, 0, 0, 0]}))
+
+    def test_normal_game_is_not_roleless(self) -> None:
+        self.assertFalse(is_roleless_game(_combined_game()))
+
+    def test_only_imposters_is_not_roleless(self) -> None:
+        # Even a degenerate all-imposter game reached role assignment.
+        gr = {"imposter": [1, 1, 1, 1, 1, 1, 1, 1], "crew": [0, 0, 0, 0, 0, 0, 0, 0]}
+        self.assertFalse(is_roleless_game(gr))
+
+    def test_none_game_is_not_roleless(self) -> None:
+        # None is a distinct signal (crash / no completed episode); the caller
+        # DQs there, so is_roleless_game must not also claim it.
+        self.assertFalse(is_roleless_game(None))
 
 
 class CompetitionWinCountTest(unittest.TestCase):

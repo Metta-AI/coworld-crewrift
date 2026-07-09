@@ -514,6 +514,28 @@ def _crew_seats(game_results: dict[str, Any]) -> list[int]:
     return []
 
 
+def is_roleless_game(game_results: dict[str, Any] | None) -> bool:
+    """True when a completed results JSON assigned NO roles to any seat.
+
+    The crewrift results_schema only flags a seat as ``imposter``/``crew`` when
+    that seat actually reached role assignment (``sim.nim`` sets both to 0 while
+    ``hasRole`` is false — e.g. a self-play game that ended in the connect/wait
+    phase before ``startGame`` assigned roles). When BOTH per-slot role arrays are
+    entirely zero (or absent) the game is degenerate: it produced a parseable
+    payload but never played a real match, so the hunting seat (no imposter) and
+    the tasks seat (no crew) are BOTH structurally absent.
+
+    Scoring such a game as a skill FAILURE is wrong — the policy was never given
+    an imposter or a crew seat to demonstrate hunting or tasks. The caller must
+    treat this as an infrastructure non-signal (hold for retry), not a gate fail,
+    so a transient dispatch/connect artifact does not permanently stick a
+    submission at ``qualifying/skill_gate``.
+    """
+    if game_results is None:
+        return False
+    return not _imposter_seats(game_results) and not _crew_seats(game_results)
+
+
 def _hunting_combined_verdict(game_results: dict[str, Any]) -> SkillVerdict:
     """Hunting from ONE game: total kills landed by the imposter seat(s)."""
     seats = _imposter_seats(game_results)
