@@ -112,7 +112,8 @@ class _FakeXpClient:
     def __init__(self, *, run: XpRequestRun | None = None, run_error: Exception | None = None,
                  results: dict | None = None, results_error: Exception | None = None,
                  filler_ids: list[str] | None = None, filler_error: Exception | None = None,
-                 league_settings: dict | None = None, settings_error: Exception | None = None) -> None:
+                 league_settings: dict | None = None, settings_error: Exception | None = None,
+                 created_status: str = "running") -> None:
         self._run = run
         self._run_error = run_error
         self._results = results
@@ -121,11 +122,18 @@ class _FakeXpClient:
         self._filler_error = filler_error
         self._league_settings = dict(league_settings or {})
         self._settings_error = settings_error
+        # Status stamped on a freshly created (non-blocking) qualifier run — tests set
+        # this to "running" to model in-flight or "completed" to model instantly-settled.
+        self._created_status = created_status
         self.created: list[tuple[str, str]] = []
         self.filler_lookups: list[str] = []
         self.results_lookups: list[str] = []
         self.settings_lookups: list[str] = []
         self.settings_updates: list[tuple[str, dict]] = []
+        # In-memory experience-request store for the non-blocking migrate_league path:
+        # list rows (newest-first) keyed by the xreq id create returns.
+        self._rows: list[dict] = []
+        self._next_id = 0
 
     def run_qualifier(self, *, division_id: str, policy_version_id: str, **_kw) -> XpRequestRun:
         self.created.append((division_id, policy_version_id))
@@ -133,6 +141,56 @@ class _FakeXpClient:
             raise self._run_error
         assert self._run is not None
         return self._run
+
+    def create_experience_request(self, *, division_id: str, policy_version_id: str,
+                                  notes: str | None = None, **_kw) -> str:
+        self.created.append((division_id, policy_version_id))
+        if self._run_error is not None:
+            raise self._run_error
+        self._next_id += 1
+        xreq_id = f"xreq_fake_{self._next_id}"
+        # Newest-first, mirroring the list endpoint's created_at DESC order.
+        self._rows.insert(0, {
+            "id": xreq_id,
+            "status": self._created_status,
+            "notes": notes,
+            "target_division_id": division_id,
+            "policy_version_ids": [policy_version_id],
+        })
+        return xreq_id
+
+    def list_my_experience_requests(self, *, limit: int = 200) -> list[dict]:
+        return [dict(row) for row in self._rows[:limit]]
+
+    def seed_completed_qualifier(self, division_id: str, policy_version_id: str,
+                                 *, notes: str, status: str = "completed") -> str:
+        """Pre-seed a qualifier row as if launched on a PRIOR pass and now settled.
+
+        The non-blocking migrate_league reads existing runs at the START of a pass, so
+        a run launched this pass isn't scored until next pass. Tests that want to
+        exercise scoring in one call seed a settled run up front.
+        """
+        self._next_id += 1
+        xreq_id = f"xreq_seed_{self._next_id}"
+        self._rows.insert(0, {
+            "id": xreq_id,
+            "status": status,
+            "notes": notes,
+            "target_division_id": division_id,
+            "policy_version_ids": [policy_version_id],
+        })
+        return xreq_id
+
+    def get_run_detail(self, xreq_id: str) -> dict:
+        for row in self._rows:
+            if row["id"] == xreq_id:
+                return {"status": row["status"]}
+        assert self._run is not None
+        return {"status": self._run.status}
+
+    def get_episodes(self, xreq_id: str):
+        assert self._run is not None
+        return list(self._run.episodes)
 
     def get_filler_policy_versions(self, league_id: str) -> list[str]:
         self.filler_lookups.append(str(league_id))
@@ -404,9 +462,20 @@ class QualifySubmissionTest(unittest.TestCase):
 
 
 class MigrateLeagueQualificationTest(unittest.TestCase):
-    def test_migrate_league_qualifies_submitted_only(self) -> None:
+    _QNOTES = None  # filled in setUp from the module constant
+
+    def setUp(self) -> None:
+        import crewrift_prime_skill_commissioner as mod
+
+        self._QNOTES = mod._QUALIFIER_NOTES
+
+    def test_migrate_league_launches_pending_without_deciding(self) -> None:
+        # Non-blocking: a pending membership with no in-flight qualifier gets a run
+        # LAUNCHED (create only, no poll) and NO membership event this pass — the
+        # decision comes once the run settles on a later pass. This is what keeps the
+        # call fast enough for the tight structural-migration timeout.
         commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
+        commissioner._xp_client = _FakeXpClient(created_status="running")
         _wire_interview(commissioner)
         league_id = uuid4()
         submitted = _membership("submitted")
@@ -421,23 +490,77 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
             divisions=_division_snapshots(league_id),
             memberships=[submitted, qualifying, competing],
         )
-        result = commissioner.migrate_league(ctx)
-        qualified_ids = {e.league_policy_membership_id for e in result.policy_membership_events}
-        self.assertIn(submitted.id, qualified_ids)
-        self.assertIn(qualifying.id, qualified_ids)
-        self.assertNotIn(competing.id, qualified_ids)
-        # both submitted/qualifying got an xp request created
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(ctx)
+        # Both pending memberships launched a qualifier; the competing one did not.
         self.assertEqual(len(commissioner._xp_client.created), 2)
+        launched_policies = {pv for _div, pv in commissioner._xp_client.created}
+        self.assertEqual(launched_policies, {str(submitted.policy_version_id), str(qualifying.policy_version_id)})
+        # No decisions yet — runs are still in flight.
+        decided_ids = {e.league_policy_membership_id for e in result.policy_membership_events}
+        self.assertNotIn(submitted.id, decided_ids)
+        self.assertNotIn(qualifying.id, decided_ids)
 
-    def test_migrate_league_bounds_qualifications_per_pass(self) -> None:
-        # A large pending backlog must be qualified in bounded slices so a single
-        # migrate_league pass can't exceed the platform's qualify-pass timeout
-        # (which would apply zero events and stall scheduling). Each pass qualifies
-        # at most _MAX_QUALIFY_PER_PASS memberships.
+    def test_migrate_league_scores_settled_runs(self) -> None:
+        # A membership whose qualifier run has SETTLED is scored this pass (fast reads,
+        # no game wait) and promoted; a fresh membership only launches.
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
+        _wire_interview(commissioner)
+        league_id = uuid4()
+        settled = _membership("qualifying")
+        fresh = _membership("submitted")
+        # `settled` launched on a prior pass and is now complete.
+        commissioner._xp_client.seed_completed_qualifier(
+            str(settled.division_id), str(settled.policy_version_id), notes=self._QNOTES
+        )
+        ctx = LeagueMigrationContext(
+            league=LeagueSnapshot(id=league_id, commissioner_key="container", commissioner_config=None),
+            divisions=_division_snapshots(league_id),
+            memberships=[settled, fresh],
+        )
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(ctx)
+        events_by_id = {e.league_policy_membership_id: e for e in result.policy_membership_events}
+        # The settled run was scored -> promoted to Competition.
+        self.assertIn(settled.id, events_by_id)
+        self.assertEqual(str(events_by_id[settled.id].status), "competing")
+        # The fresh membership only launched (no decision); no second run created for `settled`.
+        self.assertNotIn(fresh.id, events_by_id)
+        self.assertEqual(
+            [pv for _div, pv in commissioner._xp_client.created],
+            [str(fresh.policy_version_id)],
+        )
+
+    def test_migrate_league_leaves_inflight_untouched(self) -> None:
+        # A membership with an in-flight (non-terminal) qualifier is neither
+        # re-launched nor decided this pass.
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
+        _wire_interview(commissioner)
+        league_id = uuid4()
+        inflight = _membership("qualifying")
+        commissioner._xp_client.seed_completed_qualifier(
+            str(inflight.division_id), str(inflight.policy_version_id), notes=self._QNOTES, status="running"
+        )
+        ctx = LeagueMigrationContext(
+            league=LeagueSnapshot(id=league_id, commissioner_key="container", commissioner_config=None),
+            divisions=_division_snapshots(league_id),
+            memberships=[inflight],
+        )
+        with redirect_stdout(io.StringIO()):
+            result = commissioner.migrate_league(ctx)
+        self.assertEqual(commissioner._xp_client.created, [])  # not re-launched
+        self.assertEqual(result.policy_membership_events, [])  # not decided
+
+    def test_migrate_league_bounds_launches_per_pass(self) -> None:
+        # A large backlog with no in-flight runs launches at most _MAX_QUALIFY_PER_PASS
+        # per pass (oldest-id first); the rest launch on later passes. Launches don't
+        # block, so this bound is about not flooding dispatch, not about timeout.
         import crewrift_prime_skill_commissioner as mod
 
         commissioner = _commissioner()
-        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results=_good_combined_game())
+        commissioner._xp_client = _FakeXpClient(created_status="running")
         _wire_interview(commissioner)
         league_id = uuid4()
         pending = [_membership("qualifying") for _ in range(mod._MAX_QUALIFY_PER_PASS + 4)]
@@ -447,14 +570,14 @@ class MigrateLeagueQualificationTest(unittest.TestCase):
             memberships=list(pending),
         )
         with redirect_stdout(io.StringIO()):
-            result = commissioner.migrate_league(ctx)
-        # Only up to the cap run a qualifier this pass; the rest wait for later passes.
+            commissioner.migrate_league(ctx)
         self.assertEqual(len(commissioner._xp_client.created), mod._MAX_QUALIFY_PER_PASS)
-        qualified_ids = {e.league_policy_membership_id for e in result.policy_membership_events}
-        self.assertEqual(len(qualified_ids), mod._MAX_QUALIFY_PER_PASS)
-        # The slice is a stable oldest-id-first prefix, so it's deterministic.
-        expected = {m.id for m in sorted(pending, key=lambda m: str(m.id))[: mod._MAX_QUALIFY_PER_PASS]}
-        self.assertEqual(qualified_ids, expected)
+        launched_policies = {pv for _div, pv in commissioner._xp_client.created}
+        expected = {
+            str(m.policy_version_id)
+            for m in sorted(pending, key=lambda m: str(m.id))[: mod._MAX_QUALIFY_PER_PASS]
+        }
+        self.assertEqual(launched_policies, expected)
 
 
 class OnePolicyPerPlayerTest(unittest.TestCase):
@@ -487,6 +610,16 @@ class OnePolicyPerPlayerTest(unittest.TestCase):
         _wire_interview(commissioner)
         return commissioner
 
+    @staticmethod
+    def _seed_settled(commissioner, membership: MembershipSnapshot) -> None:
+        """Seed an already-settled qualifier run for `membership` so the non-blocking
+        migrate_league scores (and thus promotes/holds) it in a single pass."""
+        import crewrift_prime_skill_commissioner as mod
+
+        commissioner._xp_client.seed_completed_qualifier(
+            str(membership.division_id), str(membership.policy_version_id), notes=mod._QUALIFIER_NOTES
+        )
+
     def test_new_promotion_supersedes_players_old_policy(self) -> None:
         commissioner = self._passing_commissioner()
         league_id = uuid4()
@@ -496,6 +629,7 @@ class OnePolicyPerPlayerTest(unittest.TestCase):
             policy_version_id=uuid4(), player_id="ply_a",
             status=PolicyMembershipStatus.submitted, substatus=None,
         )
+        self._seed_settled(commissioner, new)
         with redirect_stdout(io.StringIO()):
             result = commissioner.migrate_league(self._ctx([old, new], league_id))
         events_by_id = {e.league_policy_membership_id: e for e in result.policy_membership_events}
@@ -556,6 +690,7 @@ class OnePolicyPerPlayerTest(unittest.TestCase):
             policy_version_id=uuid4(), player_id="ply_a",
             status=PolicyMembershipStatus.submitted, substatus=None,
         )
+        self._seed_settled(commissioner, new)
         with redirect_stdout(io.StringIO()):
             result = commissioner.migrate_league(self._ctx([old, new], league_id))
         events_by_id = {e.league_policy_membership_id: e for e in result.policy_membership_events}
