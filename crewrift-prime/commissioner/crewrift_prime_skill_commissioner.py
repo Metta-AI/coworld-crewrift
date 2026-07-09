@@ -525,10 +525,11 @@ _QUALIFIER_NUM_EPISODES = max(int(os.getenv("CREWRIFT_PRIME_QUALIFIER_EPISODES",
 # So we bound each pass to at most this many memberships (oldest-id first for a
 # stable, fair order); the remainder are picked up on subsequent passes. Each
 # pass then completes well within the timeout and the backlog drains
-# incrementally. Env-overridable without a rebuild; keep the product
-# (`_MAX_QUALIFY_PER_PASS` * per-game wall) safely under the platform's qualify
-# pass timeout.
-_MAX_QUALIFY_PER_PASS = max(int(os.getenv("CREWRIFT_PRIME_MAX_QUALIFY_PER_PASS", "3")), 1)
+# incrementally. Default 6 (6 * ~250s per-game wall ~= 1500s, comfortably under
+# the platform's ~2100s qualify-pass timeout with margin for container startup
+# and the WS round-trip). Env-overridable without a rebuild; keep the product
+# (`_MAX_QUALIFY_PER_PASS` * per-game wall) safely under that timeout.
+_MAX_QUALIFY_PER_PASS = max(int(os.getenv("CREWRIFT_PRIME_MAX_QUALIFY_PER_PASS", "6")), 1)
 
 # Default "filler" player policies used to TOP UP a Competition game to NUM_SEATS
 # when fewer than NUM_SEATS real entrants are competing. The closed-roster 8-seat
