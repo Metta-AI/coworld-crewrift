@@ -1484,38 +1484,31 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         policy_version_id = str(membership.policy_version_id)
         division_id = str(membership.division_id)
 
-        try:
-            run = self._xp_request_client().run_qualifier(
-                division_id=division_id,
-                policy_version_id=policy_version_id,
-                num_episodes=_QUALIFIER_NUM_EPISODES,
-                notes="crewrift-prime qualifier (event-driven)",
-            )
-        except XpRequestInfraError as exc:
-            return self._infra_hold_event(membership, f"experience request failed: {exc}")
-
-        game_results, parse_error = self._game_results_from_run(run)
-        if parse_error is not None:
-            return self._infra_hold_event(membership, parse_error)
-        if game_results is None:
-            # Run reached a terminal state but produced no completed/parseable
-            # episode -> genuine non-completion (crash DQ).
-            return self._crash_dq_event(membership, run)
+        run, game_results, terminal = self._run_qualifier_game(
+            membership, division_id, policy_version_id, notes="crewrift-prime qualifier (event-driven)"
+        )
+        if terminal is not None:
+            return terminal
 
         # Degenerate game guard: a parseable results JSON in which NO seat reached
         # role assignment (both the imposter and crew per-slot arrays are entirely
         # zero) never played a real match — the self-play game ended before roles
-        # were assigned (e.g. a connect/dispatch artifact). Scoring it would fail
-        # hunting ("no imposter seat") AND tasks ("no crew seat") every time and
-        # permanently stick the submission at qualifying/skill_gate. Treat it as an
-        # infrastructure non-signal and HOLD for retry, exactly like a missing
-        # results JSON — never a silent skill failure.
+        # were assigned. In self-play (one policy on every seat) a broken/degenerate
+        # policy can cause that BY ITSELF, so — unlike a multi-policy game — it is
+        # NOT reliable evidence of an infra fault. Confirm with one more game before
+        # deciding: a rare transient produces a real match on the retry (score it);
+        # a policy that reliably cannot reach a real match is a non-completion (DQ),
+        # not an infra hold that retries forever. A genuine infra/crash on the retry
+        # still holds/DQs on its own terms.
         if is_roleless_game(game_results):
-            return self._infra_hold_event(
-                membership,
-                "qualifier game produced no role assignments (all seats roleless -> "
-                "no imposter/crew seat); game did not reach a real match",
+            run, game_results, terminal = self._run_qualifier_game(
+                membership, division_id, policy_version_id,
+                notes="crewrift-prime qualifier (roleless confirmation)",
             )
+            if terminal is not None:
+                return terminal
+            if is_roleless_game(game_results):
+                return self._roleless_dq_event(membership, run)
 
         # Interview hard gate: run the out-of-band LLM interview. An interview
         # INFRA failure holds for retry (never DQ), exactly like an xp-request
@@ -1675,6 +1668,80 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
                     title=evidence_title,
                     summary=reason_text,
                     metadata={"classified_as": "infrastructure_failure", "detail": detail[:300]},
+                )
+            ],
+        )
+
+    def _run_qualifier_game(
+        self,
+        membership: MembershipSnapshot,
+        division_id: str,
+        policy_version_id: str,
+        *,
+        notes: str,
+    ) -> tuple[XpRequestRun | None, dict | None, ModelsPolicyMembershipEventChange | None]:
+        """Run ONE qualifier game and classify the platform-side outcome.
+
+        Returns ``(run, game_results, terminal_event)``:
+
+        - ``terminal_event`` set -> an infra hold (xp-request create/poll/results
+          fetch failed) or a crash DQ (no completed/parseable episode); the caller
+          returns it directly.
+        - otherwise ``game_results`` is a parseable game. It MAY be roleless — the
+          caller decides whether to confirm-and-DQ or score it.
+        """
+        try:
+            run = self._xp_request_client().run_qualifier(
+                division_id=division_id,
+                policy_version_id=policy_version_id,
+                num_episodes=_QUALIFIER_NUM_EPISODES,
+                notes=notes,
+            )
+        except XpRequestInfraError as exc:
+            return None, None, self._infra_hold_event(membership, f"experience request failed: {exc}")
+
+        game_results, parse_error = self._game_results_from_run(run)
+        if parse_error is not None:
+            return run, None, self._infra_hold_event(membership, parse_error)
+        if game_results is None:
+            # Terminal run, no completed/parseable episode -> genuine non-completion.
+            return run, None, self._crash_dq_event(membership, run)
+        return run, game_results, None
+
+    def _roleless_dq_event(
+        self, membership: MembershipSnapshot, run: XpRequestRun
+    ) -> ModelsPolicyMembershipEventChange:
+        """Repeated roleless self-play games -> the policy cannot reach a real match.
+
+        Classified as a non-completion DQ (not an infra hold that retries forever).
+        A policy wrongly caught here can simply be resubmitted.
+        """
+        _emit_decision_log(
+            {
+                "policy_version_id": str(membership.policy_version_id),
+                "xreq_id": run.xreq_id,
+                "decision": "ROLELESS_DQ",
+                "reason": "Qualifier games assigned no roles on repeated attempts (no real match)",
+            }
+        )
+        return ModelsPolicyMembershipEventChange(
+            league_policy_membership_id=membership.id,
+            from_division_id=membership.division_id,
+            to_division_id=membership.division_id,
+            status="disqualified",
+            substatus=_INACTIVE_SUBSTATUS,
+            reason="Qualifier never reached a real match",
+            notes=(
+                "The self-play qualifier assigned no imposter/crew roles on repeated attempts "
+                "(the match ended before roles were assigned). Disqualified rather than held "
+                "for retry; resubmit to try again."
+            ),
+            evidence=[
+                ModelsPolicyMembershipEventEvidence(
+                    type="crewrift_prime_qualifier_roleless",
+                    title="Qualifier never reached a real match",
+                    summary="Repeated self-play qualifier games assigned no imposter/crew roles.",
+                    metadata={"classified_as": "non_completion", "xreq_id": run.xreq_id},
                 )
             ],
         )

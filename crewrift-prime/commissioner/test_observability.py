@@ -99,6 +99,18 @@ def _failing_combined_game() -> dict:
     return game
 
 
+def _roleless_game() -> dict:
+    # Parseable results whose per-slot role arrays are all zero: the self-play
+    # match ended before roles were assigned ("did not reach a real match").
+    return {
+        "imposter": [0, 0, 0, 0, 0, 0, 0, 0],
+        "crew": [0, 0, 0, 0, 0, 0, 0, 0],
+        "kills": [0, 0, 0, 0, 0, 0, 0, 0],
+        "tasks": [0, 0, 0, 0, 0, 0, 0, 0],
+        "scores": [0, 0, 0, 0, 0, 0, 0, 0],
+    }
+
+
 class _FakeXpClient:
     """A stand-in for XpRequestClient that returns scripted runs (no network).
 
@@ -111,12 +123,18 @@ class _FakeXpClient:
 
     def __init__(self, *, run: XpRequestRun | None = None, run_error: Exception | None = None,
                  results: dict | None = None, results_error: Exception | None = None,
+                 results_sequence: list[dict] | None = None,
                  filler_ids: list[str] | None = None, filler_error: Exception | None = None,
                  league_settings: dict | None = None, settings_error: Exception | None = None) -> None:
         self._run = run
         self._run_error = run_error
         self._results = results
         self._results_error = results_error
+        # When set, successive get_episode_results calls walk this list (clamping to
+        # the last entry once exhausted), so a test can script one game per
+        # run_qualifier attempt — e.g. [roleless, real] for the confirm-then-score path.
+        self._results_sequence = list(results_sequence) if results_sequence is not None else None
+        self._results_index = 0
         self._filler_ids = filler_ids or []
         self._filler_error = filler_error
         self._league_settings = dict(league_settings or {})
@@ -144,6 +162,10 @@ class _FakeXpClient:
         self.results_lookups.append(str(job_id))
         if self._results_error is not None:
             raise self._results_error
+        if self._results_sequence is not None:
+            idx = min(self._results_index, len(self._results_sequence) - 1)
+            self._results_index += 1
+            return self._results_sequence[idx]
         assert self._results is not None
         return self._results
 
@@ -278,6 +300,37 @@ class QualifySubmissionTest(unittest.TestCase):
         self.assertEqual(str(event.status), "qualifying")
         self.assertEqual(event.to_division_id, membership.division_id)  # held in place
         self.assertNotEqual(str(event.status), "disqualified")
+
+    def test_persistent_roleless_disqualifies(self) -> None:
+        # A completed but roleless self-play game (no imposter/crew assigned) is no
+        # longer an infinite "infrastructure" hold: the commissioner runs one
+        # confirmation game and, if it is ALSO roleless, disqualifies (non-completion)
+        # rather than holding forever. Single roleless entry => both games roleless.
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(run=_completed_run(), results_sequence=[_roleless_game()])
+        _wire_interview(commissioner)
+        membership = _membership("qualifying")
+        with redirect_stdout(io.StringIO()):
+            event = commissioner.qualify_submission(membership, _COMPETITION_DIV)
+        self.assertEqual(str(event.status), "disqualified")
+        self.assertEqual(event.to_division_id, membership.division_id)
+        # Ran the initial game plus one confirmation before disqualifying.
+        self.assertEqual(len(commissioner._xp_client.created), 2)
+
+    def test_roleless_then_real_match_scores(self) -> None:
+        # First game is roleless, the confirmation game reaches a real match: score
+        # THAT game (a rare transient must not disqualify a good policy).
+        commissioner = _commissioner()
+        commissioner._xp_client = _FakeXpClient(
+            run=_completed_run(), results_sequence=[_roleless_game(), _good_combined_game()]
+        )
+        _wire_interview(commissioner)
+        membership = _membership("submitted")
+        with redirect_stdout(io.StringIO()):
+            event = commissioner.qualify_submission(membership, _COMPETITION_DIV)
+        self.assertEqual(str(event.status), "competing")
+        self.assertEqual(event.to_division_id, _COMPETITION_DIV)
+        self.assertEqual(len(commissioner._xp_client.created), 2)
 
     def test_failing_interview_holds_even_when_skills_pass(self) -> None:
         commissioner = _commissioner()
