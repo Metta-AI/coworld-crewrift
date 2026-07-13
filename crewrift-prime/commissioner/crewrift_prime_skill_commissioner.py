@@ -251,6 +251,21 @@ STANDINGS_WINDOW_HOURS = _standings_window_hours()
 # player-legible: describe the behavior change, not the code.
 PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
     CommissionerChangelogEntry(
+        date="2026-07-13",
+        category="scheduling",
+        title="New Crew and Imposter divisions + weekly reset",
+        detail=(
+            "We are introducing 2 new divisions which will separately rank player "
+            "performance for the respective role of Crew and Imposters. For example "
+            "the new Crew division will only place policies in the crew seats, "
+            "imposters will be randomly chosen from a pool of filler policies. "
+            "Likewise the Imposter division will only place policies in the imposter "
+            "seats, with crewmates being added from a pool of filler policies. The "
+            "primary Competition will still be available. At ~1pm today, rounds and "
+            "scores for all divisions will reset for a fresh week."
+        ),
+    ),
+    CommissionerChangelogEntry(
         date="2026-07-08",
         category="scheduling",
         title="New Imposters and Crew leagues",
@@ -929,7 +944,8 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         The stock scheduler counts a division's entrants from its OWN memberships,
         so the role-pinned Imposters/Crew divisions — which carry no memberships of
         their own (a policy qualifies once into Competition and is graded in all
-        three) — would never get a round. We therefore:
+        three; the league uniqueness constraint allows only one live membership per
+        policy) — would never get a round. We therefore:
 
         - schedule the mixed Competition division and any other divisions via the
           stock scheduler (unchanged), and
@@ -938,6 +954,13 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
           are no Competition entrants or a round is already pending/running for that
           division in the current schedule slot (same cadence guard as the stock
           scheduler).
+
+        Platform contract: the round runner must accept these rounds even though the
+        role division has no memberships, by resolving ``entrant_policy_version_ids``
+        against live league memberships (see metta
+        ``_prepare_container_commissioner_round`` / ``_resolve_container_round_memberships``).
+        Without that fallback every Imposters/Crew round fails immediately with
+        ``has no active memberships for container commissioner``.
         """
         specs = super().schedule_rounds(ctx)
         config = self._config()

@@ -6,6 +6,48 @@ commissioner-specific entries live under **League Overview → Commissioner Chan
 
 ---
 
+## 2026-07-13
+
+### Game updates and notices
+
+- **New Crew and Imposter divisions** — We are introducing 2 new divisions which
+  will separately rank player performance for the respective role of Crew and
+  Imposters. For example the new Crew division will only place policies in the
+  crew seats, imposters will be randomly chosen from a pool of filler policies.
+  Likewise the Imposter division will only place policies in the imposter seats,
+  with crewmates being added from a pool of filler policies. The primary
+  Competition will still be available.
+- **Weekly reset** — At ~1pm today, rounds and scores for all divisions will
+  reset for a fresh week.
+
+---
+
+## 2026-07-10
+
+### Platform
+
+- **Imposters/Crew rounds no longer fail immediately** — Those divisions share the
+  Competition entrant pool and intentionally carry no memberships of their own
+  (a policy may only have one live membership per league). The Observatory round
+  runner was rejecting every Imposters/Crew round with
+  `has no active memberships for container commissioner` before the commissioner
+  could schedule. The platform now resolves the round's
+  `entrant_policy_version_ids` against live league memberships when the current
+  division is empty, so role-pinned rounds can run. Fix lives in
+  `metta/app_backend` (`_prepare_container_commissioner_round`).
+
+### Game
+
+- **Roleless qualifier results fixed** — On finite servers (`maxGames > 0`), bots
+  disconnecting during the final game-over screen no longer reset the sim back to
+  Lobby before the results JSON is written. That reset wiped every seat's
+  role/win flags, so qualifier games produced "roleless" results (all
+  `imposter`/`crew`/`win`/`scores` zero with real `tasks`/`kills`), which the
+  qualification gate could only hold as an infrastructure non-signal — deadlocking
+  every qualifying policy in a launch → roleless → hold → relaunch loop.
+
+---
+
 ## 2026-07-08
 
 ### Commissioner
