@@ -156,6 +156,13 @@ proc bedrockPath(): string =
   ## Returns the REST path for a Bedrock InvokeModel request.
   "/model/" & model().awsUriEncode() & "/invoke"
 
+proc bedrockCanonicalPath(): string =
+  ## Returns the SigV4 canonical URI for InvokeModel. Every AWS service except
+  ## S3 requires each path segment to be URI-encoded twice, so the model id's
+  ## ':' becomes '%253A' — matching what Bedrock recomputes from the request
+  ## path it received (which already carries the single-encoded '%3A').
+  "/model/" & model().awsUriEncode().awsUriEncode() & "/invoke"
+
 proc joinUrl(base, path: string): string =
   ## Joins one base URL and absolute path.
   result = base.strip()
@@ -474,7 +481,7 @@ proc signedHeaders(
   let canonical = canonicalHeaders(headers)
   let scope = dateStamp & "/" & region() & "/" & BedrockService & "/" &
     AwsRequestType
-  let canonicalRequest = "POST\n" & bedrockPath() & "\n\n" &
+  let canonicalRequest = "POST\n" & bedrockCanonicalPath() & "\n\n" &
     canonical.text & "\n" & canonical.signed & "\n" & bodyHash
   let stringToSign = "AWS4-HMAC-SHA256\n" & amzDate & "\n" & scope &
     "\n" & canonicalRequest.sha256Hex()
