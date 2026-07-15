@@ -6,8 +6,9 @@ packet only when the held button mask changes. It exits cleanly when the server
 closes the socket (= game over).
 
 Each incoming binary message is decoded into the ``SceneState`` and drives one
-``runtime.step``; the held button mask is sent only when it changes, and meeting
-chat is sent during Voting.
+fast ``runtime.step``; meeting LLM requests run independently in a background
+worker, so frame ingestion never waits for them. The held button mask is sent
+only when it changes, and meeting chat is sent during Voting.
 
 Logging: the full unfiltered trace/metric stream is recorded into an in-memory
 SQLite database and uploaded as the player debug artifact at episode end
@@ -134,6 +135,11 @@ async def run_bridge(
                                 flush=True,
                             )
 
+                    # Runtime work is deliberately bounded to the fast controller.
+                    # Slow meeting-LLM work is launched and polled by the meeting
+                    # mode, so this loop remains available for the next frame and
+                    # every returned command is accepted for transmission exactly
+                    # once (there is no speculative step whose state is discarded).
                     command = runtime.step(Observation(scene=scene, tick=scene.tick))
 
                     # Send only when the held mask changes (design §3.3). The first

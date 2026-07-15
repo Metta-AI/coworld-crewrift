@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from players.crewrift.crewborg.modes import AttendMeetingMode, FleeMode, ReportBodyMode
 from players.crewrift.crewborg.modes.attend_meeting import (
     DETERMINISTIC_TALLY_WAIT_TICKS,
     MEETING_CHAT,
+    _ThreadedMeetingDecisionWorker,
 )
 from players.crewrift.crewborg.perception.entities import VoteCandidate, VoteDot, VotingState
 from players.crewrift.crewborg.strategy.meeting import (
@@ -60,6 +64,24 @@ class _FailingMeetingClient:
 
 class _NotFoundError(Exception):
     status_code = 404
+
+
+class _BlockingMeetingClient(_FakeMeetingClient):
+    """A controllable slow client for controller/worker concurrency tests."""
+
+    def __init__(self, decisions: list[MeetingDecision]) -> None:
+        super().__init__(decisions)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def decide(self, context: dict, *, trigger: str) -> MeetingLLMResult:
+        self.started.set()
+        assert self.release.wait(timeout=2.0)
+        try:
+            return super().decide(context, trigger=trigger)
+        finally:
+            self.finished.set()
 
 
 def _meeting_belief(*, tick: int = 0, start_tick: int = 0) -> Belief:
@@ -157,6 +179,87 @@ def test_attend_meeting_llm_can_submit_vote_early() -> None:
     vote = mode.decide(_meeting_belief(tick=0), ActionState())
     assert vote.kind == "vote"
     assert vote.target_color == "red"
+
+
+def test_attend_meeting_slow_llm_does_not_block_frames_or_restart_on_frame_churn() -> None:
+    client = _BlockingMeetingClient([MeetingDecision(action="submit_vote", vote_target="red")])
+    mode = AttendMeetingMode(
+        llm_client=client,
+        decision_worker=_ThreadedMeetingDecisionWorker(client),
+    )
+    belief = _meeting_belief(tick=0)
+    belief.vote_timer_ticks = 1200
+
+    started = time.perf_counter()
+    pending = mode.decide(belief, ActionState())
+    assert time.perf_counter() - started < 0.1
+    assert pending.kind == "idle"
+    assert client.started.wait(timeout=1.0)
+
+    # New chat and ticks are ordinary state evolution, not a reason to throw
+    # away the in-flight semantic decision or start another model call.
+    belief.last_tick = 20
+    belief.chat_log = [ChatEvent(tick=10, speaker_color="red", text="i was nav")]
+    started = time.perf_counter()
+    assert mode.decide(belief, ActionState()).kind == "idle"
+    assert time.perf_counter() - started < 0.1
+
+    client.release.set()
+    assert client.finished.wait(timeout=1.0)
+    vote = mode.decide(belief, ActionState())
+    assert vote.kind == "vote" and vote.target_color == "red"
+    assert len(client.calls) == 1
+    assert mode.decide(belief, ActionState()) == vote  # installed persistent intent
+
+
+def test_attend_meeting_validates_completed_llm_decision_against_current_state() -> None:
+    client = _BlockingMeetingClient([MeetingDecision(action="submit_vote", vote_target="red")])
+    mode = AttendMeetingMode(
+        llm_client=client,
+        decision_worker=_ThreadedMeetingDecisionWorker(client),
+    )
+    belief = _meeting_belief(tick=0)
+    belief.vote_timer_ticks = 1200
+    assert mode.decide(belief, ActionState()).kind == "idle"
+    assert client.started.wait(timeout=1.0)
+
+    # Red dies while the model is thinking, so the once-valid target is no
+    # longer legal when the result arrives.
+    belief.voting = belief.voting.model_copy(
+        update={
+            "candidates": (
+                VoteCandidate(slot=0, color="red", alive=False),
+                VoteCandidate(slot=1, color="blue", alive=True),
+            )
+        }
+    )
+    belief.roster["red"].life_status = "dead"
+    client.release.set()
+    assert client.finished.wait(timeout=1.0)
+
+    fallback = mode.decide(belief, ActionState())
+    assert fallback.kind == "chat"
+    assert fallback.text == MEETING_CHAT
+
+
+def test_attend_meeting_rejects_result_from_previous_meeting_version() -> None:
+    client = _BlockingMeetingClient([MeetingDecision(action="submit_vote", vote_target="red")])
+    mode = AttendMeetingMode(
+        llm_client=client,
+        decision_worker=_ThreadedMeetingDecisionWorker(client),
+    )
+    first = _meeting_belief(tick=0, start_tick=0)
+    first.vote_timer_ticks = 1200
+    assert mode.decide(first, ActionState()).kind == "idle"
+    assert client.started.wait(timeout=1.0)
+
+    current = _meeting_belief(tick=200, start_tick=200)
+    current.vote_timer_ticks = 1200
+    client.release.set()
+    assert client.finished.wait(timeout=1.0)
+    discarded = mode.decide(current, ActionState())
+    assert discarded.kind == "idle"
+    assert discarded.reason == "discarded decision from an old meeting"
 
 
 def test_attend_meeting_invalid_llm_decision_falls_back_to_canned_chat() -> None:

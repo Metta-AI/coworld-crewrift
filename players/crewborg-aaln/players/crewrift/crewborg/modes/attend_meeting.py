@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import threading
+from dataclasses import dataclass
 from typing import Any
+from typing import Protocol
 
 from players.crewrift.crewborg.strategy.meeting import (
     CHAT_MAX_CHARS,
@@ -61,13 +64,117 @@ LLM_FAILURE_DISABLE_THRESHOLD = 2
 PERMANENT_LLM_STATUS_CODES = frozenset({401, 403, 404})
 
 
+@dataclass(frozen=True)
+class _LLMRequest:
+    """An LLM request tied to the meeting snapshot that produced it."""
+
+    meeting_id: int
+    trigger: str
+    context: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _LLMOutcome:
+    request: _LLMRequest
+    result: Any | None = None
+    error: Exception | None = None
+
+
+class _MeetingDecisionWorker(Protocol):
+    def submit(self, request: _LLMRequest) -> bool: ...
+
+    def poll(self) -> _LLMOutcome | None: ...
+
+
+class _InlineMeetingDecisionWorker:
+    """Synchronous worker used by focused mode tests with injected clients."""
+
+    def __init__(self, client: MeetingLLMClient) -> None:
+        self._client = client
+        self._outcome: _LLMOutcome | None = None
+
+    def submit(self, request: _LLMRequest) -> bool:
+        if self._outcome is not None:
+            return False
+        try:
+            result = self._client.decide(request.context, trigger=request.trigger)
+        except Exception as error:  # noqa: BLE001 - transported to the controller thread.
+            self._outcome = _LLMOutcome(request=request, error=error)
+        else:
+            self._outcome = _LLMOutcome(request=request, result=result)
+        return True
+
+    def poll(self) -> _LLMOutcome | None:
+        outcome, self._outcome = self._outcome, None
+        return outcome
+
+
+class _ThreadedMeetingDecisionWorker:
+    """Single-flight daemon worker for slow meeting-model calls.
+
+    Only immutable request/result envelopes cross the thread boundary. Mode,
+    belief, action state, tracing, and decision validation remain exclusively on
+    the fast controller thread.
+    """
+
+    def __init__(self, client: MeetingLLMClient) -> None:
+        self._client = client
+        self._lock = threading.Lock()
+        self._in_flight = False
+        self._outcome: _LLMOutcome | None = None
+
+    def submit(self, request: _LLMRequest) -> bool:
+        with self._lock:
+            if self._in_flight or self._outcome is not None:
+                return False
+            self._in_flight = True
+        threading.Thread(
+            target=self._run,
+            args=(request,),
+            name="crewborg-meeting-llm",
+            daemon=True,
+        ).start()
+        return True
+
+    def poll(self) -> _LLMOutcome | None:
+        with self._lock:
+            outcome, self._outcome = self._outcome, None
+            return outcome
+
+    def _run(self, request: _LLMRequest) -> None:
+        try:
+            result = self._client.decide(request.context, trigger=request.trigger)
+        except Exception as error:  # noqa: BLE001 - handled on the controller thread.
+            outcome = _LLMOutcome(request=request, error=error)
+        else:
+            outcome = _LLMOutcome(request=request, result=result)
+        with self._lock:
+            self._in_flight = False
+            self._outcome = outcome
+
+
 class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
     name = "attend_meeting"
     params_type = MeetingParams
 
-    def __init__(self, params: MeetingParams | None = None, *, llm_client: MeetingLLMClient | None = None) -> None:
+    def __init__(
+        self,
+        params: MeetingParams | None = None,
+        *,
+        llm_client: MeetingLLMClient | None = None,
+        decision_worker: _MeetingDecisionWorker | None = None,
+    ) -> None:
         super().__init__(params or MeetingParams())
-        self._llm_client = llm_client if llm_client is not None else build_meeting_client(self.params)
+        injected_client = llm_client is not None
+        self._llm_client = llm_client if injected_client else build_meeting_client(self.params)
+        # Production model calls are always background work. Injected clients
+        # remain inline by default to keep unit tests deterministic; concurrency
+        # tests inject the threaded worker explicitly.
+        self._decision_worker = decision_worker or (
+            _InlineMeetingDecisionWorker(self._llm_client)
+            if injected_client
+            else _ThreadedMeetingDecisionWorker(self._llm_client)
+        )
         self._meeting_id: int | None = None
         self._deterministic_chatted = False
         self._disabled_traced = False
@@ -124,6 +231,10 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             # back to the deterministic chat->vote path so we still vote.
             return self._decide_deterministic(belief, trace_disabled=False)
 
+        completed = self._consume_llm_outcome(belief)
+        if completed is not None:
+            return completed
+
         if self._pending_chat_text is not None and self._chat_cooldown_ready(belief):
             return self._send_chat_intent(belief, self._pending_chat_text, reason="sending pending LLM chat")
 
@@ -139,14 +250,13 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             last_chat_tick=self._last_chat_tick,
         )
         self.emit.event("meeting_context_serialized", {"trigger": trigger, "context": context})
-        result = self._call_llm(context, trigger=trigger)
-        if result is None:
-            return self._decide_after_llm_failure(belief, trigger)
-        decision = self._validate_decision(belief, result.decision)
-        if decision is None:
-            return self._decide_after_llm_failure(belief, trigger)
-        self._trace_decision(trigger, decision, result)
-        return self._apply_decision(belief, decision)
+        request = _LLMRequest(meeting_id=belief.phase_start_tick, trigger=trigger, context=context)
+        if self._decision_worker.submit(request):
+            self._note_llm_submitted(request)
+        # An inline worker may already have completed. Production returns idle
+        # immediately and polls the versioned result on a later frame.
+        completed = self._consume_llm_outcome(belief)
+        return completed or Intent(kind="idle", reason="meeting LLM decision pending")
 
     # --- deterministic fallback ------------------------------------------
 
@@ -231,7 +341,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             return "deadline"
         return None
 
-    def _call_llm(self, context: dict[str, Any], *, trigger: str) -> Any | None:
+    def _note_llm_submitted(self, request: _LLMRequest) -> None:
+        context = request.context
+        trigger = request.trigger
         self._last_llm_call_tick = int(context["meeting"]["tick"])
         self._last_external_chat_signature = tuple(
             (event["tick"], event["speaker_color"], event["text"])
@@ -242,17 +354,50 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             self._deadline_prompted = True
         if trigger == "chat_cooldown_ready":
             self._last_cooldown_prompt_chat_tick = self._last_chat_tick
-        try:
-            result = self._llm_client.decide(context, trigger=trigger)
-        except Exception as exc:
-            self._note_llm_failure(exc, trigger=trigger)
+
+    def _consume_llm_outcome(self, belief: Belief) -> Intent | None:
+        outcome = self._decision_worker.poll()
+        if outcome is None:
+            return None
+        request = outcome.request
+        # Meeting identity is the version boundary. A response can survive any
+        # number of ordinary frame updates, but never crosses into a later
+        # meeting. This rejects genuinely obsolete work without rerunning merely
+        # because chat, vote dots, or the cursor changed while the call ran.
+        if belief.phase != "Voting" or request.meeting_id != belief.phase_start_tick:
             self.emit.event(
                 "meeting_llm_fallback",
-                {"reason": "llm_call_failed", "trigger": trigger, "error": repr(exc)},
+                {
+                    "reason": "stale_meeting_decision",
+                    "request_meeting_id": request.meeting_id,
+                    "current_meeting_id": belief.phase_start_tick,
+                    "trigger": request.trigger,
+                },
             )
-            return None
-        self.emit.histogram("meeting_llm.latency_ms", result.latency_ms, tags={"model": result.model, "trigger": trigger})
-        return result
+            return Intent(kind="idle", reason="discarded decision from an old meeting")
+        if outcome.error is not None:
+            self._note_llm_failure(outcome.error, trigger=request.trigger)
+            self.emit.event(
+                "meeting_llm_fallback",
+                {"reason": "llm_call_failed", "trigger": request.trigger, "error": repr(outcome.error)},
+            )
+            return self._decide_after_llm_failure(belief, request.trigger)
+
+        assert outcome.result is not None
+        result = outcome.result
+        self.emit.histogram(
+            "meeting_llm.latency_ms",
+            result.latency_ms,
+            tags={"model": result.model, "trigger": request.trigger},
+        )
+        # Semantic validation intentionally uses the current belief, not the
+        # request snapshot: a vote remains useful across incidental frame churn,
+        # but a target that died while the model was thinking is rejected.
+        decision = self._validate_decision(belief, result.decision)
+        if decision is None:
+            return self._decide_after_llm_failure(belief, request.trigger)
+        self._trace_decision(request.trigger, decision, result)
+        return self._apply_decision(belief, decision)
 
     def _note_llm_failure(self, exc: Exception, *, trigger: str) -> None:
         """Latch onto the deterministic fallback when the meeting LLM keeps failing.
