@@ -103,8 +103,6 @@ class CrewborgEventTracer:
         self._last_kill_tick: int | None = None
         self._vote_confirmed: bool = False
         self._vote_cast_meeting_id: int | None = None  # one vote_cast per meeting
-        self._vote_observed_meeting_id: int | None = None  # one server tally observation per meeting
-        self._vote_intended_by_meeting: dict[int, str] = {}
         self._started_task_index: int | None = None
         # Last known self world fix (belief's own copy goes None during meetings,
         # when the camera is torn down): the spatial annotation for every domain
@@ -252,39 +250,11 @@ class CrewborgEventTracer:
             self._vote_cast_meeting_id = meeting_id
             intended = action_state.current_intent.target_color if action_state.current_intent else None
             intended = intended or "skip"
-            self._vote_intended_by_meeting[meeting_id] = intended
             emit.event(
                 "vote_cast",
                 {"meeting_id": meeting_id, "intended_target": intended},
             )
             emit.counter("vote_cast")
-        # The vote tally is the server's echoed state, and is therefore the
-        # authoritative outcome of the controller interaction.  Recording it
-        # separately from the A-edge lets replay analysis distinguish a bad LLM
-        # choice from a target/cursor/execution failure without inspecting text
-        # or chain-of-thought.
-        if self._vote_observed_meeting_id != meeting_id:
-            self_slot = next(
-                (candidate.slot for candidate in belief.voting.candidates if candidate.color == belief.voting.self_marker_color),
-                None,
-            )
-            own_dot = next((dot for dot in belief.voting.dots if dot.voter == self_slot), None)
-            if own_dot is not None:
-                slot_to_color = {candidate.slot: candidate.color for candidate in belief.voting.candidates}
-                observed = "skip" if own_dot.is_skip else slot_to_color.get(own_dot.target)
-                if observed is not None:
-                    intended = self._vote_intended_by_meeting.get(meeting_id)
-                    self._vote_observed_meeting_id = meeting_id
-                    emit.event(
-                        "vote_observed",
-                        {
-                            "meeting_id": meeting_id,
-                            "intended_target": intended,
-                            "observed_target": observed,
-                            "matches_intended": intended == observed if intended is not None else None,
-                        },
-                    )
-                    emit.counter("vote_observed")
         self._vote_confirmed = action_state.vote_confirmed
 
     # --- attempt events (intent + the wire command it produced) -------------

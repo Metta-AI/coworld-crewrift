@@ -129,6 +129,13 @@ unzip crewborg.zip && sqlite3 trace.db \
   'SELECT tick, event, data FROM traces WHERE event = "domain.vote_cast"'
 ```
 
+`domain.vote_cast` records the policy's `intended_target`. The authoritative
+observed ballot is the game replay's `vote_cast` event, emitted by
+`tools/expand_replay.nim` with the voter slot and target. Offline audits compare
+the two sources by mapping the player trace tick to `server_tick` through the
+artifact's `positions` table; player telemetry does not infer its own ballot
+from rendered vote-dot UI state.
+
 Tables: `traces(seq, wall_time, tick, event, data)` and
 `metrics(seq, wall_time, kind, name, value, tags)` — `data`/`tags` are JSON text
 (use SQLite's `json_extract`). `summary.json` carries per-event counts, the tick
