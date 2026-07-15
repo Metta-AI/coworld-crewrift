@@ -65,6 +65,7 @@ class MeetingParams(ModeParams):
     # Carried from the resolved environment so the mode can build a client
     # without re-reading os.environ. Never logged or traced.
     api_key: str | None = None
+    base_url: str | None = None
 
     @property
     def use_bedrock(self) -> bool:
@@ -121,7 +122,14 @@ class AnthropicMeetingClient:
             # It needs the optional boto3 dependency (the `bedrock` extra).
             from anthropic import AnthropicBedrock
 
-            self._client = AnthropicBedrock(timeout=self.config.timeout_seconds)
+            # Coworld injects a loopback Bedrock sidecar through this base URL.
+            # AnthropicBedrock does not read AWS_ENDPOINT_URL_BEDROCK_RUNTIME
+            # itself, so it must be passed explicitly; otherwise the SDK calls
+            # the public AWS endpoint with the sidecar's dummy credentials.
+            self._client = AnthropicBedrock(
+                base_url=self.config.base_url,
+                timeout=self.config.timeout_seconds,
+            )
         else:
             from anthropic import Anthropic
 
@@ -246,6 +254,7 @@ def read_meeting_params_from_env(env: Mapping[str, str] | None = None) -> Meetin
         timeout_seconds=_env_float(env, "CREWBORG_LLM_TIMEOUT_SECONDS", 3.0),
         trace_raw=trace_raw,
         api_key=api_key,
+        base_url=_resolve_base_url(env, provider),
     )
 
 
@@ -260,6 +269,7 @@ def build_meeting_client(params: MeetingParams) -> MeetingLLMClient:
         trace_raw=params.trace_raw,
         provider=params.provider,
         api_key=params.api_key,
+        base_url=params.base_url,
     )
     if params.provider == PROVIDER_OPENROUTER:
         return OpenRouterMeetingClient(config)
@@ -292,11 +302,22 @@ def _resolve_api_key(env: Mapping[str, str], provider: str) -> str | None:
     return None
 
 
+def _resolve_base_url(env: Mapping[str, str], provider: str) -> str | None:
+    if provider == PROVIDER_BEDROCK:
+        return env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or None
+    if provider == PROVIDER_OPENROUTER:
+        return env.get("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL
+    return None
+
+
 def _bedrock_enabled(env: Mapping[str, str]) -> bool:
     return (
         _truthy_value(env.get("CREWBORG_USE_BEDROCK", ""))
         or _truthy_value(env.get("USE_BEDROCK", ""))
         or _truthy_value(env.get("CLAUDE_CODE_USE_BEDROCK", ""))
+        # Coworld's hosted sidecar exposes its endpoint after stripping the
+        # upload-time USE_BEDROCK marker.
+        or bool(env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "").strip())
     )
 
 

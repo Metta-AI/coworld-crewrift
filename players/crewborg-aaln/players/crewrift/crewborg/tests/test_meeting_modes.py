@@ -404,7 +404,9 @@ def test_attend_meeting_keeps_the_submitted_vote_stable_until_confirmed() -> Non
     assert first == second
 
     confirmed = ActionState(vote_confirmed=True)
-    assert mode.decide(belief, confirmed).kind == "idle"
+    # Keep the vote intent after the A press. Returning idle resets the action
+    # layer's vote state and can produce a second, unrelated confirmation.
+    assert mode.decide(belief, confirmed) == first
 
 
 def test_attend_meeting_votes_a_sub_announce_read_silently_after_the_tally_wait() -> None:
@@ -560,9 +562,34 @@ def test_bedrock_flag_enables_llm_without_anthropic_key() -> None:
 
 
 def test_bedrock_flag_aliases_are_accepted() -> None:
-    for flag in ("USE_BEDROCK", "CREWBORG_USE_BEDROCK", "CLAUDE_CODE_USE_BEDROCK"):
+    for flag in (
+        "USE_BEDROCK",
+        "CREWBORG_USE_BEDROCK",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+    ):
         params = read_meeting_params_from_env({flag: "true"})
         assert params.use_bedrock is True, flag
+
+
+def test_bedrock_sidecar_endpoint_is_propagated_to_client(monkeypatch) -> None:
+    import anthropic
+
+    captured: dict = {}
+
+    class FakeBedrock:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(anthropic, "AnthropicBedrock", FakeBedrock)
+    endpoint = "http://localhost:4000"
+    params = read_meeting_params_from_env({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": endpoint})
+    client = build_meeting_client(params)
+
+    assert params.base_url == endpoint
+    assert client.config.base_url == endpoint
+    assert client._anthropic_client().__class__ is FakeBedrock
+    assert captured["base_url"] == endpoint
 
 
 def test_explicit_model_overrides_bedrock_default() -> None:
