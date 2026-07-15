@@ -152,15 +152,17 @@ proc sidecarConfigured*(): bool =
   ## Returns true when Bedrock calls should go through the runner sidecar.
   hasSidecarEndpoint()
 
-proc bedrockPath(): string =
-  ## Returns the REST path for a Bedrock InvokeModel request.
+proc bedrockPath*(): string =
+  ## Returns the once-encoded HTTP request path used for both direct AWS and
+  ## sidecar calls. Use bedrockCanonicalPath only while signing direct requests.
   "/model/" & model().awsUriEncode() & "/invoke"
 
-proc bedrockCanonicalPath(): string =
-  ## Returns the SigV4 canonical URI for InvokeModel. Every AWS service except
-  ## S3 requires each path segment to be URI-encoded twice, so the model id's
-  ## ':' becomes '%253A' — matching what Bedrock recomputes from the request
-  ## path it received (which already carries the single-encoded '%3A').
+proc bedrockCanonicalPath*(): string =
+  ## Returns the SigV4 canonical URI used only when notsus signs a direct AWS
+  ## request. The HTTP path already encodes ':' as '%3A'; canonicalization
+  ## encodes that '%' as '%25', yielding '%253A'. AWS's standard SigV4 signer
+  ## enables this double encoding for non-S3 services:
+  ## https://docs.aws.amazon.com/java/api/latest/software/amazon/awssdk/auth/signer/params/Aws4SignerParams.Builder.html#doubleUrlEncode(java.lang.Boolean)
   "/model/" & model().awsUriEncode().awsUriEncode() & "/invoke"
 
 proc joinUrl(base, path: string): string =
