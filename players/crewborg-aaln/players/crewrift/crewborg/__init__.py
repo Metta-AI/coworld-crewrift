@@ -7,6 +7,8 @@ parameters, three pure functions, modes, and the rule-based strategy. See
 
 from __future__ import annotations
 
+import os
+
 from players.crewrift.crewborg.agent_tracking import update_agent_tracking
 from players.crewrift.crewborg.action import resolve_action
 from players.crewrift.crewborg.events import CrewborgEventTracer
@@ -54,6 +56,13 @@ from players.player_sdk import (
 )
 
 __all__ = ["build_runtime"]
+
+
+def _positive_int_env(name: str) -> int | None:
+    """Read an optional local-run config override without guessing silently."""
+
+    value = os.environ.get(name, "").strip()
+    return int(value) if value.isdigit() and int(value) > 0 else None
 
 
 def build_runtime(
@@ -119,8 +128,14 @@ def build_runtime(
         update_tail_tracking(belief)
         update_suspicion(belief)
 
+    belief = Belief(map=map_data)
+    # Some zero-wait local fixtures skip the GAME INFO interstitial entirely.
+    # Let the runner supply the true game shape rather than silently guessing.
+    belief.imposter_count = _positive_int_env("CREWBORG_IMPOSTER_COUNT")
+    belief.vote_timer_ticks = _positive_int_env("CREWBORG_VOTE_TIMER_TICKS")
+
     return AgentRuntime(
-        belief=Belief(map=map_data),
+        belief=belief,
         action_state=ActionState(),
         perceive=perceive,
         update_belief=fold_belief,

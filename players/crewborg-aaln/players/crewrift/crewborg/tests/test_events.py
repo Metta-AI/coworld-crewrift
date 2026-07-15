@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from players.crewrift.crewborg.action import BTN_A, BTN_B, BTN_LEFT
 from players.crewrift.crewborg.events import CrewborgEventTracer
+from players.crewrift.crewborg.perception.entities import VoteCandidate, VoteDot, VotingState
 from players.crewrift.crewborg.strategy.meeting.vote_policy import vote_bar
 from players.crewrift.crewborg.types import ActionState, Belief, BodyEntry, ChatEvent, Command, Intent, PlayerRecord
 from players.player_sdk import EventEmitter, ListMetricsSink, ListTraceSink, ModeDirective, StepContext
@@ -167,6 +168,34 @@ def test_vote_cast_fires_once_per_meeting() -> None:
     h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=False))
     h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=True))
     assert len(h.events("domain.vote_cast")) == 2
+
+
+def test_vote_observed_records_server_tally_and_target_agreement() -> None:
+    h = _Harness()
+    meeting = Belief(
+        phase="Voting",
+        phase_start_tick=10,
+        voting=VotingState(
+            self_marker_color="blue",
+            candidates=(VoteCandidate(slot=0, color="blue", alive=True), VoteCandidate(slot=1, color="red", alive=True)),
+        ),
+    )
+    h.step(
+        belief=meeting,
+        action_state=ActionState(vote_confirmed=True, current_intent=Intent(kind="vote", target_color="red")),
+    )
+    # The next observed tally says the server actually recorded our red vote.
+    meeting.voting = meeting.voting.model_copy(update={"dots": (VoteDot(voter=0, target=1),)})
+    h.step(belief=meeting, action_state=ActionState(vote_confirmed=True))
+
+    [event] = h.events("domain.vote_observed")
+    assert event.data == _spatial(
+        meeting_id=10,
+        intended_target="red",
+        observed_target="red",
+        matches_intended=True,
+    )
+    assert len(h.counters("domain.vote_observed")) == 1
 
 
 def test_task_started_on_new_target_and_resume_after_interruption() -> None:

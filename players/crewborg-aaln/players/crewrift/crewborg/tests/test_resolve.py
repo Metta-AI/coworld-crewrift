@@ -203,6 +203,8 @@ def test_game_info_interstitial_resolves_settings() -> None:
         + w.define_object(9000, 44, 49, 50, 0, 9000)
         + w.define_sprite(9001, 60, 6, "KILL COOLDOWN 500T")
         + w.define_object(9001, 34, 63, 50, 0, 9001)
+        + w.define_sprite(9005, 44, 6, "IMPOSTERS 1")
+        + w.define_object(9005, 42, 70, 50, 0, 9005)
         + w.define_sprite(9002, 50, 6, "TASKS 8 EACH")
         + w.define_object(9002, 40, 77, 50, 0, 9002)
         + w.define_sprite(9003, 56, 6, "VOTE TIMER 1200T")
@@ -215,6 +217,7 @@ def test_game_info_interstitial_resolves_settings() -> None:
     info = resolved.game_info
     assert info is not None
     assert info.kill_cooldown_ticks == 500
+    assert info.imposter_count == 1
     assert info.tasks_per_player == 8
     assert info.vote_timer_ticks == 1200
     assert info.max_ticks == 10000
