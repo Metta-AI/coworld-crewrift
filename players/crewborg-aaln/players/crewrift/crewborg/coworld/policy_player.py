@@ -1,13 +1,13 @@
 """Crewborg's Sprite-v1 websocket bridge (design §3, AGENTS.md §Transport).
 
 The bridge connects to the Crewrift engine, maintains a :class:`SceneState` as
-binary messages arrive, drives ``runtime.step`` on the newest available scene,
-and sends an input packet only when the held button mask changes. It exits
-cleanly when the server closes the socket (= game over).
+binary messages arrive, drives ``runtime.step`` once per tick, and sends an input
+packet only when the held button mask changes. It exits cleanly when the server
+closes the socket (= game over).
 
-Each incoming binary message is decoded into the ``SceneState``. Slow work (for
-example a meeting LLM call) runs off the event loop; frames that arrive while it
-runs are coalesced before an action is sent, preventing stale vote-cursor input.
+Each incoming binary message is decoded into the ``SceneState`` and drives one
+``runtime.step``; the held button mask is sent only when it changes, and meeting
+chat is sent during Voting.
 
 Logging: the full unfiltered trace/metric stream is recorded into an in-memory
 SQLite database and uploaded as the player debug artifact at episode end
@@ -134,38 +134,7 @@ async def run_bridge(
                                 flush=True,
                             )
 
-                    # A meeting LLM can take seconds. Keep the websocket event
-                    # loop responsive while it runs, then discard that stale
-                    # command if newer scene frames accumulated underneath it.
-                    # Sprite packets are deltas, so apply every queued packet but
-                    # make a decision only from the newest complete scene.
-                    while True:
-                        step_started = asyncio.get_running_loop().time()
-                        command = await asyncio.to_thread(
-                            runtime.step, Observation(scene=scene, tick=scene.tick)
-                        )
-                        # Preserve one decision per ordinary frame. Coalescing is
-                        # only for genuinely slow work such as a multi-second LLM
-                        # request; draining after every sub-millisecond tick would
-                        # discard useful protocol transitions.
-                        if (
-                            asyncio.get_running_loop().time() - step_started < 0.050
-                            or not hasattr(websocket, "recv")
-                        ):
-                            break
-                        caught_up = False
-                        while True:
-                            try:
-                                pending = await asyncio.wait_for(websocket.recv(), timeout=0.001)
-                            except asyncio.TimeoutError:
-                                break
-                            if isinstance(pending, str):
-                                continue
-                            scene.apply(pending)
-                            scene.tick += 1
-                            caught_up = True
-                        if not caught_up:
-                            break
+                    command = runtime.step(Observation(scene=scene, tick=scene.tick))
 
                     # Send only when the held mask changes (design §3.3). The first
                     # tick sends the neutral mask once, establishing "all released".
