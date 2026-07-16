@@ -376,6 +376,10 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         )
         self.assertEqual(result.snapshot.round_count, 12)
         self.assertEqual(result.remaining_gaps, PLATFORM_CAPABILITY_GAPS)
+        self.assertEqual(
+            [gap.kind for gap in result.remaining_gaps],
+            ["cross-surface", "hosting"],
+        )
 
     def test_reconcile_does_not_rewrite_matching_settings(self) -> None:
         client = self._client(current_spend_limit=10, final_spend_limit=10)

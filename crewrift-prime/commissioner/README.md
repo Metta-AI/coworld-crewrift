@@ -62,6 +62,22 @@ python platform_manager.py reconcile
 python platform_manager.py run
 ```
 
+The same image can be used by an external scheduler without changing its legacy
+callback default command:
+
+```sh
+docker run --rm \
+  -e CREWRIFT_PRIME_COMMISSIONER_TOKEN \
+  -e CREWRIFT_PRIME_LEAGUE_ID \
+  -e OBSERVATORY_API_URL=https://softmax.com/api/observatory \
+  crewrift-prime-commissioner:latest \
+  python /app/platform_manager.py run
+```
+
+`coworld patch-commissioner` updates the callback commissioner image only; it
+does not schedule this one-shot API command. Until the platform owns that worker
+boundary, the scheduler must override the image command as shown above.
+
 Two platform gaps remain:
 
 1. The interview hard gate first needs an uploaded-policy contract for declaring
@@ -71,7 +87,8 @@ Two platform gaps remain:
    that gate; enabling it requires `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an
    operator-launched server, otherwise qualification correctly holds for an
    infrastructure retry.
-2. The REST surface has no work lease/webhook and the Coworld runnable manifest
+2. This is an operational hosting gap rather than a missing league API endpoint:
+   the REST surface has no work lease/webhook and the Coworld runnable manifest
    has no private `cmr_` credential channel. An external scheduler must invoke
    this one-shot agent and deliver/rotate its secret until the platform owns that
    execution boundary.

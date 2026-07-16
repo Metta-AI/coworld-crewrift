@@ -68,32 +68,35 @@ CREWRIFT_PRIME_DIVISIONS = [
 class PlatformCapabilityGap(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["api", "cross-surface", "hosting"]
     capability: str
     blocker: str
-    required_api_change: str
+    required_change: str
 
 
 PLATFORM_CAPABILITY_GAPS = [
     PlatformCapabilityGap(
+        kind="cross-surface",
         capability="candidate interview launch",
         blocker=(
             "Prime's qualification gate needs a candidate websocket interview server, but "
             "uploaded policy versions declare only their normal game runnable and therefore "
             "have no typed alternate interview entrypoint for the platform to launch."
         ),
-        required_api_change=(
+        required_change=(
             "Define an uploaded-policy interview-runnable contract, then add a league-bound "
             "commissioner endpoint that creates a short-lived interview session and proxies "
             "the typed question/answer exchange."
         ),
     ),
     PlatformCapabilityGap(
+        kind="hosting",
         capability="durable agent invocation and credential delivery",
         blocker=(
             "The API is request/response only: it does not notify or lease work to an external "
             "commissioner, and the Coworld runnable manifest has no private cmr_ credential channel."
         ),
-        required_api_change=(
+        required_change=(
             "Provide a platform-owned commissioner worker/lease or event webhook plus secure "
             "league-token delivery, so the one-shot agent does not require an operator scheduler."
         ),
