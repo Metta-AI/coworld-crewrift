@@ -325,6 +325,14 @@ class CompleteRoundResult(PlatformApiModel):
     membership_events: MembershipEventBatchResult | None = None
 
 
+class AbortRoundResult(PlatformApiModel):
+    status: str
+    reason: str
+    replayed: bool = False
+    jobs_failed: int = 0
+    episode_requests_deleted: int = 0
+
+
 class PlatformCommissionerClient(XpRequestClient):
     """Synchronous, bearer-authenticated client for one commissioner league."""
 
@@ -591,8 +599,16 @@ class PlatformCommissionerClient(XpRequestClient):
         )
         return CompleteRoundResult.model_validate(payload)
 
+    def abort_round(self, round_id: str, *, reason: str) -> AbortRoundResult:
+        payload = self._post(
+            f"/v2/rounds/{urllib.parse.quote(round_id)}/abort",
+            {"reason": reason},
+        )
+        return AbortRoundResult.model_validate(payload)
+
 
 __all__ = [
+    "AbortRoundResult",
     "CommissionerStateResponse",
     "DivisionDeclaration",
     "DivisionTopologyResponse",

@@ -77,19 +77,6 @@ class PlatformCapabilityGap(BaseModel):
 
 PLATFORM_CAPABILITY_GAPS = [
     PlatformCapabilityGap(
-        kind="api",
-        capability="terminal round failure or cancellation",
-        blocker=(
-            "Authored scoring accepts completed/failed episodes, but a cancelled episode "
-            "cannot be scored and the commissioner has no league-bound operation that marks "
-            "the owning active round failed or cancelled."
-        ),
-        required_change=(
-            "Add an idempotent commissioner-authorized round abort/fail operation with a "
-            "typed reason and durable terminal status so an unrecoverable round cannot remain active."
-        ),
-    ),
-    PlatformCapabilityGap(
         kind="cross-surface",
         capability="candidate interview launch",
         blocker=(
@@ -148,6 +135,7 @@ class PlatformRunResult(BaseModel):
     qualifications_applied: int
     rounds_created: int
     rounds_dispatched: int
+    rounds_aborted: int
     rounds_completed: int
     reconcile: PlatformReconcileResult
 
@@ -393,6 +381,7 @@ class CrewriftPrimePlatformManager:
 
         state = self.client.get_commissioner_state(self.league_id)
         dispatched = 0
+        aborted = 0
         completed = 0
         for round_ in self.client.list_rounds(self.league_id).entries:
             if round_.status not in {"pending", "claimed", "running"}:
@@ -437,6 +426,18 @@ class CrewriftPrimePlatformManager:
                 )
                 self.client.dispatch_round(round_.id)
                 dispatched += 1
+                continue
+            cancelled_job_indexes = sorted(
+                episode.job_index
+                for episode in episodes
+                if episode.runtime.status == "cancelled"
+            )
+            if cancelled_job_indexes:
+                reason = "cancelled episode requests at job indexes: " + ", ".join(
+                    str(job_index) for job_index in cancelled_job_indexes
+                )
+                self.client.abort_round(round_.id, reason=reason)
+                aborted += 1
                 continue
             if any(
                 episode.runtime.status not in {"completed", "failed"}
@@ -545,6 +546,7 @@ class CrewriftPrimePlatformManager:
             qualifications_applied=len(migration_events),
             rounds_created=created,
             rounds_dispatched=dispatched,
+            rounds_aborted=aborted,
             rounds_completed=completed,
             reconcile=reconcile,
         )

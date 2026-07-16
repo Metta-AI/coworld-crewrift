@@ -21,6 +21,7 @@ from commissioners.common.protocol import (
     DivisionLeaderboardView,
 )
 from platform_api import (
+    AbortRoundResult,
     AuthoredRoundScoreEntry,
     CommissionerState,
     CommissionerStateResponse,
@@ -301,6 +302,44 @@ class PlatformCommissionerClientTest(unittest.TestCase):
         self.assertEqual(body["commissioner_report"]["rule_id"], report.rule_id)
         self.assertEqual(result.trace.entries[0].score, 3)
 
+    def test_aborts_round_with_typed_durable_reason(self) -> None:
+        round_id = "round_00000000-0000-0000-0000-000000000061"
+        reason = "cancelled episode requests at job indexes: 0, 2"
+        with patch.object(
+            urllib.request,
+            "urlopen",
+            return_value=_Response(
+                {
+                    "status": "failed",
+                    "reason": reason,
+                    "replayed": False,
+                    "jobs_failed": 1,
+                    "episode_requests_deleted": 1,
+                }
+            ),
+        ) as urlopen:
+            client = PlatformCommissionerClient(
+                base="https://example.test", token="cmr_secret"
+            )
+            result = client.abort_round(round_id, reason=reason)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(
+            request.full_url,
+            f"https://example.test/v2/rounds/{round_id}/abort",
+        )
+        self.assertEqual(json.loads(request.data), {"reason": reason})
+        self.assertEqual(
+            result,
+            AbortRoundResult(
+                status="failed",
+                reason=reason,
+                jobs_failed=1,
+                episode_requests_deleted=1,
+            ),
+        )
+
     def test_publishes_typed_leaderboard_and_description(self) -> None:
         division_uuid = UUID("00000000-0000-0000-0000-000000000010")
         division_id = f"div_{division_uuid}"
@@ -423,7 +462,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         self.assertEqual(result.remaining_gaps, PLATFORM_CAPABILITY_GAPS)
         self.assertEqual(
             [gap.kind for gap in result.remaining_gaps],
-            ["api", "cross-surface", "hosting"],
+            ["cross-surface", "hosting"],
         )
 
     def test_reconcile_does_not_rewrite_matching_settings(self) -> None:
@@ -771,7 +810,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
                     "win": [True, True, False, False, False, False, False, False],
                     "scores": [100, 100, 0, 0, 0, 0, 0, 0],
                 },
-            )
+            ),
         ]
         client.plan_round.return_value = RoundEpisodePlan(
             strategy="explicit",
@@ -826,7 +865,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         self.assertEqual(result.qualifications_applied, 0)
         self.assertTrue(result.reconcile.snapshot.rounds_paused)
 
-    def test_run_leaves_cancelled_episode_round_for_platform_abort(self) -> None:
+    def test_run_aborts_round_with_cancelled_episode(self) -> None:
         client = self._client(current_spend_limit=10, final_spend_limit=10)
         policy_id = UUID("00000000-0000-0000-0000-000000000021")
         competition = client.list_divisions.return_value[0]
@@ -862,6 +901,18 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         )
         client.get_round_episodes.return_value = [
             RoundEpisodeResult(
+                id="ereq_00000000-0000-0000-0000-000000000072",
+                job_index=2,
+                variant_id="default",
+                seed=8,
+                game_config={},
+                filler_seats=[],
+                runtime=RoundEpisodeRuntime(
+                    status="cancelled",
+                    policy_version_ids=[policy_id],
+                ),
+            ),
+            RoundEpisodeResult(
                 id="ereq_00000000-0000-0000-0000-000000000071",
                 job_index=0,
                 variant_id="default",
@@ -872,7 +923,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
                     status="cancelled",
                     policy_version_ids=[policy_id],
                 ),
-            )
+            ),
         ]
         manager = CrewriftPrimePlatformManager(
             client, self.league_id, spend_limit_usd=10
@@ -885,6 +936,11 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
 
         client.score_authored_round.assert_not_called()
         client.complete_round.assert_not_called()
+        client.abort_round.assert_called_once_with(
+            running.id,
+            reason="cancelled episode requests at job indexes: 0, 2",
+        )
+        self.assertEqual(result.rounds_aborted, 1)
         self.assertEqual(result.rounds_completed, 0)
 
     def test_recent_results_are_loaded_from_completed_round_details(self) -> None:
