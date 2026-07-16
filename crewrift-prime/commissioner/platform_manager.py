@@ -8,12 +8,13 @@ state-idempotent.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -39,6 +40,7 @@ from commissioners.common.protocol import (
 from commissioners.common.ruleset_strategy.config import (
     load_ruleset_strategy_config_file,
 )
+from commissioners.common.ruleset_strategy.entrants import division_entries, select_rule
 from crewrift_prime_skill_commissioner import CrewriftPrimeSkillCommissioner
 from platform_api import (
     AuthoredRoundScoreEntry,
@@ -253,47 +255,66 @@ class CrewriftPrimePlatformManager:
             _uuid(membership.id): membership.id for membership in memberships
         }
         if migration.policy_membership_events:
+            changes = [
+                MembershipEventChange(
+                    league_policy_membership_id=membership_public_id[
+                        event.league_policy_membership_id
+                    ],
+                    from_division_id=None
+                    if event.from_division_id is None
+                    else f"div_{event.from_division_id}",
+                    to_division_id=None
+                    if event.to_division_id is None
+                    else f"div_{event.to_division_id}",
+                    status=event.status,
+                    substatus=event.substatus,
+                    reason=event.reason,
+                    notes=event.notes,
+                    evidence=[
+                        MembershipEventEvidence(
+                            type=evidence.type,
+                            title=evidence.title,
+                            summary=evidence.summary or "",
+                            metadata=evidence.metadata,
+                        )
+                        for evidence in event.evidence
+                    ],
+                )
+                for event in migration.policy_membership_events
+            ]
+            change_digest = hashlib.sha256(
+                json.dumps(
+                    [change.model_dump(mode="json") for change in changes],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
             self.client.apply_membership_events(
                 self.league_id,
-                [
-                    MembershipEventChange(
-                        league_policy_membership_id=membership_public_id[
-                            event.league_policy_membership_id
-                        ],
-                        from_division_id=None
-                        if event.from_division_id is None
-                        else f"div_{event.from_division_id}",
-                        to_division_id=None
-                        if event.to_division_id is None
-                        else f"div_{event.to_division_id}",
-                        status=event.status,
-                        substatus=event.substatus,
-                        reason=event.reason,
-                        notes=event.notes,
-                        evidence=[
-                            MembershipEventEvidence(
-                                type=evidence.type,
-                                title=evidence.title,
-                                summary=evidence.summary or "",
-                                metadata=evidence.metadata,
-                            )
-                            for evidence in event.evidence
-                        ],
-                    )
-                    for event in migration.policy_membership_events
-                ],
-                idempotency_key=f"crewrift-prime-migration-{uuid4()}",
+                changes,
+                idempotency_key=f"crewrift-prime-migration-{change_digest}",
             )
 
         competition = next(
             division for division in divisions if division.name == "Competition"
         )
+        competition_snapshot = next(
+            division
+            for division in division_snapshots
+            if division.id == _uuid(competition.id)
+        )
+        competition_rule = select_rule(
+            self.commissioner._config(),
+            competition_snapshot,
+            membership_snapshots,
+        )
         entrant_ids = [
-            membership.policy_version.id
-            for membership in memberships
-            if membership.division.id == competition.id
-            and membership.status == "competing"
-            and membership.is_champion
+            entry.policy_version_id
+            for entry in division_entries(
+                competition_snapshot,
+                membership_snapshots,
+                competition_rule,
+            )
         ]
         rounds = self.client.list_rounds(self.league_id).entries
         active_division_ids = {

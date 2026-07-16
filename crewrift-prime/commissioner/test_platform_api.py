@@ -7,7 +7,11 @@ import urllib.request
 from uuid import UUID
 from unittest.mock import MagicMock, patch
 
-from commissioners.common.models import DivisionCommissionerDescriptionPublic
+from commissioners.common.models import (
+    DivisionCommissionerDescriptionPublic,
+    LeagueMigrationResult,
+    PolicyMembershipEventChange as CommissionerMembershipEventChange,
+)
 from commissioners.common.protocol import (
     CommissionerRoundReport,
     DivisionLeaderboard,
@@ -434,6 +438,94 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         self.assertEqual(len(planned[0].policy_version_ids), 8)
         client.dispatch_round.assert_called_once_with(pending.id)
         self.assertEqual(result.rounds_dispatched, 1)
+
+    def test_run_schedules_non_champion_competing_membership(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        competition = client.list_divisions.return_value[0]
+        client.list_memberships.return_value = [
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000041",
+                status="competing",
+                is_champion=False,
+                division=competition,
+                policy_version=PolicyVersionRef(id=policy_id),
+                player=PlayerRef(id="ply_00000000-0000-0000-0000-000000000051"),
+            )
+        ]
+        client.get_typed_league_settings.side_effect = None
+        client.get_typed_league_settings.return_value = LeagueSettingsResponse(
+            settings=LeagueSettings(
+                round_interval_minutes=10,
+                episode_player_pod_llm_spend_limit_usd=10,
+            ),
+            defaults=LeagueSettingsDefaults(
+                episodes_per_round=36, round_interval_minutes=10
+            ),
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+
+        result = manager.run_once()
+
+        self.assertEqual(result.rounds_created, 3)
+        self.assertEqual(client.create_round.call_count, 3)
+        for call in client.create_round.call_args_list:
+            self.assertEqual(call.kwargs["entrant_policy_version_ids"], [policy_id])
+
+    def test_migration_event_replay_uses_stable_idempotency_key(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        competition = client.list_divisions.return_value[0]
+        membership = MembershipSummary(
+            id="lpm_00000000-0000-0000-0000-000000000041",
+            status="submitted",
+            is_champion=False,
+            division=competition,
+            policy_version=PolicyVersionRef(
+                id=UUID("00000000-0000-0000-0000-000000000021")
+            ),
+            player=PlayerRef(id="ply_00000000-0000-0000-0000-000000000051"),
+        )
+        client.list_memberships.return_value = [membership]
+        client.get_typed_league_settings.side_effect = None
+        client.get_typed_league_settings.return_value = LeagueSettingsResponse(
+            settings=LeagueSettings(
+                round_interval_minutes=10,
+                episode_player_pod_llm_spend_limit_usd=10,
+            ),
+            defaults=LeagueSettingsDefaults(
+                episodes_per_round=36, round_interval_minutes=10
+            ),
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+        manager.commissioner.migrate_league = MagicMock(
+            return_value=LeagueMigrationResult(
+                policy_membership_events=[
+                    CommissionerMembershipEventChange(
+                        league_policy_membership_id=UUID(
+                            "00000000-0000-0000-0000-000000000041"
+                        ),
+                        to_division_id=UUID("00000000-0000-0000-0000-000000000001"),
+                        status="competing",
+                        reason="skill gate passed",
+                    )
+                ]
+            )
+        )
+
+        manager.run_once()
+        manager.run_once()
+
+        keys = [
+            call.kwargs["idempotency_key"]
+            for call in client.apply_membership_events.call_args_list
+        ]
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0], keys[1])
+        self.assertTrue(keys[0].startswith("crewrift-prime-migration-"))
 
     def test_run_scores_publishes_and_completes_terminal_round(self) -> None:
         client = self._client(current_spend_limit=10, final_spend_limit=10)
