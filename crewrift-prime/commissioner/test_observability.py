@@ -1264,12 +1264,11 @@ class XpRequestPayloadTest(unittest.TestCase):
         self.assertEqual(body["num_episodes"], 3)
         self.assertEqual(len(body["roster"]), 8)
 
-    def test_auth_header_is_x_auth_token(self) -> None:
+    def test_auth_header_is_bearer_token(self) -> None:
         _xreq_id, captured = self._capture_post()
         headers = captured["headers"]
         assert isinstance(headers, dict)
-        # urllib title-cases header keys; X-Auth-Token -> X-auth-token.
-        self.assertEqual(headers.get("X-auth-token"), "tok-abc")
+        self.assertEqual(headers.get("Authorization"), "Bearer tok-abc")
 
     def test_prefixed_division_id_is_idempotent(self) -> None:
         from xp_request_client import _prefixed_division_id, _prefixed_league_id

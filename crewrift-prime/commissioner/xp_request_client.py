@@ -277,7 +277,7 @@ class XpRequestClient:
             token = token or resolved_token
         self._base = base.rstrip("/")
         self._headers = {
-            "X-Auth-Token": token,
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": _USER_AGENT,

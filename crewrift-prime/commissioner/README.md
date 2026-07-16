@@ -16,6 +16,60 @@ this image owns the **xp-request client** (`xp_request_client.py`) so the whole
 loop lives in the commissioner. The Competition division's win-count
 scheduling/scoring/ranking is reused.
 
+## Platform commissioner API integration
+
+`platform_manager.py` is the first Prime control path that authenticates with a
+league-scoped `cmr_` token and manages the league through the platform REST API.
+It is deliberately a one-shot reconciliation command, not another five-second
+poller. A scheduler or operator decides when it runs; repeated calls are safe.
+
+Today `reconcile`:
+
+- declares the canonical `Competition`, `Imposters`, and `Crew` topology with
+  `PUT /v2/leagues/{league_id}/divisions`;
+- read-merges and enforces the per-pod spend limit through the typed league
+  settings API;
+- reads the league, divisions, memberships, rounds, and versioned commissioner
+  state using only the bounded commissioner credential; and
+- prints a typed snapshot plus the remaining API blockers.
+
+Run it outside the legacy callback container with a token minted by the league
+owner or a Softmax team member. The raw token stays outside git and the Coworld
+manifest:
+
+```sh
+cd crewrift-prime/commissioner
+export CREWRIFT_PRIME_COMMISSIONER_TOKEN=cmr_...
+export CREWRIFT_PRIME_LEAGUE_ID=league_...
+export OBSERVATORY_API_URL=https://softmax.com/api/observatory
+
+python platform_manager.py inspect
+python platform_manager.py reconcile
+```
+
+The live `/round` callback remains authoritative for Prime-specific behaviors
+the current platform API cannot express without changing the game rules:
+
+1. Qualification cannot use a `cmr_` token yet: experience-request create/read,
+   child episodes, and results-artifact reads are outside the commissioner allowlist.
+2. Configured filler-policy reads are team-only, and the generic planner duplicates
+   real entrants rather than resolving league fillers.
+3. The generic planner cannot pin imposter/crew slots, select per-episode variants,
+   apply game-config overrides, or accept an explicit validated seating plan.
+4. The generic scorer only supports mean/EWMA scalar scores. Prime needs per-slot
+   results JSON, void exclusion, role-weighted wins, and its player-collapsed
+   win-rate board.
+5. Commissioner tokens can read round reports/logs and division descriptions, but
+   cannot write Prime's calculation trace, rendered report, leaderboard payload,
+   or player-facing division description/changelog.
+6. The REST surface has no work lease/webhook and the Coworld runnable manifest has
+   no private `cmr_` credential channel, so an external scheduler must invoke this
+   one-shot agent until the platform owns that execution boundary.
+
+`platform_api.py` already types the supported membership and round lifecycle
+requests so the legacy implementations can be removed as each missing platform
+capability lands.
+
 ## Qualification — event-driven, results-JSON ("one game and we're in")
 
 There is **no Qualifiers staging division**. When a new policy is submitted, the
@@ -214,7 +268,7 @@ game can still dispatch.
   2. the **per-league fillers served by the league-config API** —
      `GET /v2/leagues/{league_id}/filler-policies` (an admin configures them in the
      web app). The commissioner reuses its existing authenticated Observatory client
-     (`xp_request_client.py`, `X-Auth-Token`) and the `league_id` from
+     (`xp_request_client.py`, `Authorization: Bearer`) and the `league_id` from
      `round_start.league.id`; else
   3. no fillers.
 
@@ -435,6 +489,10 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
   stages, Competition division). Loaded via `RULESET_STRATEGY_CONFIG_PATH`.
 - `app.py` — ASGI entrypoint; imports the subclass (registers key
   `crewrift_prime_skill`) then builds `commissioner_app()`.
+- `platform_api.py` — typed bearer-authenticated client for the bounded platform
+  commissioner surface.
+- `platform_manager.py` — one-shot topology/settings reconciliation and complete
+  league-context inspection using a `cmr_` token.
 - `debug_decision.py` — local offline debug/decision script.
 - `Dockerfile` — installs `vendor/` + `openskill` then overlays the above.
 - `vendor/` — vendored upstream `Metta-AI/commissioners` package (see
