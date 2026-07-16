@@ -81,20 +81,22 @@ This matches the platform contract:
 
 ### 3. Interview-mode container launch + address — blocks only the LLM interview gate
 
-**Problem.** There is **no platform capability** to launch a candidate player
-container in *interview mode*, nor to surface that container's address back to the
-commissioner. The commissioner reaches the player's interview websocket server
-(`coworld.interview.v1`, port **8770**) through an injectable transport provider
-that defaults to the env var `CREWRIFT_PRIME_INTERVIEW_ADDR`.
+**Problem.** There is **no uploaded-policy contract** for an alternate interview
+runnable: policy versions store only their normal game `run` command, and the
+current Crewrift player manifests do not declare an `interview_run`. Consequently
+the platform has neither a command it can safely launch in *interview mode* nor a
+short-lived service lifecycle for reaching it. The commissioner expects the
+player's `coworld.interview.v1` websocket on port **8770** through an injectable
+transport provider that defaults to `CREWRIFT_PRIME_INTERVIEW_ADDR`.
 
-**Fix (follow-up).** Build a **player-interview-mode launcher** analogous to
+**Fix (follow-up).** First add a typed `interview_run` contract to policy upload
+metadata and require candidates that participate in this gate to implement it.
+Then build a **player-interview-mode launcher** analogous to
 `CommissionerContainer` (`src/metta/app_backend/.../container_lifecycle.py`
-~162–218): a k8s `Job` + `Service` running the **player** image with its command
-overridden to the manifest's `interview_run` (from
-`players/crewbot3000/coplayer_manifest.json`), exposing port **8770**. Then surface
-the in-cluster `Service` DNS to the commissioner. Recommended: a new per-candidate
-endpoint that returns the address. Alternatives: a static env var, or extend the
-xp-request response to carry it.
+~162–218): a k8s `Job` + `Service` running the **player** image with that command,
+exposing port **8770**. A league-bound commissioner endpoint should own the
+short-lived lifecycle and proxy the typed question/answer exchange; returning
+in-cluster Service DNS to an external commissioner is not sufficient.
 
 **Until then:** ship with `CREWRIFT_PRIME_INTERVIEW_ENABLED=0`, which skips the
 interview gate (neutral pass). Base qualification (skill gate) is unaffected.

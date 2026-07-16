@@ -64,11 +64,13 @@ python platform_manager.py run
 
 Two platform gaps remain:
 
-1. The interview hard gate needs a short-lived API operation that launches the
-   candidate policy's alternate websocket interview server and returns its scoped
-   address. The shipped image currently disables that gate; enabling it requires
-   `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an operator-launched server, otherwise
-   qualification correctly holds for an infrastructure retry.
+1. The interview hard gate first needs an uploaded-policy contract for declaring
+   an alternate interview runnable (policy versions currently carry only their
+   normal game command), plus a short-lived API operation that launches it and
+   proxies the question/answer exchange. The shipped image currently disables
+   that gate; enabling it requires `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an
+   operator-launched server, otherwise qualification correctly holds for an
+   infrastructure retry.
 2. The REST surface has no work lease/webhook and the Coworld runnable manifest
    has no private `cmr_` credential channel. An external scheduler must invoke
    this one-shot agent and deliver/rotate its secret until the platform owns that

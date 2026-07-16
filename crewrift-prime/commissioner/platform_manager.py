@@ -77,12 +77,14 @@ PLATFORM_CAPABILITY_GAPS = [
     PlatformCapabilityGap(
         capability="candidate interview launch",
         blocker=(
-            "Prime's qualification gate must launch the candidate policy's alternate "
-            "websocket interview server and receive its reachable address."
+            "Prime's qualification gate needs a candidate websocket interview server, but "
+            "uploaded policy versions declare only their normal game runnable and therefore "
+            "have no typed alternate interview entrypoint for the platform to launch."
         ),
         required_api_change=(
-            "Add a league-bound commissioner endpoint that creates a short-lived policy "
-            "interview session and returns its scoped websocket address and expiry."
+            "Define an uploaded-policy interview-runnable contract, then add a league-bound "
+            "commissioner endpoint that creates a short-lived interview session and proxies "
+            "the typed question/answer exchange."
         ),
     ),
     PlatformCapabilityGap(
