@@ -111,3 +111,22 @@ suite "expand replay event trace":
     if imposterManifest != nil:
       check imposterManifest["value"]["role"].getStr() == "imposter"
       check imposterManifest["value"]["assigned_tasks"].len == 0
+
+  test "manifest emits identity rows without the snapshot sampling":
+    # Roles and assigned tasks live only on player_manifest, so a consumer that
+    # wants them used to have to ask for snapshotEvery -- which also switches on
+    # a shadow-mask trace per living player per tick. `manifest` decouples the
+    # two: identity and geometry, none of the sampling.
+    let timeline = expandReplayTimeline(manifestReplayData(), manifest = true)
+
+    check timeline.traceRows.hasKey("episode_metadata")
+    check timeline.traceRows.hasKey("map_geometry")
+    check timeline.traceRows.hasKey("player_manifest")
+    check not timeline.traceRows.hasKey("player_state")
+    check not timeline.traceRows.hasKey("body_state")
+    check not timeline.traceRows.hasKey("player_visible_interval")
+
+  test "the default emits no trace rows at all":
+    # resim_batch and the eventlog reporter call expandReplayTimeline(data) for
+    # the events alone; they must not start paying for rows they never read.
+    check expandReplayTimeline(manifestReplayData()).traceRows.len == 0

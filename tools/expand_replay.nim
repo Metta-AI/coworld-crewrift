@@ -1115,8 +1115,24 @@ proc eventsAt(timeline: ReplayTimeline, tick: int): seq[ReplayEvent] =
     if event.tick == tick:
       result.add(event)
 
-proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline =
+proc expandReplayTimeline*(
+  data: ReplayData,
+  snapshotEvery = 0,
+  manifest = false
+): ReplayTimeline =
   ## Expands one replay into a structured event timeline.
+  ##
+  ## `manifest` emits the context rows that identify the episode rather than
+  ## sample it: `episode_metadata`, `map_geometry`, and one `player_manifest`
+  ## per player (the only row carrying `role` and `assigned_tasks`). They are
+  ## O(1) / O(players), so a consumer that needs identity no longer has to pay
+  ## for `snapshotEvery`'s per-tick line-of-sight pass to get it.
+  ##
+  ## `snapshotEvery` still means what it always did: sample `player_state` /
+  ## `body_state` every N ticks (and on any tick an event fired), plus the
+  ## `visibility_interval` rows -- which cost a shadow-mask trace per living
+  ## player per tick.
+  let contextRows = manifest or snapshotEvery > 0
   let previousDir = getCurrentDir()
   setCurrentDir(GameDir)
   try:
@@ -1141,7 +1157,7 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
       done.add(task.completed)
     replay.looping = false
     replay.mismatchQuit = true
-    if snapshotEvery > 0:
+    if contextRows:
       result.traceRows.add(sim.episodeMetadataRow(snapshotEvery))
       result.traceRows.add(sim.mapGeometryRow())
 
@@ -1199,8 +1215,9 @@ proc expandReplayTimeline*(data: ReplayData, snapshotEvery = 0): ReplayTimeline 
       sim.printVotes(tick, result.events, votes)
       sim.printChats(tick, result.events, chatCount)
       sim.printScoreChanges(tick, result.events, rewards)
-      if snapshotEvery > 0:
+      if contextRows:
         sim.addPlayerManifestRows(tick, result.traceRows, manifestedPlayers)
+      if snapshotEvery > 0:
         sim.addVisibilityRows(tick, result.traceRows, visibilityIntervals)
         if tick mod snapshotEvery == 0 or result.events.len > eventStart:
           sim.addStateRows(tick, result.traceRows)
@@ -1280,7 +1297,8 @@ proc expandReplay(config: ReplayCliConfig) {.used.} =
     if config.outputFormat == JsonlFormat:
       config.snapshotEvery
     else:
-      0
+      0,
+    manifest = config.outputFormat == JsonlFormat
   )
   case config.outputFormat
   of TextFormat:
