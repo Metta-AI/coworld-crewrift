@@ -4,8 +4,9 @@ import json
 import os
 import unittest
 import urllib.request
-from uuid import UUID
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
+from uuid import UUID
 
 from commissioners.common.models import (
     DivisionCommissionerDescriptionPublic,
@@ -31,14 +32,18 @@ from platform_api import (
     LeagueSettingsDefaults,
     LeagueSettingsResponse,
     LeagueSummary,
+    MembershipEventBatchResult,
     MembershipSummary,
     PlatformCommissionerClient,
     PlayerRef,
     PolicyVersionRef,
     RoundList,
+    RoundDetail,
+    RoundEpisodePlan,
     RoundEpisodeResult,
     RoundEpisodeRuntime,
     RoundEpisodeScore,
+    RoundResultSummary,
     RoundSummary,
 )
 from platform_manager import (
@@ -69,6 +74,7 @@ class PlatformCommissionerClientTest(unittest.TestCase):
             "id": "league_00000000-0000-0000-0000-000000000001",
             "name": "Crewrift Prime",
             "commissioner_key": "container",
+            "rounds_paused_at": None,
         }
         with patch.object(
             urllib.request, "urlopen", return_value=_Response(payload)
@@ -167,6 +173,40 @@ class PlatformCommissionerClientTest(unittest.TestCase):
         self.assertEqual(request.method, "POST")
         self.assertEqual(json.loads(request.data)["idempotency_key"], "submission-21")
         self.assertEqual(membership.status, "competing")
+
+    def test_reads_typed_round_results_for_commissioner_history(self) -> None:
+        policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        payload = {
+            "id": "round_00000000-0000-0000-0000-000000000061",
+            "round_number": 4,
+            "status": "completed",
+            "division": {
+                "id": "div_00000000-0000-0000-0000-000000000001",
+                "name": "Competition",
+                "level": 1,
+                "type": "competition",
+            },
+            "round_config": {"entrant_policy_version_ids": [str(policy_id)]},
+            "results": [
+                {
+                    "id": "rr_00000000-0000-0000-0000-000000000081",
+                    "rank": 1,
+                    "score": 3,
+                    "result_metadata": {"points": 3},
+                    "policy_version": {"id": str(policy_id)},
+                    "player": {"id": "ply_1", "name": "Prime Player"},
+                    "created_at": "2026-07-16T00:00:00Z",
+                }
+            ],
+        }
+        with patch.object(urllib.request, "urlopen", return_value=_Response(payload)):
+            client = PlatformCommissionerClient(
+                base="https://example.test", token="cmr_secret"
+            )
+            round_detail = client.get_round(payload["id"])
+
+        self.assertEqual(round_detail.results[0].policy_version.id, policy_id)
+        self.assertEqual(round_detail.results[0].player.name, "Prime Player")
 
     def test_plans_explicit_role_pinned_round(self) -> None:
         policy_id = UUID("00000000-0000-0000-0000-000000000021")
@@ -318,6 +358,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
             id=self.league_id,
             name="Crewrift Prime",
             commissioner_key="container",
+            rounds_paused_at=None,
         )
         client.list_divisions.return_value = [
             DivisionRef(
@@ -335,6 +376,10 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         client.get_commissioner_state.return_value = CommissionerStateResponse(
             version=4,
             state=CommissionerState(root={"history": []}),
+        )
+        client.apply_membership_events.return_value = MembershipEventBatchResult(
+            applied=True,
+            results=[],
         )
         current = LeagueSettingsResponse(
             settings=LeagueSettings(
@@ -378,7 +423,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         self.assertEqual(result.remaining_gaps, PLATFORM_CAPABILITY_GAPS)
         self.assertEqual(
             [gap.kind for gap in result.remaining_gaps],
-            ["cross-surface", "hosting"],
+            ["api", "cross-surface", "hosting"],
         )
 
     def test_reconcile_does_not_rewrite_matching_settings(self) -> None:
@@ -402,7 +447,9 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
             is_champion=True,
             division=competition,
             policy_version=PolicyVersionRef(id=policy_id),
-            player=PlayerRef(id="ply_00000000-0000-0000-0000-000000000051"),
+            player=PlayerRef(
+                id="ply_00000000-0000-0000-0000-000000000051", name="Prime Player"
+            ),
         )
         pending = RoundSummary(
             id="round_00000000-0000-0000-0000-000000000061",
@@ -454,7 +501,10 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
                 is_champion=False,
                 division=competition,
                 policy_version=PolicyVersionRef(id=policy_id),
-                player=PlayerRef(id="ply_00000000-0000-0000-0000-000000000051"),
+                player=PlayerRef(
+                    id="ply_00000000-0000-0000-0000-000000000051",
+                    name="Prime Player",
+                ),
             )
         ]
         client.get_typed_league_settings.side_effect = None
@@ -489,7 +539,9 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
             policy_version=PolicyVersionRef(
                 id=UUID("00000000-0000-0000-0000-000000000021")
             ),
-            player=PlayerRef(id="ply_00000000-0000-0000-0000-000000000051"),
+            player=PlayerRef(
+                id="ply_00000000-0000-0000-0000-000000000051", name="Prime Player"
+            ),
         )
         client.list_memberships.return_value = [membership]
         client.get_typed_league_settings.side_effect = None
@@ -531,6 +583,51 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         self.assertEqual(keys[0], keys[1])
         self.assertTrue(keys[0].startswith("crewrift-prime-migration-"))
 
+    def test_run_stops_when_platform_rejects_membership_events(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        competition = client.list_divisions.return_value[0]
+        membership = MembershipSummary(
+            id="lpm_00000000-0000-0000-0000-000000000041",
+            status="submitted",
+            is_champion=False,
+            division=competition,
+            policy_version=PolicyVersionRef(
+                id=UUID("00000000-0000-0000-0000-000000000021")
+            ),
+            player=PlayerRef(
+                id="ply_00000000-0000-0000-0000-000000000051", name="Prime Player"
+            ),
+        )
+        client.list_memberships.return_value = [membership]
+        client.apply_membership_events.return_value = MembershipEventBatchResult(
+            applied=False,
+            results=[],
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+        manager.commissioner.migrate_league = MagicMock(
+            return_value=LeagueMigrationResult(
+                policy_membership_events=[
+                    CommissionerMembershipEventChange(
+                        league_policy_membership_id=UUID(
+                            "00000000-0000-0000-0000-000000000041"
+                        ),
+                        to_division_id=UUID("00000000-0000-0000-0000-000000000001"),
+                        status="competing",
+                        reason="skill gate passed",
+                    )
+                ]
+            )
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "Platform rejected Crewrift Prime membership events"
+        ):
+            manager.run_once()
+
+        client.create_round.assert_not_called()
+
     def test_run_scores_publishes_and_completes_terminal_round(self) -> None:
         client = self._client(current_spend_limit=10, final_spend_limit=10)
         policy_id = UUID("00000000-0000-0000-0000-000000000021")
@@ -541,7 +638,9 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
             is_champion=True,
             division=competition,
             policy_version=PolicyVersionRef(id=policy_id),
-            player=PlayerRef(id="ply_00000000-0000-0000-0000-000000000051"),
+            player=PlayerRef(
+                id="ply_00000000-0000-0000-0000-000000000051", name="Prime Player"
+            ),
         )
         running = RoundSummary(
             id="round_00000000-0000-0000-0000-000000000061",
@@ -585,6 +684,14 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
                 },
             )
         ]
+        client.plan_round.return_value = RoundEpisodePlan(
+            strategy="explicit",
+            coworld_id="cw_1",
+            variant_id="default",
+            seat_count=8,
+            entrant_policy_version_ids=[policy_id],
+            episodes=[],
+        )
         manager = CrewriftPrimePlatformManager(
             client, self.league_id, spend_limit_usd=10
         )
@@ -597,6 +704,221 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         client.update_commissioner_state.assert_called_once()
         client.complete_round.assert_called_once_with(running.id)
         self.assertEqual(result.rounds_completed, 1)
+
+    def test_run_scores_frozen_role_entrant_after_membership_drift(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        planned_policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        replacement_policy_id = UUID("00000000-0000-0000-0000-000000000022")
+        competition, imposters, crew = client.list_divisions.return_value
+        client.list_memberships.return_value = [
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000041",
+                status="disqualified",
+                substatus="inactive",
+                is_champion=False,
+                division=crew,
+                policy_version=PolicyVersionRef(id=planned_policy_id),
+                player=PlayerRef(id="ply_planned", name="Planned Player"),
+            ),
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000042",
+                status="competing",
+                substatus="active",
+                is_champion=True,
+                division=competition,
+                policy_version=PolicyVersionRef(id=replacement_policy_id),
+                player=PlayerRef(id="ply_replacement", name="Replacement Player"),
+            ),
+        ]
+        running = RoundSummary(
+            id="round_00000000-0000-0000-0000-000000000061",
+            round_number=1,
+            status="running",
+            division=imposters,
+            round_config={"entrant_policy_version_ids": [str(replacement_policy_id)]},
+        )
+        client.list_rounds.return_value = RoundList(
+            entries=[running], total_count=1, limit=200, offset=0
+        )
+        client.get_typed_league_settings.side_effect = None
+        client.get_typed_league_settings.return_value = LeagueSettingsResponse(
+            settings=LeagueSettings(
+                round_interval_minutes=10,
+                episode_player_pod_llm_spend_limit_usd=10,
+            ),
+            defaults=LeagueSettingsDefaults(
+                episodes_per_round=36, round_interval_minutes=10
+            ),
+        )
+        client.get_round_episodes.return_value = [
+            RoundEpisodeResult(
+                id="ereq_00000000-0000-0000-0000-000000000071",
+                job_index=0,
+                variant_id="default",
+                seed=7,
+                game_config={},
+                filler_seats=list(range(1, 8)),
+                runtime=RoundEpisodeRuntime(
+                    status="completed",
+                    policy_version_ids=[planned_policy_id] * 8,
+                    scores=[
+                        RoundEpisodeScore(policy_version_id=planned_policy_id, score=1)
+                    ],
+                ),
+                game_results={
+                    "imposter": [1, 1, 0, 0, 0, 0, 0, 0],
+                    "crew": [0, 0, 1, 1, 1, 1, 1, 1],
+                    "win": [True, True, False, False, False, False, False, False],
+                    "scores": [100, 100, 0, 0, 0, 0, 0, 0],
+                },
+            )
+        ]
+        client.plan_round.return_value = RoundEpisodePlan(
+            strategy="explicit",
+            coworld_id="cw_1",
+            variant_id="default",
+            seat_count=8,
+            entrant_policy_version_ids=[planned_policy_id],
+            episodes=[],
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+        manager.commissioner.migrate_league = MagicMock(
+            return_value=LeagueMigrationResult()
+        )
+
+        manager.run_once()
+
+        entries = client.score_authored_round.call_args.kwargs["entries"]
+        self.assertEqual(
+            [entry.policy_version_id for entry in entries], [planned_policy_id]
+        )
+        self.assertNotIn(
+            replacement_policy_id,
+            [entry.policy_version_id for entry in entries],
+        )
+
+    def test_run_honors_league_pause_for_qualification_and_scheduling(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        client.get_league.return_value = client.get_league.return_value.model_copy(
+            update={"rounds_paused_at": datetime.now(UTC)}
+        )
+        client.get_typed_league_settings.side_effect = None
+        client.get_typed_league_settings.return_value = LeagueSettingsResponse(
+            settings=LeagueSettings(
+                round_interval_minutes=10,
+                episode_player_pod_llm_spend_limit_usd=10,
+            ),
+            defaults=LeagueSettingsDefaults(
+                episodes_per_round=36, round_interval_minutes=10
+            ),
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+        manager.commissioner.migrate_league = MagicMock()
+
+        result = manager.run_once()
+
+        manager.commissioner.migrate_league.assert_not_called()
+        client.create_round.assert_not_called()
+        self.assertEqual(result.qualifications_applied, 0)
+        self.assertTrue(result.reconcile.snapshot.rounds_paused)
+
+    def test_run_leaves_cancelled_episode_round_for_platform_abort(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        competition = client.list_divisions.return_value[0]
+        client.list_memberships.return_value = [
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000041",
+                status="competing",
+                is_champion=True,
+                division=competition,
+                policy_version=PolicyVersionRef(id=policy_id),
+                player=PlayerRef(id="ply_1", name="Prime Player"),
+            )
+        ]
+        running = RoundSummary(
+            id="round_00000000-0000-0000-0000-000000000061",
+            round_number=1,
+            status="running",
+            division=competition,
+            round_config={"entrant_policy_version_ids": [str(policy_id)]},
+        )
+        client.list_rounds.return_value = RoundList(
+            entries=[running], total_count=1, limit=200, offset=0
+        )
+        client.get_typed_league_settings.side_effect = None
+        client.get_typed_league_settings.return_value = LeagueSettingsResponse(
+            settings=LeagueSettings(
+                round_interval_minutes=10,
+                episode_player_pod_llm_spend_limit_usd=10,
+            ),
+            defaults=LeagueSettingsDefaults(
+                episodes_per_round=36, round_interval_minutes=10
+            ),
+        )
+        client.get_round_episodes.return_value = [
+            RoundEpisodeResult(
+                id="ereq_00000000-0000-0000-0000-000000000071",
+                job_index=0,
+                variant_id="default",
+                seed=7,
+                game_config={},
+                filler_seats=[],
+                runtime=RoundEpisodeRuntime(
+                    status="cancelled",
+                    policy_version_ids=[policy_id],
+                ),
+            )
+        ]
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+        manager.commissioner.migrate_league = MagicMock(
+            return_value=LeagueMigrationResult()
+        )
+
+        result = manager.run_once()
+
+        client.score_authored_round.assert_not_called()
+        client.complete_round.assert_not_called()
+        self.assertEqual(result.rounds_completed, 0)
+
+    def test_recent_results_are_loaded_from_completed_round_details(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        competition = client.list_divisions.return_value[0]
+        completed = RoundSummary(
+            id="round_00000000-0000-0000-0000-000000000061",
+            round_number=4,
+            status="completed",
+            division=competition,
+            round_config={"entrant_policy_version_ids": [str(policy_id)]},
+        )
+        client.get_round.return_value = RoundDetail(
+            **completed.model_dump(),
+            results=[
+                RoundResultSummary(
+                    rank=1,
+                    score=3,
+                    result_metadata={"points": 3},
+                    policy_version=PolicyVersionRef(id=policy_id),
+                    player=PlayerRef(id="ply_1", name="Prime Player"),
+                )
+            ],
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+
+        recent_results = manager._recent_results([completed])
+
+        self.assertEqual(len(recent_results), 1)
+        self.assertEqual(recent_results[0].division_id, UUID(competition.id[4:]))
+        self.assertEqual(recent_results[0].score, 3)
 
     @patch.dict(
         os.environ,

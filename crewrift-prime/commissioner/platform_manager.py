@@ -34,6 +34,7 @@ from commissioners.common.protocol import (
     EpisodeScore,
     LeagueInfo,
     MembershipInfo,
+    RecentResult,
     RoundStart,
     VariantInfo,
 )
@@ -76,6 +77,19 @@ class PlatformCapabilityGap(BaseModel):
 
 PLATFORM_CAPABILITY_GAPS = [
     PlatformCapabilityGap(
+        kind="api",
+        capability="terminal round failure or cancellation",
+        blocker=(
+            "Authored scoring accepts completed/failed episodes, but a cancelled episode "
+            "cannot be scored and the commissioner has no league-bound operation that marks "
+            "the owning active round failed or cancelled."
+        ),
+        required_change=(
+            "Add an idempotent commissioner-authorized round abort/fail operation with a "
+            "typed reason and durable terminal status so an unrecoverable round cannot remain active."
+        ),
+    ),
+    PlatformCapabilityGap(
         kind="cross-surface",
         capability="candidate interview launch",
         blocker=(
@@ -115,6 +129,7 @@ class PlatformLeagueSnapshot(BaseModel):
     round_count: int
     commissioner_state_version: int
     spend_limit_usd: float | None
+    rounds_paused: bool
 
 
 class PlatformReconcileResult(BaseModel):
@@ -219,6 +234,7 @@ class CrewriftPrimePlatformManager:
     def run_once(self) -> PlatformRunResult:
         reconcile = self.reconcile()
         league = self.client.get_league(self.league_id)
+        rounds_paused = league.rounds_paused_at is not None
         divisions = self.client.list_divisions(self.league_id)
         memberships = self.client.list_memberships(self.league_id)
         league_uuid = _uuid(league.id)
@@ -245,21 +261,24 @@ class CrewriftPrimePlatformManager:
             )
             for membership in memberships
         ]
-        migration = self.commissioner.migrate_league(
-            LeagueMigrationContext(
-                league=LeagueSnapshot(
-                    id=league_uuid,
-                    commissioner_key=league.commissioner_key,
-                    commissioner_config=None,
-                ),
-                divisions=division_snapshots,
-                memberships=membership_snapshots,
+        migration_events = []
+        if not rounds_paused:
+            migration = self.commissioner.migrate_league(
+                LeagueMigrationContext(
+                    league=LeagueSnapshot(
+                        id=league_uuid,
+                        commissioner_key=league.commissioner_key,
+                        commissioner_config=None,
+                    ),
+                    divisions=division_snapshots,
+                    memberships=membership_snapshots,
+                )
             )
-        )
+            migration_events = migration.policy_membership_events
         membership_public_id = {
             _uuid(membership.id): membership.id for membership in memberships
         }
-        if migration.policy_membership_events:
+        if migration_events:
             changes = [
                 MembershipEventChange(
                     league_policy_membership_id=membership_public_id[
@@ -285,7 +304,7 @@ class CrewriftPrimePlatformManager:
                         for evidence in event.evidence
                     ],
                 )
-                for event in migration.policy_membership_events
+                for event in migration_events
             ]
             change_digest = hashlib.sha256(
                 json.dumps(
@@ -294,11 +313,31 @@ class CrewriftPrimePlatformManager:
                     separators=(",", ":"),
                 ).encode()
             ).hexdigest()
-            self.client.apply_membership_events(
+            membership_result = self.client.apply_membership_events(
                 self.league_id,
                 changes,
                 idempotency_key=f"crewrift-prime-migration-{change_digest}",
             )
+            if not membership_result.applied:
+                raise RuntimeError(
+                    f"Platform rejected Crewrift Prime membership events: {membership_result.results}"
+                )
+            memberships = self.client.list_memberships(self.league_id)
+            membership_snapshots = [
+                MembershipSnapshot(
+                    id=_uuid(membership.id),
+                    league_id=league_uuid,
+                    division_id=_uuid(membership.division.id),
+                    policy_version_id=membership.policy_version.id,
+                    player_id=None
+                    if membership.player is None
+                    else membership.player.id,
+                    status=PolicyMembershipStatus(membership.status),
+                    substatus=membership.substatus,
+                    is_champion=membership.is_champion,
+                )
+                for membership in memberships
+            ]
 
         competition = next(
             division for division in divisions if division.name == "Competition"
@@ -322,6 +361,7 @@ class CrewriftPrimePlatformManager:
             )
         ]
         rounds = self.client.list_rounds(self.league_id).entries
+        recent_results = self._recent_results(rounds)
         active_division_ids = {
             round_.division.id
             for round_ in rounds
@@ -339,7 +379,7 @@ class CrewriftPrimePlatformManager:
         )
         slot = int(datetime.now(UTC).timestamp() // (interval * 60))
         created = 0
-        if entrant_ids:
+        if entrant_ids and not rounds_paused:
             for division in divisions:
                 if division.id in active_division_ids:
                     continue
@@ -365,6 +405,13 @@ class CrewriftPrimePlatformManager:
                     memberships=memberships,
                     round_=round_,
                     state=state.state.root,
+                    recent_results=recent_results,
+                    entrant_policy_version_ids=[
+                        UUID(str(policy_version_id))
+                        for policy_version_id in round_.round_config[
+                            "entrant_policy_version_ids"
+                        ]
+                    ],
                 )
                 schedule = self.commissioner.schedule_episodes_for_round_start(
                     round_start
@@ -392,17 +439,20 @@ class CrewriftPrimePlatformManager:
                 dispatched += 1
                 continue
             if any(
-                episode.runtime.status not in {"completed", "failed", "cancelled"}
+                episode.runtime.status not in {"completed", "failed"}
                 for episode in episodes
             ):
                 continue
 
+            plan = self.client.plan_round(round_.id)
             round_start = self._round_start(
                 league=league,
                 divisions=divisions,
                 memberships=memberships,
                 round_=round_,
                 state=state.state.root,
+                recent_results=recent_results,
+                entrant_policy_version_ids=plan.entrant_policy_version_ids,
             )
             scheduled = [
                 EpisodeRequest(
@@ -492,7 +542,7 @@ class CrewriftPrimePlatformManager:
             completed += 1
 
         return PlatformRunResult(
-            qualifications_applied=len(migration.policy_membership_events),
+            qualifications_applied=len(migration_events),
             rounds_created=created,
             rounds_dispatched=dispatched,
             rounds_completed=completed,
@@ -513,13 +563,64 @@ class CrewriftPrimePlatformManager:
             completed_at=round_.completed_at,
         )
 
+    def _recent_results(self, rounds: list[RoundSummary]) -> list[RecentResult]:
+        recent_results: list[RecentResult] = []
+        for round_ in rounds:
+            if round_.status != "completed":
+                continue
+            detail = self.client.get_round(round_.id)
+            for result in detail.results:
+                recent_results.append(
+                    RecentResult(
+                        round_id=_uuid(round_.id),
+                        division_id=_uuid(round_.division.id),
+                        round_number=round_.round_number,
+                        policy_version_id=result.policy_version.id,
+                        rank=result.rank,
+                        score=result.score,
+                    )
+                )
+                if len(recent_results) == 50:
+                    return recent_results
+        return recent_results
+
     @staticmethod
-    def _round_start(*, league, divisions, memberships, round_, state) -> RoundStart:
+    def _round_start(
+        *,
+        league,
+        divisions,
+        memberships,
+        round_,
+        state,
+        recent_results,
+        entrant_policy_version_ids,
+    ) -> RoundStart:
         durable_state = dict(state) if isinstance(state, dict) else {}
         durable_state["round_config"] = {
             **round_.round_config,
             "current_division_id": str(_uuid(round_.division.id)),
+            "entrant_policy_version_ids": [
+                str(policy_version_id)
+                for policy_version_id in entrant_policy_version_ids
+            ],
         }
+        membership_by_policy_version_id = {}
+        for membership in memberships:
+            membership_by_policy_version_id.setdefault(
+                membership.policy_version.id, membership
+            )
+        competition = next(
+            division for division in divisions if division.name == "Competition"
+        )
+        membership_division_id = (
+            competition.id
+            if round_.division.name in {"Imposters", "Crew"}
+            else round_.division.id
+        )
+        frozen_memberships = [
+            membership_by_policy_version_id[policy_version_id]
+            for policy_version_id in entrant_policy_version_ids
+        ]
         return RoundStart(
             round_id=_uuid(round_.id),
             round_number=round_.round_number,
@@ -539,18 +640,18 @@ class CrewriftPrimePlatformManager:
                 MembershipInfo(
                     id=_uuid(membership.id),
                     league_id=_uuid(league.id),
-                    division_id=_uuid(membership.division.id),
+                    division_id=_uuid(membership_division_id),
                     policy_version_id=membership.policy_version.id,
                     player_id=None
                     if membership.player is None
                     else membership.player.id,
-                    status=membership.status,
-                    substatus=membership.substatus,
+                    status="competing",
+                    substatus="active",
                     is_champion=membership.is_champion,
                 )
-                for membership in memberships
+                for membership in frozen_memberships
             ],
-            recent_results=[],
+            recent_results=recent_results,
             variants=[VariantInfo(id="default", name="default", game_config={})],
             state=durable_state,
         )
@@ -582,6 +683,7 @@ class CrewriftPrimePlatformManager:
                 round_count=rounds.total_count,
                 commissioner_state_version=state.version,
                 spend_limit_usd=settings.settings.episode_player_pod_llm_spend_limit_usd,
+                rounds_paused=league.rounds_paused_at is not None,
             ),
             topology_moves=[]
             if topology is None

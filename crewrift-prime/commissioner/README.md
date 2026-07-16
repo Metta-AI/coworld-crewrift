@@ -39,9 +39,15 @@ pass through the same Prime rule implementation as the callback container:
 
 - qualifies submitted policies through league-bound, idempotent experience
   requests and applies the resulting membership events;
+- honors `rounds_paused_at`: a paused league does not qualify policies or create
+  rounds, while already-created rounds can still drain;
 - creates cadence-keyed rounds and writes the exact role-pinned seating plan;
 - dispatches planned episodes and, on a later invocation, reads their terminal
   results;
+- re-reads the persisted episode plan before scoring and reconstructs `RoundStart`
+  from its frozen entrant ids rather than the mutable live roster or original
+  round config, while feeding recent round results back into Prime's cumulative
+  standings state;
 - persists Prime's role-weighted score trace, safe report, round display,
   player-collapsed win-rate leaderboard, and versioned commissioner state; and
 - completes the round. Replaying a pass does not duplicate requests, rounds,
@@ -78,16 +84,20 @@ docker run --rm \
 does not schedule this one-shot API command. Until the platform owns that worker
 boundary, the scheduler must override the image command as shown above.
 
-Two platform gaps remain:
+Three platform gaps remain:
 
-1. The interview hard gate first needs an uploaded-policy contract for declaring
+1. A round with a cancelled episode cannot be authored-scored (correctly), but
+   the commissioner has no idempotent league-bound operation to mark that active
+   round failed/cancelled with a typed reason. Until an abort/fail endpoint exists,
+   this rare unrecoverable state requires a team operator to clear the round.
+2. The interview hard gate first needs an uploaded-policy contract for declaring
    an alternate interview runnable (policy versions currently carry only their
    normal game command), plus a short-lived API operation that launches it and
    proxies the question/answer exchange. The shipped image currently disables
    that gate; enabling it requires `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an
    operator-launched server, otherwise qualification correctly holds for an
    infrastructure retry.
-2. This is an operational hosting gap rather than a missing league API endpoint:
+3. This is an operational hosting gap rather than a missing league API endpoint:
    the REST surface has no work lease/webhook and the Coworld runnable manifest
    has no private `cmr_` credential channel. An external scheduler must invoke
    this one-shot agent and deliver/rotate its secret until the platform owns that

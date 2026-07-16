@@ -26,6 +26,7 @@ class LeagueSummary(PlatformApiModel):
     id: str
     name: str
     commissioner_key: str
+    rounds_paused_at: datetime | None
 
 
 class DivisionRef(PlatformApiModel):
@@ -42,6 +43,7 @@ class PolicyVersionRef(PlatformApiModel):
 
 class PlayerRef(PlatformApiModel):
     id: str
+    name: str
 
 
 class MembershipSummary(PlatformApiModel):
@@ -63,6 +65,18 @@ class RoundSummary(PlatformApiModel):
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class RoundResultSummary(PlatformApiModel):
+    rank: int
+    score: float
+    result_metadata: dict[str, Any] | None = None
+    policy_version: PolicyVersionRef
+    player: PlayerRef | None = None
+
+
+class RoundDetail(RoundSummary):
+    results: list[RoundResultSummary]
 
 
 class RoundList(PlatformApiModel):
@@ -354,8 +368,8 @@ class PlatformCommissionerClient(XpRequestClient):
         )
         return RoundList.model_validate(payload)
 
-    def get_round(self, round_id: str) -> RoundSummary:
-        return RoundSummary.model_validate(
+    def get_round(self, round_id: str) -> RoundDetail:
+        return RoundDetail.model_validate(
             self._get(f"/v2/rounds/{urllib.parse.quote(round_id)}")
         )
 
