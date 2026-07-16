@@ -59,6 +59,7 @@ class MembershipSummary(PlatformApiModel):
 class RoundSummary(PlatformApiModel):
     id: str
     round_number: int
+    commissioner_key: str
     status: str
     division: DivisionRef
     round_config: dict[str, Any] = Field(default_factory=dict)

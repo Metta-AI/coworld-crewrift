@@ -384,6 +384,8 @@ class CrewriftPrimePlatformManager:
         aborted = 0
         completed = 0
         for round_ in self.client.list_rounds(self.league_id).entries:
+            if round_.commissioner_key != "platform":
+                continue
             if round_.status not in {"pending", "claimed", "running"}:
                 continue
             episodes = self.client.get_round_episodes(round_.id)

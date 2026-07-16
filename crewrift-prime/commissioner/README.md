@@ -42,6 +42,9 @@ pass through the same Prime rule implementation as the callback container:
 - honors `rounds_paused_at`: a paused league does not qualify policies or create
   rounds, while already-created rounds can still drain;
 - creates cadence-keyed rounds and writes the exact role-pinned seating plan;
+- processes only `commissioner_key=platform` rounds, while a still-active legacy
+  container round blocks duplicate scheduling but remains owned by the websocket
+  commissioner during migration;
 - dispatches planned episodes and, on a later invocation, reads their terminal
   results;
 - re-reads the persisted episode plan before scoring and reconstructs `RoundStart`
