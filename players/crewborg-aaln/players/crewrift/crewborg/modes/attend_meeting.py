@@ -98,13 +98,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
 
     def decide(self, belief: Belief, action_state: ActionState) -> Intent:
         self._reset_for_meeting_if_needed(belief)
-        if action_state.vote_confirmed:
-            self._vote_submitted = True
-            return Intent(kind="idle", reason="vote already confirmed")
-
         # A submitted vote must keep returning the same vote intent until the
-        # action layer confirms it: an intent change mid-cursor-walk resets the
-        # walk, and an idle here would drop the vote entirely (the -10 penalty).
+        # server closes the meeting. Do not switch to ``idle`` after pressing A:
+        # that intent change resets cursor state and can re-confirm elsewhere.
         if self._vote_submitted:
             return self._submit_vote_intent(belief, reason="continuing submitted vote")
 

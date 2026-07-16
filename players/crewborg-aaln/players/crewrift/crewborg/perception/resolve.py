@@ -18,6 +18,7 @@ from players.crewrift.crewborg.perception.constants import (
     ENTITY_COLLISION_DX,
     ENTITY_COLLISION_DY,
     GAME_INFO_PREFIX_GAME_TIMER,
+    GAME_INFO_PREFIX_IMPOSTERS,
     GAME_INFO_PREFIX_KILL_COOLDOWN,
     GAME_INFO_PREFIX_TASKS,
     GAME_INFO_PREFIX_VOTE_TIMER,
@@ -149,6 +150,7 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
     # Game-info interstitial settings (only attached when the title is showing).
     game_info_present = False
     info_kill_cooldown: int | None = None
+    info_imposter_count: int | None = None
     info_tasks: int | None = None
     info_vote_timer: int | None = None
     info_max_ticks: int | None = None
@@ -245,6 +247,8 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
             phase_texts.add(label)
         elif (value := _parse_bounded_int(label, GAME_INFO_PREFIX_KILL_COOLDOWN, "T")) is not None:
             info_kill_cooldown = value
+        elif (value := _parse_trailing_int(label[len(GAME_INFO_PREFIX_IMPOSTERS) :])) is not None and label.startswith(GAME_INFO_PREFIX_IMPOSTERS):
+            info_imposter_count = value
         elif (value := _parse_bounded_int(label, GAME_INFO_PREFIX_TASKS, " EACH")) is not None:
             info_tasks = value
         elif (value := _parse_bounded_int(label, GAME_INFO_PREFIX_VOTE_TIMER, "T")) is not None:
@@ -334,6 +338,7 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
     game_info = (
         GameInfo(
             kill_cooldown_ticks=info_kill_cooldown,
+            imposter_count=info_imposter_count,
             tasks_per_player=info_tasks,
             vote_timer_ticks=info_vote_timer,
             max_ticks=info_max_ticks,

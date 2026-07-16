@@ -143,7 +143,13 @@ def test_vote_cast_fires_once_per_meeting() -> None:
     h = _Harness()
     meeting = Belief(phase="Voting", phase_start_tick=10)
     h.step(belief=meeting, action_state=ActionState(vote_confirmed=False))
-    h.step(belief=meeting, action_state=ActionState(vote_confirmed=True))  # cast
+    h.step(
+        belief=meeting,
+        action_state=ActionState(
+            vote_confirmed=True,
+            current_intent=Intent(kind="vote", target_color="red"),
+        ),
+    )  # cast
     h.step(belief=meeting, action_state=ActionState(vote_confirmed=True))  # held: no re-emit
     # The intent-change reset + re-confirm flap (the production ~64×/episode bug):
     # still the same meeting, so no new event.
@@ -153,7 +159,7 @@ def test_vote_cast_fires_once_per_meeting() -> None:
     h.step(belief=meeting, action_state=ActionState(vote_confirmed=True))
 
     [event] = h.events("domain.vote_cast")
-    assert event.data["meeting_id"] == 10
+    assert event.data == _spatial(meeting_id=10, intended_target="red")
     assert len(h.counters("domain.vote_cast")) == 1
 
     # A NEW meeting (fresh phase_start_tick) casts again.
@@ -161,13 +167,13 @@ def test_vote_cast_fires_once_per_meeting() -> None:
     next_meeting = Belief(phase="Voting", phase_start_tick=99)
     h.step(belief=next_meeting, action_state=ActionState(vote_confirmed=True))
     assert [e.data["meeting_id"] for e in h.events("domain.vote_cast")] == [10, 99]
+    assert [e.data["intended_target"] for e in h.events("domain.vote_cast")] == ["red", "skip"]
     assert len(h.counters("domain.vote_cast")) == 2
 
     # vote_confirmed flapping outside Voting (no meeting) never emits.
     h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=False))
     h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=True))
     assert len(h.events("domain.vote_cast")) == 2
-
 
 def test_task_started_on_new_target_and_resume_after_interruption() -> None:
     h = _Harness()

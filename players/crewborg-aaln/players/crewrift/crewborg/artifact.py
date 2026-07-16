@@ -484,7 +484,8 @@ def _report_votes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """This player's votes: tick, chosen target, and the reason it gave.
 
     Sourced from domain.meeting_vote_selected (which carries the chosen target +
-    reason); domain.vote_cast only marks the confirm edge and has no target.
+    reason). domain.vote_cast marks the confirm edge and carries the intended
+    target; the authoritative observed vote comes from the game replay.
     """
 
     try:

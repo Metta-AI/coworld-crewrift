@@ -717,6 +717,8 @@ def update_belief(belief: Belief, percept: Percept) -> None:
         info = resolved.game_info
         if info.kill_cooldown_ticks is not None:
             belief.kill_cooldown_config_ticks = info.kill_cooldown_ticks
+        if info.imposter_count is not None:
+            belief.imposter_count = info.imposter_count
         if info.tasks_per_player is not None:
             belief.tasks_per_player = info.tasks_per_player
         if info.vote_timer_ticks is not None:

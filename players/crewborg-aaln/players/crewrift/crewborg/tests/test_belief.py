@@ -307,11 +307,16 @@ def test_game_info_phase_and_config_learning() -> None:
         1,
         phase_texts=frozenset({"GAME INFO"}),
         game_info=GameInfo(
-            kill_cooldown_ticks=500, tasks_per_player=8, vote_timer_ticks=1200, max_ticks=10000
+            kill_cooldown_ticks=500,
+            imposter_count=1,
+            tasks_per_player=8,
+            vote_timer_ticks=1200,
+            max_ticks=10000,
         ),
     )
     assert belief.phase == "GameInfo"
     assert belief.kill_cooldown_config_ticks == 500
+    assert belief.imposter_count == 1
     assert belief.tasks_per_player == 8
     assert belief.vote_timer_ticks == 1200
     assert belief.game_max_ticks == 10000

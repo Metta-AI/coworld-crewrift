@@ -1153,6 +1153,7 @@ proc gameInfoTextLines(sim: SimServer): seq[string] =
   ## Returns the settings text for the pregame info screen.
   result.add("GAME INFO")
   result.add("KILL COOLDOWN " & $sim.config.killCooldownTicks & "T")
+  result.add("IMPOSTERS " & $sim.config.effectiveImposterCount(sim.players.len))
   result.add("TASKS " & $sim.config.tasksPerPlayer & " EACH")
   result.add("VOTE TIMER " & $sim.config.voteTimerTicks & "T")
   if sim.config.maxTicks > 0:

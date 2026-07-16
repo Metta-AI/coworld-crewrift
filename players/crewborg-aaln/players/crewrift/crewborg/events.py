@@ -248,7 +248,12 @@ class CrewborgEventTracer:
             and self._vote_cast_meeting_id != meeting_id
         ):
             self._vote_cast_meeting_id = meeting_id
-            emit.event("vote_cast", {"meeting_id": meeting_id})
+            intended = action_state.current_intent.target_color if action_state.current_intent else None
+            intended = intended or "skip"
+            emit.event(
+                "vote_cast",
+                {"meeting_id": meeting_id, "intended_target": intended},
+            )
             emit.counter("vote_cast")
         self._vote_confirmed = action_state.vote_confirmed
 
