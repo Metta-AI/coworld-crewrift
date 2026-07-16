@@ -1,11 +1,4 @@
-"""Typed client for the league-scoped platform commissioner API.
-
-The Crewrift Prime commissioner still uses the container callback protocol for
-game-specific round planning and scoring. This client is the pull/write boundary
-for the parts the platform commissioner API can already own without changing
-Prime's rules: league context, division topology, durable settings and state,
-membership mutations, and the generic round lifecycle.
-"""
+"""Typed client for the league-scoped platform commissioner API."""
 
 from __future__ import annotations
 
@@ -15,6 +8,12 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, RootModel
+
+from commissioners.common.models import DivisionCommissionerDescriptionPublic
+from commissioners.common.protocol import (
+    CommissionerRoundReport,
+    DivisionLeaderboard,
+)
 
 from xp_request_client import XpRequestClient, XpRequestInfraError, _prefixed_league_id
 
@@ -60,6 +59,10 @@ class RoundSummary(PlatformApiModel):
     round_number: int
     status: str
     division: DivisionRef
+    round_config: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class RoundList(PlatformApiModel):
@@ -198,17 +201,67 @@ class MembershipAdmission(PlatformApiModel):
     is_champion: bool
 
 
-class RoundCreateResponse(RoundSummary):
-    created_at: datetime
+RoundCreateResponse = RoundSummary
+
+
+class RoundStage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = "Round"
+    num_episodes: int = Field(gt=0)
+    min_episodes_per_entrant: int | None = Field(default=None, gt=0)
+    self_play: bool = False
 
 
 class RoundEpisodePlan(PlatformApiModel):
     strategy: str
     coworld_id: str
-    variant_id: str
-    seat_count: int
+    variant_id: str | None
+    seat_count: int | None
     entrant_policy_version_ids: list[UUID]
-    episodes: list[dict[str, Any]]
+    episodes: list["PlannedRoundEpisode"]
+
+
+class ExplicitRoundEpisode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    variant_id: str
+    seed: int = 0
+    policy_version_ids: list[UUID]
+    filler_seats: list[int] = Field(default_factory=list)
+    game_config_overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannedRoundEpisode(PlatformApiModel):
+    job_index: int
+    variant_id: str
+    seed: int
+    policy_version_ids: list[UUID]
+    filler_seats: list[int]
+    game_config: dict[str, Any]
+
+
+class RoundEpisodeRuntime(PlatformApiModel):
+    status: str
+    policy_version_ids: list[UUID]
+    job_id: UUID | None = None
+    scores: list["RoundEpisodeScore"] = Field(default_factory=list)
+
+
+class RoundEpisodeScore(PlatformApiModel):
+    policy_version_id: UUID
+    score: float
+
+
+class RoundEpisodeResult(PlatformApiModel):
+    id: str
+    job_index: int
+    variant_id: str
+    seed: int
+    game_config: dict[str, Any]
+    filler_seats: list[int]
+    runtime: RoundEpisodeRuntime
+    game_results: dict[str, Any] | None = None
 
 
 class DispatchRoundResult(PlatformApiModel):
@@ -217,9 +270,39 @@ class DispatchRoundResult(PlatformApiModel):
     replayed: bool = False
 
 
+class RoundScoreEntry(PlatformApiModel):
+    policy_version_id: UUID
+    rank: int
+    score: float
+    episodes_scored: int
+    episodes_excluded: int
+    result_metadata: dict[str, Any]
+
+
+class ScoreTrace(PlatformApiModel):
+    rule: str
+    scored_at: str
+    entries: list[RoundScoreEntry]
+    infrastructure_failures: dict[str, str] = Field(default_factory=dict)
+    excluded_filler_seats: int = 0
+    notes: list[str] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
 class ScoreRoundResult(PlatformApiModel):
-    trace: dict[str, Any]
+    trace: ScoreTrace
     replayed: bool = False
+
+
+class AuthoredRoundScoreEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_version_id: UUID
+    rank: int = Field(ge=1)
+    score: float
+    episodes_scored: int = Field(ge=0)
+    episodes_excluded: int = Field(default=0, ge=0)
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CompleteRoundResult(PlatformApiModel):
@@ -270,6 +353,11 @@ class PlatformCommissionerClient(XpRequestClient):
             f"/v2/rounds?league_id={urllib.parse.quote(league_id)}&limit={limit}"
         )
         return RoundList.model_validate(payload)
+
+    def get_round(self, round_id: str) -> RoundSummary:
+        return RoundSummary.model_validate(
+            self._get(f"/v2/rounds/{urllib.parse.quote(round_id)}")
+        )
 
     def get_commissioner_state(self, league_id: str) -> CommissionerStateResponse:
         league_id = _prefixed_league_id(league_id)
@@ -351,6 +439,7 @@ class PlatformCommissionerClient(XpRequestClient):
         division_id: str,
         idempotency_key: str,
         entrant_policy_version_ids: list[UUID] | None = None,
+        stages: list[RoundStage] | None = None,
     ) -> RoundCreateResponse:
         payload = self._post(
             "/v2/rounds",
@@ -358,7 +447,10 @@ class PlatformCommissionerClient(XpRequestClient):
                 "division_id": division_id,
                 "idempotency_key": idempotency_key,
                 "round_config": {
-                    "entrant_policy_version_ids": entrant_policy_version_ids
+                    "entrant_policy_version_ids": entrant_policy_version_ids,
+                    "stages": None
+                    if stages is None
+                    else [stage.model_dump(mode="json") for stage in stages],
                 },
             },
         )
@@ -379,15 +471,93 @@ class PlatformCommissionerClient(XpRequestClient):
         )
         return RoundEpisodePlan.model_validate(payload)
 
+    def plan_explicit_round(
+        self,
+        round_id: str,
+        episodes: list[ExplicitRoundEpisode],
+    ) -> RoundEpisodePlan:
+        payload = self._post(
+            f"/v2/rounds/{urllib.parse.quote(round_id)}/episodes:plan",
+            {
+                "strategy": "explicit",
+                "episodes": [episode.model_dump(mode="json") for episode in episodes],
+            },
+        )
+        return RoundEpisodePlan.model_validate(payload)
+
     def dispatch_round(self, round_id: str) -> DispatchRoundResult:
         payload = self._post(f"/v2/rounds/{urllib.parse.quote(round_id)}/episodes", {})
         return DispatchRoundResult.model_validate(payload)
 
+    def get_round_episodes(self, round_id: str) -> list[RoundEpisodeResult]:
+        payload = self._get(f"/v2/rounds/{urllib.parse.quote(round_id)}/episodes")
+        return [RoundEpisodeResult.model_validate(row) for row in payload]
+
     def score_round(self, round_id: str, *, rule: str) -> ScoreRoundResult:
         payload = self._post(
-            f"/v2/rounds/{urllib.parse.quote(round_id)}/score", {"rule": rule}
+            f"/v2/rounds/{urllib.parse.quote(round_id)}/score",
+            {"mode": "generated", "rule": rule},
         )
         return ScoreRoundResult.model_validate(payload)
+
+    def score_authored_round(
+        self,
+        round_id: str,
+        *,
+        rule_id: str,
+        entries: list[AuthoredRoundScoreEntry],
+        infrastructure_failures: dict[str, str] | None = None,
+        excluded_filler_seats: int = 0,
+        notes: list[str] | None = None,
+        extra: dict[str, Any] | None = None,
+        round_display: dict[str, Any] | None = None,
+        commissioner_report: CommissionerRoundReport | None = None,
+    ) -> ScoreRoundResult:
+        payload = self._post(
+            f"/v2/rounds/{urllib.parse.quote(round_id)}/score",
+            {
+                "mode": "authored",
+                "rule_id": rule_id,
+                "entries": [entry.model_dump(mode="json") for entry in entries],
+                "infrastructure_failures": infrastructure_failures or {},
+                "excluded_filler_seats": excluded_filler_seats,
+                "notes": notes or [],
+                "extra": extra or {},
+                "round_display": round_display,
+                "commissioner_report": None
+                if commissioner_report is None
+                else commissioner_report.model_dump(mode="json"),
+            },
+        )
+        return ScoreRoundResult.model_validate(payload)
+
+    def publish_division_leaderboard(
+        self,
+        division_id: str,
+        leaderboard: DivisionLeaderboard,
+    ) -> DivisionLeaderboard:
+        if division_id != f"div_{leaderboard.division_id}":
+            raise ValueError("leaderboard division_id must match the target division")
+        body = leaderboard.model_dump(mode="json")
+        del body["division_id"]
+        payload = self._request(
+            "PUT",
+            f"/v2/divisions/{urllib.parse.quote(division_id)}/leaderboards",
+            body={"leaderboards": body},
+        )
+        return DivisionLeaderboard(division_id=leaderboard.division_id, **payload)
+
+    def publish_division_description(
+        self,
+        division_id: str,
+        description: DivisionCommissionerDescriptionPublic,
+    ) -> DivisionCommissionerDescriptionPublic:
+        payload = self._request(
+            "PUT",
+            f"/v2/divisions/{urllib.parse.quote(division_id)}/commissioner-description",
+            body=description.model_dump(mode="json"),
+        )
+        return DivisionCommissionerDescriptionPublic.model_validate(payload)
 
     def complete_round(
         self,
@@ -412,9 +582,11 @@ __all__ = [
     "CommissionerStateResponse",
     "DivisionDeclaration",
     "DivisionTopologyResponse",
+    "ExplicitRoundEpisode",
     "LeagueSettings",
     "MembershipAdmission",
     "MembershipEventChange",
     "PlatformCommissionerClient",
+    "RoundStage",
     "XpRequestInfraError",
 ]

@@ -18,20 +18,34 @@ scheduling/scoring/ranking is reused.
 
 ## Platform commissioner API integration
 
-`platform_manager.py` is the first Prime control path that authenticates with a
-league-scoped `cmr_` token and manages the league through the platform REST API.
+`platform_manager.py` authenticates with a league-scoped `cmr_` token and manages
+the league through the platform REST API.
 It is deliberately a one-shot reconciliation command, not another five-second
 poller. A scheduler or operator decides when it runs; repeated calls are safe.
 
-Today `reconcile`:
+`reconcile`:
 
 - declares the canonical `Competition`, `Imposters`, and `Crew` topology with
   `PUT /v2/leagues/{league_id}/divisions`;
 - read-merges and enforces the per-pod spend limit through the typed league
   settings API;
 - reads the league, divisions, memberships, rounds, and versioned commissioner
-  state using only the bounded commissioner credential; and
-- prints a typed snapshot plus the remaining API blockers.
+  state using only the bounded commissioner credential;
+- publishes Prime's player-facing descriptions and changelog; and
+- prints a typed snapshot plus the remaining operational blocker.
+
+`run` performs that reconciliation and then drives one complete commissioner
+pass through the same Prime rule implementation as the callback container:
+
+- qualifies submitted policies through league-bound, idempotent experience
+  requests and applies the resulting membership events;
+- creates cadence-keyed rounds and writes the exact role-pinned seating plan;
+- dispatches planned episodes and, on a later invocation, reads their terminal
+  results;
+- persists Prime's role-weighted score trace, safe report, round display,
+  player-collapsed win-rate leaderboard, and versioned commissioner state; and
+- completes the round. Replaying a pass does not duplicate requests, rounds,
+  episodes, scores, state history, or completion events.
 
 Run it outside the legacy callback container with a token minted by the league
 owner or a Softmax team member. The raw token stays outside git and the Coworld
@@ -45,30 +59,31 @@ export OBSERVATORY_API_URL=https://softmax.com/api/observatory
 
 python platform_manager.py inspect
 python platform_manager.py reconcile
+python platform_manager.py run
 ```
 
-The live `/round` callback remains authoritative for Prime-specific behaviors
-the current platform API cannot express without changing the game rules:
+Two platform gaps remain:
 
-1. Qualification cannot use a `cmr_` token yet: experience-request create/read,
-   child episodes, and results-artifact reads are outside the commissioner allowlist.
-2. Configured filler-policy reads are team-only, and the generic planner duplicates
-   real entrants rather than resolving league fillers.
-3. The generic planner cannot pin imposter/crew slots, select per-episode variants,
-   apply game-config overrides, or accept an explicit validated seating plan.
-4. The generic scorer only supports mean/EWMA scalar scores. Prime needs per-slot
-   results JSON, void exclusion, role-weighted wins, and its player-collapsed
-   win-rate board.
-5. Commissioner tokens can read round reports/logs and division descriptions, but
-   cannot write Prime's calculation trace, rendered report, leaderboard payload,
-   or player-facing division description/changelog.
-6. The REST surface has no work lease/webhook and the Coworld runnable manifest has
-   no private `cmr_` credential channel, so an external scheduler must invoke this
-   one-shot agent until the platform owns that execution boundary.
+1. The interview hard gate needs a short-lived API operation that launches the
+   candidate policy's alternate websocket interview server and returns its scoped
+   address. The shipped image currently disables that gate; enabling it requires
+   `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an operator-launched server, otherwise
+   qualification correctly holds for an infrastructure retry.
+2. The REST surface has no work lease/webhook and the Coworld runnable manifest
+   has no private `cmr_` credential channel. An external scheduler must invoke
+   this one-shot agent and deliver/rotate its secret until the platform owns that
+   execution boundary.
 
-`platform_api.py` already types the supported membership and round lifecycle
-requests so the legacy implementations can be removed as each missing platform
-capability lands.
+A game owner or Softmax team member mints the secret with a normal user token;
+the raw `cmr_` value is returned once and cannot mint broader credentials:
+
+```sh
+curl -sS -X POST \
+  "https://softmax.com/api/observatory/v2/leagues/${CREWRIFT_PRIME_LEAGUE_ID}/commissioner-tokens" \
+  -H "Authorization: Bearer ${USER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"crewrift-prime"}'
+```
 
 ## Qualification — event-driven, results-JSON ("one game and we're in")
 
@@ -492,7 +507,7 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
 - `platform_api.py` — typed bearer-authenticated client for the bounded platform
   commissioner surface.
 - `platform_manager.py` — one-shot topology/settings reconciliation and complete
-  league-context inspection using a `cmr_` token.
+  qualification/round lifecycle using a `cmr_` token.
 - `debug_decision.py` — local offline debug/decision script.
 - `Dockerfile` — installs `vendor/` + `openskill` then overlays the above.
 - `vendor/` — vendored upstream `Metta-AI/commissioners` package (see
@@ -525,9 +540,9 @@ re-seed is required.
 ```sh
 python3 -m venv /tmp/comm_venv && /tmp/comm_venv/bin/pip install ./vendor "openskill>=6.0.0"
 RULESET_STRATEGY_CONFIG_PATH=$(pwd)/crewrift_prime.yaml PYTHONPATH=. \
-  /tmp/comm_venv/bin/python -m unittest test_observability test_skill_gate_metrics test_mmr
+  /tmp/comm_venv/bin/python -m unittest discover -p 'test_*.py'
 ```
 
-Covers: skill-gate detection by substatus, crash-check 8-seat self-play
-scheduling, infra/dispatch failure → non-DQ classification, and the decision
-observability log line.
+Covers the platform client and one-shot planning/completion adapter, skill-gate
+detection by substatus, 8-seat self-play scheduling, infrastructure failure →
+non-DQ classification, scoring, standings, and decision observability.

@@ -1220,8 +1220,10 @@ class XpRequestPayloadTest(unittest.TestCase):
         client = XpRequestClient(base="https://example.test/observatory", token="tok-abc")
         with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
             xreq_id = client.create_experience_request(
+                league_id="a77efba7-46b2-4fd7-b9aa-da621f8b93ca",
                 division_id="acbde92a-df21-4489-859c-4510bd4445f2",
                 policy_version_id="pv-candidate",
+                idempotency_key="crewrift-prime-qualifier-test",
                 seat_count=seat_count,
                 num_episodes=num_episodes,
                 notes="crewrift-prime qualifier",
@@ -1239,8 +1241,13 @@ class XpRequestPayloadTest(unittest.TestCase):
         # Target is {division_id: ...}, normalized to the platform's prefixed
         # ``div_<uuid>`` form (a bare UUID is rejected by the DivisionId type, 422).
         self.assertEqual(
-            body["target"], {"division_id": "div_acbde92a-df21-4489-859c-4510bd4445f2"}
+            body["target"],
+            {
+                "league_id": "league_a77efba7-46b2-4fd7-b9aa-da621f8b93ca",
+                "division_id": "div_acbde92a-df21-4489-859c-4510bd4445f2",
+            },
         )
+        self.assertEqual(body["idempotency_key"], "crewrift-prime-qualifier-test")
         # num_episodes / execution_backend live at the top level.
         self.assertEqual(body["num_episodes"], 1)
         self.assertEqual(body["execution_backend"], "k8s")

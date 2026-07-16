@@ -323,8 +323,10 @@ class XpRequestClient:
     def create_experience_request(
         self,
         *,
+        league_id: str,
         division_id: str,
         policy_version_id: str,
+        idempotency_key: str,
         seat_count: int = DEFAULT_SEAT_COUNT,
         num_episodes: int = 1,
         notes: str | None = None,
@@ -345,13 +347,20 @@ class XpRequestClient:
         ``division_id`` is normalized to the platform's prefixed ``div_<uuid>``
         form (:func:`_prefixed_division_id`); the commissioner carries bare ``UUID``
         division ids, which the strict ``DivisionId`` target type rejects (HTTP 422).
+        Commissioner credentials must also bind the request explicitly to their
+        ``league_id`` and provide an ``idempotency_key``; retries with the same key
+        return the original request instead of dispatching a duplicate qualifier.
         """
         roster = [
             {"player": {"policy_ref": policy_version_id}, "slot": -1}
             for _ in range(seat_count)
         ]
         payload: dict[str, Any] = {
-            "target": {"division_id": _prefixed_division_id(division_id)},
+            "idempotency_key": idempotency_key,
+            "target": {
+                "league_id": _prefixed_league_id(league_id),
+                "division_id": _prefixed_division_id(division_id),
+            },
             "roster": roster,
             "num_episodes": num_episodes,
             "notes": notes or "crewrift-prime qualifier",
@@ -530,6 +539,7 @@ class XpRequestClient:
     def run_qualifier(
         self,
         *,
+        league_id: str,
         division_id: str,
         policy_version_id: str,
         seat_count: int = DEFAULT_SEAT_COUNT,
@@ -541,8 +551,14 @@ class XpRequestClient:
     ) -> XpRequestRun:
         """Create + poll a single self-play qualifier xp request, end to end."""
         xreq_id = self.create_experience_request(
+            league_id=league_id,
             division_id=division_id,
             policy_version_id=policy_version_id,
+            idempotency_key=(
+                f"crewrift-prime-qualifier-{_prefixed_league_id(league_id)}-"
+                f"{policy_version_id}-{zlib.crc32((notes or '').encode())}-"
+                f"{int(time.time() // max_wait_seconds)}"
+            ),
             seat_count=seat_count,
             num_episodes=num_episodes,
             notes=notes,

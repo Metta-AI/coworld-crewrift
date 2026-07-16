@@ -1723,6 +1723,7 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         """
         try:
             run = self._xp_request_client().run_qualifier(
+                league_id=str(membership.league_id),
                 division_id=division_id,
                 policy_version_id=policy_version_id,
                 num_episodes=_QUALIFIER_NUM_EPISODES,

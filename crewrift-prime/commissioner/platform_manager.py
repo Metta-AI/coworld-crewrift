@@ -2,9 +2,7 @@
 
 Run this command with a league-scoped ``cmr_`` credential. It deliberately does
 not poll: callers schedule it at the cadence they own, and every mutation is
-state-idempotent. The live container callback remains responsible for Prime's
-custom role-pinned seating, results-JSON scoring, and qualification until those
-capabilities exist in the platform API.
+state-idempotent.
 """
 
 from __future__ import annotations
@@ -12,14 +10,46 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict
 
+from commissioners.common.models import (
+    DivisionDescriptionContext,
+    DivisionSnapshot,
+    LeagueMigrationContext,
+    LeagueSnapshot,
+    MembershipSnapshot,
+    PolicyMembershipStatus,
+    RoundSnapshot,
+)
+from commissioners.common.protocol import (
+    DivisionInfo,
+    EpisodeRequest,
+    EpisodeResult,
+    EpisodeScore,
+    LeagueInfo,
+    MembershipInfo,
+    RoundStart,
+    VariantInfo,
+)
+from commissioners.common.ruleset_strategy.config import (
+    load_ruleset_strategy_config_file,
+)
+from crewrift_prime_skill_commissioner import CrewriftPrimeSkillCommissioner
 from platform_api import (
+    AuthoredRoundScoreEntry,
     DivisionDeclaration,
     DivisionTopologyResponse,
+    ExplicitRoundEpisode,
+    MembershipEventEvidence,
+    MembershipEventChange,
     PlatformCommissionerClient,
+    RoundStage,
+    RoundSummary,
 )
 from xp_request_client import DEFAULT_API_BASE, _observatory_base
 
@@ -43,60 +73,14 @@ class PlatformCapabilityGap(BaseModel):
 
 PLATFORM_CAPABILITY_GAPS = [
     PlatformCapabilityGap(
-        capability="qualification",
+        capability="candidate interview launch",
         blocker=(
-            "Commissioner tokens cannot create/read experience requests or fetch their "
-            "results artifacts."
+            "Prime's qualification gate must launch the candidate policy's alternate "
+            "websocket interview server and receive its reachable address."
         ),
         required_api_change=(
-            "Add league-bound cmr_ access to POST/GET /v2/experience-requests, "
-            "GET /v2/experience-requests/{id}/episodes, and the episode-request results artifact."
-        ),
-    ),
-    PlatformCapabilityGap(
-        capability="configured filler seating",
-        blocker=(
-            "GET /v2/leagues/{league_id}/filler-policies is team-only and the generic "
-            "planner duplicates real entrants instead of seating configured fillers."
-        ),
-        required_api_change=(
-            "Allow league-bound filler-policy reads and teach episodes:plan to resolve and "
-            "persist configured filler policies."
-        ),
-    ),
-    PlatformCapabilityGap(
-        capability="role-pinned Competition/Imposters/Crew rounds",
-        blocker=(
-            "episodes:plan cannot select a variant, provide per-episode game_config/slot roles, "
-            "or submit an explicit validated seating plan."
-        ),
-        required_api_change=(
-            "Expose league Coworld variants and add typed role/slot overrides or an explicit "
-            "episode-plan write validated by the platform."
-        ),
-    ),
-    PlatformCapabilityGap(
-        capability="Prime scoring and leaderboard",
-        blocker=(
-            "round score supports only mean/ewma scalar scores; Prime needs per-slot results JSON, "
-            "void-game exclusion, 3x imposter wins, 1x crew wins, and its player-collapsed "
-            "win-rate board."
-        ),
-        required_api_change=(
-            "Add platform-owned Crewrift scoring/ranking rules and persist their typed trace and "
-            "leaderboard views."
-        ),
-    ),
-    PlatformCapabilityGap(
-        capability="commissioner-authored reports and division guidance",
-        blocker=(
-            "The commissioner surface can read round reports/logs and division descriptions, "
-            "but cannot write Prime's calculation trace, rendered report, leaderboard payload, "
-            "or player-facing division description/changelog."
-        ),
-        required_api_change=(
-            "Add typed commissioner writes for round reports/leaderboards and division "
-            "description/changelog, bound to the token's league."
+            "Add a league-bound commissioner endpoint that creates a short-lived policy "
+            "interview session and returns its scoped websocket address and expiry."
         ),
     ),
     PlatformCapabilityGap(
@@ -136,6 +120,20 @@ class PlatformReconcileResult(BaseModel):
     remaining_gaps: list[PlatformCapabilityGap]
 
 
+class PlatformRunResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    qualifications_applied: int
+    rounds_created: int
+    rounds_dispatched: int
+    rounds_completed: int
+    reconcile: PlatformReconcileResult
+
+
+def _uuid(public_id: str) -> UUID:
+    return UUID(public_id.rsplit("_", 1)[-1])
+
+
 class CrewriftPrimePlatformManager:
     def __init__(
         self,
@@ -147,6 +145,12 @@ class CrewriftPrimePlatformManager:
         self.client = client
         self.league_id = league_id
         self.spend_limit_usd = spend_limit_usd
+        self.commissioner = CrewriftPrimeSkillCommissioner(
+            load_ruleset_strategy_config_file(
+                Path(__file__).with_name("crewrift_prime.yaml")
+            )
+        )
+        self.commissioner._xp_client = client
 
     def inspect(self) -> PlatformReconcileResult:
         return self._result(mode="inspect", topology=None, settings_updated=False)
@@ -162,8 +166,367 @@ class CrewriftPrimePlatformManager:
         settings_updated = desired_settings != current.settings
         if settings_updated:
             self.client.replace_league_settings(self.league_id, desired_settings)
+        league = self.client.get_league(self.league_id)
+        divisions = self.client.list_divisions(self.league_id)
+        memberships = self.client.list_memberships(self.league_id)
+        rounds = self.client.list_rounds(self.league_id).entries
+        league_snapshot = LeagueSnapshot(
+            id=_uuid(league.id),
+            commissioner_key=league.commissioner_key,
+            commissioner_config=None,
+        )
+        membership_snapshots = [
+            MembershipSnapshot(
+                id=_uuid(membership.id),
+                league_id=_uuid(league.id),
+                division_id=_uuid(membership.division.id),
+                policy_version_id=membership.policy_version.id,
+                player_id=None if membership.player is None else membership.player.id,
+                status=PolicyMembershipStatus(membership.status),
+                substatus=membership.substatus,
+                is_champion=membership.is_champion,
+            )
+            for membership in memberships
+        ]
+        round_snapshots = [self._round_snapshot(round_) for round_ in rounds]
+        for division in divisions:
+            description = self.commissioner.describe_division(
+                DivisionDescriptionContext(
+                    league=league_snapshot,
+                    division=DivisionSnapshot(
+                        id=_uuid(division.id),
+                        league_id=_uuid(league.id),
+                        name=division.name,
+                        level=division.level,
+                        type=division.type,
+                    ),
+                    active_memberships=membership_snapshots,
+                    recent_rounds=round_snapshots,
+                )
+            )
+            self.client.publish_division_description(division.id, description)
         return self._result(
             mode="reconcile", topology=topology, settings_updated=settings_updated
+        )
+
+    def run_once(self) -> PlatformRunResult:
+        reconcile = self.reconcile()
+        league = self.client.get_league(self.league_id)
+        divisions = self.client.list_divisions(self.league_id)
+        memberships = self.client.list_memberships(self.league_id)
+        league_uuid = _uuid(league.id)
+        division_snapshots = [
+            DivisionSnapshot(
+                id=_uuid(division.id),
+                league_id=league_uuid,
+                name=division.name,
+                level=division.level,
+                type=division.type,
+            )
+            for division in divisions
+        ]
+        membership_snapshots = [
+            MembershipSnapshot(
+                id=_uuid(membership.id),
+                league_id=league_uuid,
+                division_id=_uuid(membership.division.id),
+                policy_version_id=membership.policy_version.id,
+                player_id=None if membership.player is None else membership.player.id,
+                status=PolicyMembershipStatus(membership.status),
+                substatus=membership.substatus,
+                is_champion=membership.is_champion,
+            )
+            for membership in memberships
+        ]
+        migration = self.commissioner.migrate_league(
+            LeagueMigrationContext(
+                league=LeagueSnapshot(
+                    id=league_uuid,
+                    commissioner_key=league.commissioner_key,
+                    commissioner_config=None,
+                ),
+                divisions=division_snapshots,
+                memberships=membership_snapshots,
+            )
+        )
+        membership_public_id = {
+            _uuid(membership.id): membership.id for membership in memberships
+        }
+        if migration.policy_membership_events:
+            self.client.apply_membership_events(
+                self.league_id,
+                [
+                    MembershipEventChange(
+                        league_policy_membership_id=membership_public_id[
+                            event.league_policy_membership_id
+                        ],
+                        from_division_id=None
+                        if event.from_division_id is None
+                        else f"div_{event.from_division_id}",
+                        to_division_id=None
+                        if event.to_division_id is None
+                        else f"div_{event.to_division_id}",
+                        status=event.status,
+                        substatus=event.substatus,
+                        reason=event.reason,
+                        notes=event.notes,
+                        evidence=[
+                            MembershipEventEvidence(
+                                type=evidence.type,
+                                title=evidence.title,
+                                summary=evidence.summary or "",
+                                metadata=evidence.metadata,
+                            )
+                            for evidence in event.evidence
+                        ],
+                    )
+                    for event in migration.policy_membership_events
+                ],
+                idempotency_key=f"crewrift-prime-migration-{uuid4()}",
+            )
+
+        competition = next(
+            division for division in divisions if division.name == "Competition"
+        )
+        entrant_ids = [
+            membership.policy_version.id
+            for membership in memberships
+            if membership.division.id == competition.id
+            and membership.status == "competing"
+            and membership.is_champion
+        ]
+        rounds = self.client.list_rounds(self.league_id).entries
+        active_division_ids = {
+            round_.division.id
+            for round_ in rounds
+            if round_.status in {"pending", "claimed", "running"}
+        }
+        settings = self.client.get_typed_league_settings(self.league_id)
+        interval = (
+            settings.settings.round_interval_minutes
+            or settings.defaults.round_interval_minutes
+        )
+        episodes_per_round = (
+            settings.settings.episodes_per_round
+            or settings.defaults.episodes_per_round
+            or max(len(entrant_ids), 1)
+        )
+        slot = int(datetime.now(UTC).timestamp() // (interval * 60))
+        created = 0
+        if entrant_ids:
+            for division in divisions:
+                if division.id in active_division_ids:
+                    continue
+                self.client.create_round(
+                    division_id=division.id,
+                    idempotency_key=f"crewrift-prime-{division.id}-{slot}",
+                    entrant_policy_version_ids=entrant_ids,
+                    stages=[RoundStage(num_episodes=episodes_per_round)],
+                )
+                created += 1
+
+        state = self.client.get_commissioner_state(self.league_id)
+        dispatched = 0
+        completed = 0
+        for round_ in self.client.list_rounds(self.league_id).entries:
+            if round_.status not in {"pending", "claimed", "running"}:
+                continue
+            episodes = self.client.get_round_episodes(round_.id)
+            if not episodes:
+                round_start = self._round_start(
+                    league=league,
+                    divisions=divisions,
+                    memberships=memberships,
+                    round_=round_,
+                    state=state.state.root,
+                )
+                schedule = self.commissioner.schedule_episodes_for_round_start(
+                    round_start
+                )
+                self.client.plan_explicit_round(
+                    round_.id,
+                    [
+                        ExplicitRoundEpisode(
+                            variant_id=episode.variant_id,
+                            seed=episode.seed,
+                            policy_version_ids=episode.policy_version_ids,
+                            filler_seats=[
+                                int(seat)
+                                for seat in episode.tags.get("filler_seats", "").split(
+                                    ","
+                                )
+                                if seat
+                            ],
+                            game_config_overrides=episode.game_config or {},
+                        )
+                        for episode in schedule.episodes
+                    ],
+                )
+                self.client.dispatch_round(round_.id)
+                dispatched += 1
+                continue
+            if any(
+                episode.runtime.status not in {"completed", "failed", "cancelled"}
+                for episode in episodes
+            ):
+                continue
+
+            round_start = self._round_start(
+                league=league,
+                divisions=divisions,
+                memberships=memberships,
+                round_=round_,
+                state=state.state.root,
+            )
+            scheduled = [
+                EpisodeRequest(
+                    request_id=str(episode.job_index),
+                    variant_id=episode.variant_id,
+                    policy_version_ids=episode.runtime.policy_version_ids,
+                    game_config=episode.game_config,
+                    seed=episode.seed,
+                    tags={
+                        "filler_seats": ",".join(
+                            str(seat) for seat in episode.filler_seats
+                        )
+                    },
+                )
+                for episode in episodes
+            ]
+            results = [
+                EpisodeResult(
+                    request_id=str(episode.job_index),
+                    scores=[
+                        EpisodeScore(
+                            policy_version_id=policy_version_id,
+                            player_id=next(
+                                (
+                                    membership.player.id
+                                    for membership in memberships
+                                    if membership.policy_version.id == policy_version_id
+                                    and membership.player is not None
+                                ),
+                                None,
+                            ),
+                            score=next(
+                                (
+                                    score.score
+                                    for score in episode.runtime.scores
+                                    if score.policy_version_id == policy_version_id
+                                ),
+                                0.0,
+                            ),
+                        )
+                        for policy_version_id in episode.runtime.policy_version_ids
+                    ],
+                    game_results=episode.game_results,
+                )
+                for episode in episodes
+                if episode.runtime.status == "completed"
+            ]
+            output = self.commissioner.complete_round_for_round_start(
+                round_start,
+                results,
+                scheduled,
+            )
+            rankings = output.results[0].rankings
+            self.client.score_authored_round(
+                round_.id,
+                rule_id="crewrift-prime-role-weighted-wins",
+                entries=[
+                    AuthoredRoundScoreEntry(
+                        policy_version_id=entry.policy_version_id,
+                        rank=entry.rank,
+                        score=entry.score,
+                        episodes_scored=int(
+                            entry.result_metadata.get("completed_episode_count", 0)
+                        ),
+                        result_metadata=entry.result_metadata,
+                    )
+                    for entry in rankings
+                ],
+                excluded_filler_seats=sum(
+                    len(episode.filler_seats) for episode in episodes
+                ),
+                round_display=output.round_display,
+                commissioner_report=output.observability,
+            )
+            for leaderboard in output.leaderboards:
+                self.client.publish_division_leaderboard(
+                    round_.division.id, leaderboard
+                )
+            next_state = dict(output.state) if isinstance(output.state, dict) else {}
+            next_state.pop("round_config", None)
+            state = self.client.update_commissioner_state(
+                self.league_id,
+                version=state.version,
+                state=next_state,
+            )
+            self.client.complete_round(round_.id)
+            completed += 1
+
+        return PlatformRunResult(
+            qualifications_applied=len(migration.policy_membership_events),
+            rounds_created=created,
+            rounds_dispatched=dispatched,
+            rounds_completed=completed,
+            reconcile=reconcile,
+        )
+
+    @staticmethod
+    def _round_snapshot(round_: RoundSummary) -> RoundSnapshot:
+        return RoundSnapshot(
+            id=_uuid(round_.id),
+            public_id=round_.id,
+            division_id=_uuid(round_.division.id),
+            round_number=round_.round_number,
+            status=round_.status,
+            round_config=round_.round_config,
+            created_at=round_.created_at or datetime.now(UTC),
+            started_at=round_.started_at,
+            completed_at=round_.completed_at,
+        )
+
+    @staticmethod
+    def _round_start(*, league, divisions, memberships, round_, state) -> RoundStart:
+        durable_state = dict(state) if isinstance(state, dict) else {}
+        durable_state["round_config"] = {
+            **round_.round_config,
+            "current_division_id": str(_uuid(round_.division.id)),
+        }
+        return RoundStart(
+            round_id=_uuid(round_.id),
+            round_number=round_.round_number,
+            league=LeagueInfo(
+                id=_uuid(league.id), commissioner_key=league.commissioner_key
+            ),
+            divisions=[
+                DivisionInfo(
+                    id=_uuid(division.id),
+                    name=division.name,
+                    level=division.level,
+                    type=division.type,
+                )
+                for division in divisions
+            ],
+            memberships=[
+                MembershipInfo(
+                    id=_uuid(membership.id),
+                    league_id=_uuid(league.id),
+                    division_id=_uuid(membership.division.id),
+                    policy_version_id=membership.policy_version.id,
+                    player_id=None
+                    if membership.player is None
+                    else membership.player.id,
+                    status=membership.status,
+                    substatus=membership.substatus,
+                    is_champion=membership.is_champion,
+                )
+                for membership in memberships
+            ],
+            recent_results=[],
+            variants=[VariantInfo(id="default", name="default", game_config={})],
+            state=durable_state,
         )
 
     def _result(
@@ -218,10 +581,15 @@ def _manager_from_env() -> CrewriftPrimePlatformManager:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("inspect", "reconcile"))
+    parser.add_argument("mode", choices=("inspect", "reconcile", "run"))
     args = parser.parse_args()
     manager = _manager_from_env()
-    result = manager.inspect() if args.mode == "inspect" else manager.reconcile()
+    if args.mode == "inspect":
+        result = manager.inspect()
+    elif args.mode == "reconcile":
+        result = manager.reconcile()
+    else:
+        result = manager.run_once()
     print(json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True))
 
 
