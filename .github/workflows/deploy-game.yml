@@ -23,6 +23,15 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      skip_certify:
+        description: "Skip coworld certify (build only; upload is skipped too)."
+        type: boolean
+        default: false
+      skip_upload:
+        description: "Skip coworld upload-coworld (build + certify only)."
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-game
@@ -46,6 +55,18 @@ jobs:
         run: uv pip install --system coworld==0.1.33
 
       - uses: docker/setup-buildx-action@v3
+
+      - name: Preflight Docker (required for build/certify)
+        run: |
+          docker version
+          docker info
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "docker compose plugin missing; installing docker-compose-plugin..."
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+          fi
+          docker compose version
+          docker ps >/dev/null
 
       - name: Seed Softmax credentials
         env:
@@ -96,12 +117,14 @@ jobs:
             tmp/crewrift-prime/dist/coworld_manifest.json
 
       - name: Certify hydrated Coworld manifest
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_certify != 'true' }}
         run: |
           coworld certify \
             tmp/crewrift-prime/dist/coworld_manifest.json \
             --no-open-report
 
       - name: Upload certified Coworld manifest
+        if: ${{ github.event_name != 'workflow_dispatch' || (github.event.inputs.skip_certify != 'true' && github.event.inputs.skip_upload != 'true') }}
         run: |
           coworld upload-coworld \
             tmp/crewrift-prime/dist/coworld_manifest.json \
