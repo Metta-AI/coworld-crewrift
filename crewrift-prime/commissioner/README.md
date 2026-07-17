@@ -16,6 +16,96 @@ this image owns the **xp-request client** (`xp_request_client.py`) so the whole
 loop lives in the commissioner. The Competition division's win-count
 scheduling/scoring/ranking is reused.
 
+## Platform commissioner API integration
+
+`platform_manager.py` authenticates with a league-scoped `cmr_` token and manages
+the league through the platform REST API.
+The image's default command is a durable worker: it reconciles static league
+configuration once at startup, then advances the full league lifecycle every
+five seconds by default. The interval is configurable with
+`CREWRIFT_PRIME_POLL_INTERVAL_SECONDS`. Every mutation is idempotent, and the
+worker neither serves nor connects to the legacy `/round` WebSocket.
+
+`reconcile`:
+
+- declares the canonical `Competition`, `Imposters`, and `Crew` topology with
+  `PUT /v2/leagues/{league_id}/divisions`;
+- read-merges and enforces the per-pod spend limit through the typed league
+  settings API;
+- reads the league, divisions, memberships, rounds, and versioned commissioner
+  state using only the bounded commissioner credential;
+- publishes Prime's player-facing descriptions and changelog; and
+- prints a typed snapshot plus the remaining operational blocker.
+
+`run` performs that reconciliation and then drives one complete commissioner
+pass through the same Prime rule implementation as the callback container:
+
+- qualifies submitted policies through league-bound, idempotent experience
+  requests and applies the resulting membership events;
+- honors `rounds_paused_at`: a paused league does not qualify policies or create
+  rounds, while already-created rounds can still drain;
+- creates cadence-keyed rounds and writes the exact role-pinned seating plan;
+- processes only `commissioner_key=platform` rounds; a pre-cutover container round
+  blocks duplicate scheduling but remains untouched until it drains;
+- dispatches planned episodes and, on a later invocation, reads their terminal
+  results;
+- re-reads the persisted episode plan before scoring and reconstructs `RoundStart`
+  from its frozen entrant ids rather than the mutable live roster or original
+  round config, while feeding recent round results back into Prime's cumulative
+  standings state;
+- persists Prime's role-weighted score trace, safe report, round display,
+  player-collapsed win-rate leaderboard, and versioned commissioner state; and
+- completes the round. Replaying a pass does not duplicate requests, rounds,
+  episodes, scores, state history, or completion events.
+
+Run it as a standalone worker with a token minted by the league owner or a
+Softmax team member. The raw token stays outside git and the Coworld manifest:
+
+```sh
+cd crewrift-prime/commissioner
+export CREWRIFT_PRIME_COMMISSIONER_TOKEN=cmr_...
+export CREWRIFT_PRIME_LEAGUE_ID=league_...
+export OBSERVATORY_API_URL=https://softmax.com/api/observatory
+
+python platform_manager.py inspect
+python platform_manager.py reconcile
+python platform_manager.py run-once
+python platform_manager.py run  # durable REST-only worker; also the image default
+```
+
+The image runs the durable worker without a command override:
+
+```sh
+docker run --rm \
+  -e CREWRIFT_PRIME_COMMISSIONER_TOKEN \
+  -e CREWRIFT_PRIME_LEAGUE_ID \
+  -e OBSERVATORY_API_URL=https://softmax.com/api/observatory \
+  crewrift-prime-commissioner:latest
+```
+
+Do not deploy this image with `coworld patch-commissioner`: that command attaches
+an image to the legacy per-round WebSocket launcher. Deploy it as one standalone
+worker, provide the two required secrets, and set the league's
+`commissioner_key` to `platform` as one coordinated cutover.
+
+One platform gap remains: the interview hard gate first needs an uploaded-policy
+contract for declaring an alternate interview runnable (policy versions currently
+carry only their normal game command), plus a short-lived API operation that launches
+it and proxies the question/answer exchange. The shipped image currently disables
+that gate; enabling it requires `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an
+operator-launched server, otherwise qualification correctly holds for an
+infrastructure retry.
+A game owner or Softmax team member mints the secret with a normal user token;
+the raw `cmr_` value is returned once and cannot mint broader credentials:
+
+```sh
+curl -sS -X POST \
+  "https://softmax.com/api/observatory/v2/leagues/${CREWRIFT_PRIME_LEAGUE_ID}/commissioner-tokens" \
+  -H "Authorization: Bearer ${USER_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"crewrift-prime"}'
+```
+
 ## Qualification — event-driven, results-JSON ("one game and we're in")
 
 There is **no Qualifiers staging division**. When a new policy is submitted, the
@@ -214,7 +304,7 @@ game can still dispatch.
   2. the **per-league fillers served by the league-config API** —
      `GET /v2/leagues/{league_id}/filler-policies` (an admin configures them in the
      web app). The commissioner reuses its existing authenticated Observatory client
-     (`xp_request_client.py`, `X-Auth-Token`) and the `league_id` from
+     (`xp_request_client.py`, `Authorization: Bearer`) and the `league_id` from
      `round_start.league.id`; else
   3. no fillers.
 
@@ -433,43 +523,41 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
   emits the observability channels.
 - `crewrift_prime.yaml` — ruleset config (Qualifiers `crash_check` + `skill_gate`
   stages, Competition division). Loaded via `RULESET_STRATEGY_CONFIG_PATH`.
-- `app.py` — ASGI entrypoint; imports the subclass (registers key
-  `crewrift_prime_skill`) then builds `commissioner_app()`.
+- `platform_api.py` — typed bearer-authenticated client for the bounded platform
+  commissioner surface.
+- `platform_manager.py` — durable REST-only topology/settings reconciliation and
+  complete qualification/round lifecycle using a `cmr_` token.
 - `debug_decision.py` — local offline debug/decision script.
 - `Dockerfile` — installs `vendor/` + `openskill` then overlays the above.
 - `vendor/` — vendored upstream `Metta-AI/commissioners` package (see
   `vendor/VENDOR_PROVENANCE.txt`). Not modified.
 
-## Build / wire (recorded for reproducibility)
+## Build / run (recorded for reproducibility)
 
 ```sh
 docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v21 .
-
-# Team-only mutation: clear any active player session so get-token returns the
-# usr_ token (patch-commissioner needs team auth, not a ply_ token).
-cd ../../../metta/packages/coworld
-uv run python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
-
-# Repoint the coworld's commissioner runnable image; this pushes to Observatory's
-# registry, rewrites the manifest image to an img_ id, bumps the coworld version,
-# and re-certifies (hosted smoke) to canonical.
-uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v21 \
-  --runnable-id among-them-commissioner
+docker run --rm \
+  -e CREWRIFT_PRIME_COMMISSIONER_TOKEN \
+  -e CREWRIFT_PRIME_LEAGUE_ID \
+  -e OBSERVATORY_API_URL=https://softmax.com/api/observatory \
+  crewrift-prime-commissioner:v21
 ```
 
-The league adopts the new commissioner image on its next scheduling tick once the
-new coworld version is canonical (the platform resolves the commissioner from the
-canonical manifest each tick; the `commissioner_runnable_id` is unchanged). No
-re-seed is required.
+The process reconciles once, then continues until stopped. Restarting it is safe;
+round creation, planning, dispatch, scoring, state advancement, and completion
+all use platform idempotency or compare-and-swap invariants. After the first
+authenticated reconciliation succeeds, the worker creates
+`/tmp/crewrift-prime-ready`; the production Deployment uses that as its readiness
+gate, so an absent, expired, or wrong-league token never reports Ready.
 
 ### Unit tests
 
 ```sh
 python3 -m venv /tmp/comm_venv && /tmp/comm_venv/bin/pip install ./vendor "openskill>=6.0.0"
 RULESET_STRATEGY_CONFIG_PATH=$(pwd)/crewrift_prime.yaml PYTHONPATH=. \
-  /tmp/comm_venv/bin/python -m unittest test_observability test_skill_gate_metrics test_mmr
+  /tmp/comm_venv/bin/python -m unittest discover -p 'test_*.py'
 ```
 
-Covers: skill-gate detection by substatus, crash-check 8-seat self-play
-scheduling, infra/dispatch failure → non-DQ classification, and the decision
-observability log line.
+Covers the platform client and durable planning/completion adapter, skill-gate
+detection by substatus, 8-seat self-play scheduling, infrastructure failure →
+non-DQ classification, scoring, standings, and decision observability.

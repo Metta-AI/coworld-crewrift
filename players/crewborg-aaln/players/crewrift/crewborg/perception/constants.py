@@ -133,6 +133,7 @@ LABEL_MEETING_BUTTON = "meeting button"
 # Label prefixes for entity sprites (suffix carries the color / state).
 PREFIX_PROGRESS_BAR = "progress bar "  # "progress bar 45%"
 PREFIX_TASK_COUNTER = "task counter "  # "task counter 7"
+GAME_INFO_PREFIX_IMPOSTERS = "IMPOSTERS "  # "IMPOSTERS 2"
 # Per-tick server tick marker (upstream 2026-06-10 "add tick log marker"): an
 # invisible 1x1 sprite (id 5016, object 5016) whose label is "tick <N>" with N =
 # the server's sim.tickCount — the same tick counter .bitreplay files use, so this

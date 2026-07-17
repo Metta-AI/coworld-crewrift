@@ -1,8 +1,7 @@
-# crewborg-aaln:v2 — Aaron's Crewrift league policy (deterministic dumb baseline).
+# crewborg-rohit:v5 — Crewrift policy with hosted Bedrock meetings enabled.
 #
 # Self-contained build: vendored players/player_sdk + players/crewrift/crewborg.
-# Env flags match the Observatory upload (crewborg-aaln:v2, 2026-06-11): scripted
-# baseline with LLM meetings off and no hunter fork (that became sussybuster-aaln).
+# Scripted baseline with LLM meetings on and no hunter fork.
 FROM --platform=linux/amd64 python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -12,7 +11,7 @@ ENV PYTHONUNBUFFERED=1 \
     CREWBORG_POLICY_VARIANT=dumb \
     BE_DUMB=1 \
     CREWBORG_DICK_MODE=0 \
-    CREWBORG_LLM_MEETINGS=0 \
+    CREWBORG_LLM_MEETINGS=1 \
     CREWBORG_DEBUG_SPRITES=1
 
 WORKDIR /srv/crewborg-aaln

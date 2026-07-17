@@ -21,6 +21,7 @@ nimcache
 *.out
 out/
 build/
+dist/
 tmp/
 __pycache__/
 *.pyc

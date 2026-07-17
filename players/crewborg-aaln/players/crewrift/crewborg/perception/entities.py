@@ -87,6 +87,7 @@ class GameInfo(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kill_cooldown_ticks: int | None = None
+    imposter_count: int | None = None
     tasks_per_player: int | None = None
     vote_timer_ticks: int | None = None
     max_ticks: int | None = None

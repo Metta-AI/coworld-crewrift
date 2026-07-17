@@ -18,7 +18,7 @@ suite "static replay viewer core":
   test "source manifest declares the coworld build hook contract":
     let
       hookPath = GameDir / "tools" / "build_replay_viewer.sh"
-      manifest = parseFile(GameDir / "coworld_manifest.json")
+      manifest = parseFile(GameDir / "coworld_manifest_template.json")
     check fileExists(hookPath)
     check fpUserExec in getFilePermissions(hookPath)
     check manifest["game"]["replay_viewer"]["bundle"].getStr() ==
