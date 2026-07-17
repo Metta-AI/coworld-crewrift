@@ -1,10 +1,13 @@
 import
   std/[json, math, os, random, strutils, tables, times],
-  bitworld/aseprite, bitworld/client as bitworldClient,
+  bitworld/aseprite,
   bitworld/pixelfonts, bitworld/profile, bitworld/spriteprotocol, bitworld/resources,
   bitworld/server,
   chroma, jsony, pixie,
   tasks as taskAssignments
+
+when not defined(emscripten):
+  import bitworld/client as bitworldClient
 
 const
   GameName* = "crewrift"
@@ -489,7 +492,10 @@ proc gameDir*(): string =
 
 proc clientDataDir*(): string =
   ## Returns the shared client data directory.
-  bitworldClient.clientDir() / "data"
+  when defined(emscripten):
+    "client" / "data"
+  else:
+    bitworldClient.clientDir() / "data"
 
 proc resolveGamePath*(path: string, baseDir = ""): string =
   ## Resolves a game data path against the map file and game directory.
