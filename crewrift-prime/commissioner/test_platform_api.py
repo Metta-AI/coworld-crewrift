@@ -654,6 +654,55 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         for call in client.create_round.call_args_list:
             self.assertEqual(call.kwargs["entrant_policy_version_ids"], [policy_id])
 
+    def test_run_does_not_count_idempotent_round_replay_as_created(self) -> None:
+        client = self._client(current_spend_limit=10, final_spend_limit=10)
+        policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        competition = client.list_divisions.return_value[0]
+        client.list_divisions.return_value = [competition]
+        client.list_memberships.return_value = [
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000041",
+                status="competing",
+                is_champion=True,
+                division=competition,
+                policy_version=PolicyVersionRef(id=policy_id),
+                player=PlayerRef(id="ply_1", name="Prime Player"),
+            )
+        ]
+        completed = RoundSummary(
+            id="round_00000000-0000-0000-0000-000000000061",
+            round_number=1,
+            commissioner_key="platform",
+            status="completed",
+            division=competition,
+            round_config={"entrant_policy_version_ids": [str(policy_id)]},
+        )
+        client.list_rounds.return_value = RoundList(
+            entries=[completed], total_count=1, limit=200, offset=0
+        )
+        client.get_round.return_value = RoundDetail(
+            **completed.model_dump(), results=[]
+        )
+        client.create_round.return_value = completed
+        client.get_typed_league_settings.side_effect = None
+        client.get_typed_league_settings.return_value = LeagueSettingsResponse(
+            settings=LeagueSettings(
+                round_interval_minutes=10,
+                episode_player_pod_llm_spend_limit_usd=10,
+            ),
+            defaults=LeagueSettingsDefaults(
+                episodes_per_round=36, round_interval_minutes=10
+            ),
+        )
+        manager = CrewriftPrimePlatformManager(
+            client, self.league_id, spend_limit_usd=10
+        )
+
+        result = manager.run_once()
+
+        client.create_round.assert_called_once()
+        self.assertEqual(result.rounds_created, 0)
+
     def test_migration_event_replay_uses_stable_idempotency_key(self) -> None:
         client = self._client(current_spend_limit=10, final_spend_limit=10)
         competition = client.list_divisions.return_value[0]
