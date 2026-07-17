@@ -20,8 +20,11 @@ scheduling/scoring/ranking is reused.
 
 `platform_manager.py` authenticates with a league-scoped `cmr_` token and manages
 the league through the platform REST API.
-It is deliberately a one-shot reconciliation command, not another five-second
-poller. A scheduler or operator decides when it runs; repeated calls are safe.
+The image's default command is a durable worker: it reconciles static league
+configuration once at startup, then advances the full league lifecycle every
+five seconds by default. The interval is configurable with
+`CREWRIFT_PRIME_POLL_INTERVAL_SECONDS`. Every mutation is idempotent, and the
+worker neither serves nor connects to the legacy `/round` WebSocket.
 
 `reconcile`:
 
@@ -42,9 +45,8 @@ pass through the same Prime rule implementation as the callback container:
 - honors `rounds_paused_at`: a paused league does not qualify policies or create
   rounds, while already-created rounds can still drain;
 - creates cadence-keyed rounds and writes the exact role-pinned seating plan;
-- processes only `commissioner_key=platform` rounds, while a still-active legacy
-  container round blocks duplicate scheduling but remains owned by the websocket
-  commissioner during migration;
+- processes only `commissioner_key=platform` rounds; a pre-cutover container round
+  blocks duplicate scheduling but remains untouched until it drains;
 - dispatches planned episodes and, on a later invocation, reads their terminal
   results;
 - re-reads the persisted episode plan before scoring and reconstructs `RoundStart`
@@ -56,9 +58,8 @@ pass through the same Prime rule implementation as the callback container:
 - completes the round. Replaying a pass does not duplicate requests, rounds,
   episodes, scores, state history, or completion events.
 
-Run it outside the legacy callback container with a token minted by the league
-owner or a Softmax team member. The raw token stays outside git and the Coworld
-manifest:
+Run it as a standalone worker with a token minted by the league owner or a
+Softmax team member. The raw token stays outside git and the Coworld manifest:
 
 ```sh
 cd crewrift-prime/commissioner
@@ -68,24 +69,24 @@ export OBSERVATORY_API_URL=https://softmax.com/api/observatory
 
 python platform_manager.py inspect
 python platform_manager.py reconcile
-python platform_manager.py run
+python platform_manager.py run-once
+python platform_manager.py run  # durable REST-only worker; also the image default
 ```
 
-The same image can be used by an external scheduler without changing its legacy
-callback default command:
+The image runs the durable worker without a command override:
 
 ```sh
 docker run --rm \
   -e CREWRIFT_PRIME_COMMISSIONER_TOKEN \
   -e CREWRIFT_PRIME_LEAGUE_ID \
   -e OBSERVATORY_API_URL=https://softmax.com/api/observatory \
-  crewrift-prime-commissioner:latest \
-  python /app/platform_manager.py run
+  crewrift-prime-commissioner:latest
 ```
 
-`coworld patch-commissioner` updates the callback commissioner image only; it
-does not schedule this one-shot API command. Until the platform owns that worker
-boundary, the scheduler must override the image command as shown above.
+Do not deploy this image with `coworld patch-commissioner`: that command attaches
+an image to the legacy per-round WebSocket launcher. Deploy it as one standalone
+worker, provide the two required secrets, and set the league's
+`commissioner_key` to `platform` as one coordinated cutover.
 
 Two platform gaps remain:
 
@@ -97,10 +98,9 @@ Two platform gaps remain:
    operator-launched server, otherwise qualification correctly holds for an
    infrastructure retry.
 2. This is an operational hosting gap rather than a missing league API endpoint:
-   the REST surface has no work lease/webhook and the Coworld runnable manifest
-   has no private `cmr_` credential channel. An external scheduler must invoke
-   this one-shot agent and deliver/rotate its secret until the platform owns that
-   execution boundary.
+   the Coworld runnable manifest has no private `cmr_` credential channel and its
+   launcher is WebSocket-specific. The REST worker therefore needs a standalone
+   deployment with secret delivery until the platform owns that execution boundary.
 
 A game owner or Softmax team member mints the secret with a normal user token;
 the raw `cmr_` value is returned once and cannot mint broader credentials:
@@ -530,38 +530,32 @@ in `EpisodeResult.game_results` — seat-indexed arrays: `vote_players`, `kills`
   emits the observability channels.
 - `crewrift_prime.yaml` — ruleset config (Qualifiers `crash_check` + `skill_gate`
   stages, Competition division). Loaded via `RULESET_STRATEGY_CONFIG_PATH`.
-- `app.py` — ASGI entrypoint; imports the subclass (registers key
-  `crewrift_prime_skill`) then builds `commissioner_app()`.
 - `platform_api.py` — typed bearer-authenticated client for the bounded platform
   commissioner surface.
-- `platform_manager.py` — one-shot topology/settings reconciliation and complete
-  qualification/round lifecycle using a `cmr_` token.
+- `platform_manager.py` — durable REST-only topology/settings reconciliation and
+  complete qualification/round lifecycle using a `cmr_` token.
 - `debug_decision.py` — local offline debug/decision script.
 - `Dockerfile` — installs `vendor/` + `openskill` then overlays the above.
 - `vendor/` — vendored upstream `Metta-AI/commissioners` package (see
   `vendor/VENDOR_PROVENANCE.txt`). Not modified.
 
-## Build / wire (recorded for reproducibility)
+## Build / run (recorded for reproducibility)
 
 ```sh
 docker build --platform=linux/amd64 -t crewrift-prime-commissioner:v21 .
-
-# Team-only mutation: clear any active player session so get-token returns the
-# usr_ token (patch-commissioner needs team auth, not a ply_ token).
-cd ../../../metta/packages/coworld
-uv run python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
-
-# Repoint the coworld's commissioner runnable image; this pushes to Observatory's
-# registry, rewrites the manifest image to an img_ id, bumps the coworld version,
-# and re-certifies (hosted smoke) to canonical.
-uv run coworld patch-commissioner crewrift_prime crewrift-prime-commissioner:v21 \
-  --runnable-id among-them-commissioner
+docker run --rm \
+  -e CREWRIFT_PRIME_COMMISSIONER_TOKEN \
+  -e CREWRIFT_PRIME_LEAGUE_ID \
+  -e OBSERVATORY_API_URL=https://softmax.com/api/observatory \
+  crewrift-prime-commissioner:v21
 ```
 
-The league adopts the new commissioner image on its next scheduling tick once the
-new coworld version is canonical (the platform resolves the commissioner from the
-canonical manifest each tick; the `commissioner_runnable_id` is unchanged). No
-re-seed is required.
+The process reconciles once, then continues until stopped. Restarting it is safe;
+round creation, planning, dispatch, scoring, state advancement, and completion
+all use platform idempotency or compare-and-swap invariants. After the first
+authenticated reconciliation succeeds, the worker creates
+`/tmp/crewrift-prime-ready`; the production Deployment uses that as its readiness
+gate, so an absent, expired, or wrong-league token never reports Ready.
 
 ### Unit tests
 
@@ -571,6 +565,6 @@ RULESET_STRATEGY_CONFIG_PATH=$(pwd)/crewrift_prime.yaml PYTHONPATH=. \
   /tmp/comm_venv/bin/python -m unittest discover -p 'test_*.py'
 ```
 
-Covers the platform client and one-shot planning/completion adapter, skill-gate
+Covers the platform client and durable planning/completion adapter, skill-gate
 detection by substatus, 8-seat self-play scheduling, infrastructure failure →
 non-DQ classification, scoring, standings, and decision observability.

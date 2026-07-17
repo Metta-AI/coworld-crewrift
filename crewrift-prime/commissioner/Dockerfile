@@ -1,11 +1,10 @@
-# Crewrift Prime advanced-skill commissioner image.
+# Crewrift Prime REST commissioner worker image.
 #
 # Builds the vendored stock `commissioners` package (vendor/), then overlays the
-# CrewriftPrimeSkillCommissioner subclass + its ruleset YAML + a custom ASGI
-# entrypoint that registers the new commissioner key before the app resolves it.
+# CrewriftPrimeSkillCommissioner subclass, its ruleset YAML, and the durable
+# platform API worker. This image does not serve the legacy `/round` WebSocket.
 #
 # Wiring:
-#   COMMISSIONER_KEY=crewrift_prime_skill        -> resolves CrewriftPrimeSkillCommissioner
 #   RULESET_STRATEGY_CONFIG_PATH=/config/...yaml -> the skill-gate ruleset config
 #   CREWRIFT_PRIME_INTERVIEW_ENABLED=0           -> interview hard gate OFF (the
 #     platform interview-mode launcher is not wired yet, so an enabled gate would
@@ -18,13 +17,10 @@
 #     which the dispatcher injects into each player pod's Bedrock sidecar as
 #     BEDROCK_SIDECAR_SPEND_LIMIT_USD; also stamped as the max_spend_per_pod_usd
 #     episode tag for observability.
-# The custom app module (app.py) imports the subclass (registering the key) then
-# builds commissioner_app(), which reads COMMISSIONER_KEY from the env.
-FROM --platform=linux/amd64 python:3.13-slim
+FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    COMMISSIONER_KEY=crewrift_prime_skill \
     RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml \
     CREWRIFT_PRIME_INTERVIEW_ENABLED=0 \
     CREWRIFT_PRIME_MAX_SPEND_PER_POD_USD=10
@@ -39,7 +35,7 @@ WORKDIR /app
 COPY vendor /app/vendor
 RUN pip install --no-cache-dir /app/vendor "openskill>=6.0.0"
 
-# 2) Overlay the Crewrift Prime decision logic, subclass, entrypoint, debug
+# 2) Overlay the Crewrift Prime decision logic, subclass, REST worker, debug
 #    script, and ruleset config.
 #    NOTE: the qualifier reads the episode's per-slot RESULTS JSON artifact
 #    (/jobs/{job_id}/artifacts/results) directly, so the Nim replay expander +
@@ -52,10 +48,8 @@ COPY platform_api.py /app/platform_api.py
 COPY platform_manager.py /app/platform_manager.py
 COPY interview.py /app/interview.py
 COPY crewrift_prime_skill_commissioner.py /app/crewrift_prime_skill_commissioner.py
-COPY app.py /app/app.py
 COPY debug_decision.py /app/debug_decision.py
 COPY crewrift_prime.yaml /config/crewrift_prime.yaml
 
-EXPOSE 8080
-# Listen on 0.0.0.0:8080 and serve /healthz + /round per the commissioner contract.
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+# Reconcile once, then advance the complete league lifecycle through REST APIs.
+CMD ["python", "/app/platform_manager.py", "run"]

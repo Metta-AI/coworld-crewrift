@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 import urllib.request
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
@@ -876,9 +878,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
 
         authored = client.score_authored_round.call_args.kwargs
         self.assertEqual(authored["entries"][0].score, 3)
-        self.assertEqual(
-            authored["rule_id"], authored["commissioner_report"].rule_id
-        )
+        self.assertEqual(authored["rule_id"], authored["commissioner_report"].rule_id)
         client.publish_division_leaderboard.assert_called_once()
         client.update_commissioner_state.assert_called_once()
         client.complete_round.assert_called_once_with(running.id)
@@ -1145,6 +1145,46 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         manager = _manager_from_env()
 
         self.assertEqual(manager.client._base, "http://127.0.0.1:8200")
+
+    def test_durable_worker_reconciles_once_then_runs_rest_cycles(self) -> None:
+        manager = MagicMock(spec=CrewriftPrimePlatformManager)
+        reconcile = MagicMock()
+        cycle = MagicMock()
+        cycle.model_dump.return_value = {"rounds_completed": 1}
+        manager.reconcile.return_value = reconcile
+        manager._run_cycle.return_value = cycle
+
+        with tempfile.TemporaryDirectory() as directory:
+            ready_file = Path(directory) / "ready"
+            with (
+                patch.dict(
+                    os.environ,
+                    {"CREWRIFT_PRIME_READY_FILE": str(ready_file)},
+                ),
+                patch(
+                    "platform_manager.time.sleep", side_effect=RuntimeError("stop")
+                ) as sleep,
+                patch("builtins.print") as print_result,
+                self.assertRaisesRegex(RuntimeError, "stop"),
+            ):
+                CrewriftPrimePlatformManager.run_forever(
+                    manager, poll_interval_seconds=5
+                )
+
+            self.assertTrue(ready_file.exists())
+
+        manager.reconcile.assert_called_once_with()
+        manager._run_cycle.assert_called_once_with(reconcile)
+        print_result.assert_called_once_with('{"rounds_completed": 1}', flush=True)
+        sleep.assert_called_once_with(5)
+
+    def test_prime_image_has_no_websocket_entrypoint(self) -> None:
+        dockerfile = Path(__file__).with_name("Dockerfile").read_text()
+
+        self.assertNotIn("app.py", dockerfile)
+        self.assertNotIn("uvicorn", dockerfile)
+        self.assertNotIn("EXPOSE 8080", dockerfile)
+        self.assertIn('CMD ["python", "/app/platform_manager.py", "run"]', dockerfile)
 
 
 if __name__ == "__main__":

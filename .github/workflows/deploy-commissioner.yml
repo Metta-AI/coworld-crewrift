@@ -1,14 +1,7 @@
-# Deploy the Crewrift Prime commissioner image to the hosted Softmax platform.
-#
-# Required repository secret:
-#   SOFTMAX_API_TOKEN  - a TEAM `usr_` token. Set it in
-#                        Settings -> Secrets and variables -> Actions.
-#                        The `coworld`/`softmax` CLI reads its bearer token from
-#                        ~/.softmax/credentials.yaml, NOT from this env var, so the
-#                        workflow seeds it headlessly via `softmax set-token`.
-#
-# coworld CLI version: 0.1.27 (public PyPI, requires Python 3.11-3.12; we use 3.12).
-name: "Deploy Crewrift Prime Commissioner"
+# Publish the REST-only Crewrift Prime commissioner worker image. The worker is
+# deliberately not attached with `coworld patch-commissioner`, which is the
+# legacy per-round WebSocket deployment path.
+name: "Publish Crewrift Prime REST Commissioner"
 
 on:
   push:
@@ -19,8 +12,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-commissioner
+  group: publish-commissioner
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   deploy:
@@ -30,38 +27,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install coworld CLI
-        run: uv pip install --system coworld==0.1.27
-
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build commissioner image
-        run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --load \
-            -t crewrift-prime-commissioner:${{ github.sha }} \
-            crewrift-prime/commissioner
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Seed Softmax credentials
-        env:
-          SOFTMAX_API_TOKEN: ${{ secrets.SOFTMAX_API_TOKEN }}
-        run: |
-          if [ -z "$SOFTMAX_API_TOKEN" ]; then
-            echo "::error::SOFTMAX_API_TOKEN secret is empty. Set a team usr_ token in repo Settings -> Secrets and variables -> Actions."
-            exit 1
-          fi
-          softmax set-token "$SOFTMAX_API_TOKEN" --server https://softmax.com/api
-          python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
-
-      - name: Deploy commissioner
-        run: |
-          coworld patch-commissioner crewrift_prime \
-            crewrift-prime-commissioner:${{ github.sha }} \
-            --runnable-id among-them-commissioner
+      - name: Build and publish commissioner worker
+        uses: docker/build-push-action@v6
+        with:
+          context: crewrift-prime/commissioner
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/metta-ai/coworld-crewrift-commissioner:prime-rest-${{ github.sha }}
+            ghcr.io/metta-ai/coworld-crewrift-commissioner:prime-rest-latest
