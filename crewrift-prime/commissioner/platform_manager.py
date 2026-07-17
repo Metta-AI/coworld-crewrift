@@ -96,18 +96,6 @@ PLATFORM_CAPABILITY_GAPS = [
             "the typed question/answer exchange."
         ),
     ),
-    PlatformCapabilityGap(
-        kind="hosting",
-        capability="durable agent invocation and credential delivery",
-        blocker=(
-            "The REST-only worker is durable, but the Coworld runnable manifest has no private "
-            "cmr_ credential channel and the legacy per-round container launcher requires a WebSocket."
-        ),
-        required_change=(
-            "Deploy this image as a standalone worker and deliver its league token through the "
-            "deployment secret store; do not attach it as a legacy Coworld commissioner runnable."
-        ),
-    ),
 ]
 
 
