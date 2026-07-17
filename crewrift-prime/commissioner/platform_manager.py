@@ -349,6 +349,7 @@ class CrewriftPrimePlatformManager:
             )
         ]
         rounds = self.client.list_rounds(self.league_id).entries
+        existing_round_ids = {round_.id for round_ in rounds}
         recent_results = self._recent_results(rounds)
         active_division_ids = {
             round_.division.id
@@ -371,13 +372,14 @@ class CrewriftPrimePlatformManager:
             for division in divisions:
                 if division.id in active_division_ids:
                     continue
-                self.client.create_round(
+                created_round = self.client.create_round(
                     division_id=division.id,
                     idempotency_key=f"crewrift-prime-{division.id}-{slot}",
                     entrant_policy_version_ids=entrant_ids,
                     stages=[RoundStage(num_episodes=episodes_per_round)],
                 )
-                created += 1
+                if created_round.id not in existing_round_ids:
+                    created += 1
 
         state = self.client.get_commissioner_state(self.league_id)
         dispatched = 0
@@ -508,10 +510,11 @@ class CrewriftPrimePlatformManager:
                 results,
                 scheduled,
             )
+            assert output.observability is not None
             rankings = output.results[0].rankings
             self.client.score_authored_round(
                 round_.id,
-                rule_id="crewrift-prime-role-weighted-wins",
+                rule_id=output.observability.rule_id,
                 entries=[
                     AuthoredRoundScoreEntry(
                         policy_version_id=entry.policy_version_id,

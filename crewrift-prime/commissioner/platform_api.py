@@ -470,7 +470,9 @@ class PlatformCommissionerClient(XpRequestClient):
                 "division_id": division_id,
                 "idempotency_key": idempotency_key,
                 "round_config": {
-                    "entrant_policy_version_ids": entrant_policy_version_ids,
+                    "entrant_policy_version_ids": None
+                    if entrant_policy_version_ids is None
+                    else [str(policy_version_id) for policy_version_id in entrant_policy_version_ids],
                     "stages": None
                     if stages is None
                     else [stage.model_dump(mode="json") for stage in stages],
