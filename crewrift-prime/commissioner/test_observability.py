@@ -1220,8 +1220,10 @@ class XpRequestPayloadTest(unittest.TestCase):
         client = XpRequestClient(base="https://example.test/observatory", token="tok-abc")
         with unittest.mock.patch("urllib.request.urlopen", _fake_urlopen):
             xreq_id = client.create_experience_request(
+                league_id="a77efba7-46b2-4fd7-b9aa-da621f8b93ca",
                 division_id="acbde92a-df21-4489-859c-4510bd4445f2",
                 policy_version_id="pv-candidate",
+                idempotency_key="crewrift-prime-qualifier-test",
                 seat_count=seat_count,
                 num_episodes=num_episodes,
                 notes="crewrift-prime qualifier",
@@ -1239,8 +1241,13 @@ class XpRequestPayloadTest(unittest.TestCase):
         # Target is {division_id: ...}, normalized to the platform's prefixed
         # ``div_<uuid>`` form (a bare UUID is rejected by the DivisionId type, 422).
         self.assertEqual(
-            body["target"], {"division_id": "div_acbde92a-df21-4489-859c-4510bd4445f2"}
+            body["target"],
+            {
+                "league_id": "league_a77efba7-46b2-4fd7-b9aa-da621f8b93ca",
+                "division_id": "div_acbde92a-df21-4489-859c-4510bd4445f2",
+            },
         )
+        self.assertEqual(body["idempotency_key"], "crewrift-prime-qualifier-test")
         # num_episodes / execution_backend live at the top level.
         self.assertEqual(body["num_episodes"], 1)
         self.assertEqual(body["execution_backend"], "k8s")
@@ -1264,12 +1271,11 @@ class XpRequestPayloadTest(unittest.TestCase):
         self.assertEqual(body["num_episodes"], 3)
         self.assertEqual(len(body["roster"]), 8)
 
-    def test_auth_header_is_x_auth_token(self) -> None:
+    def test_auth_header_is_bearer_token(self) -> None:
         _xreq_id, captured = self._capture_post()
         headers = captured["headers"]
         assert isinstance(headers, dict)
-        # urllib title-cases header keys; X-Auth-Token -> X-auth-token.
-        self.assertEqual(headers.get("X-auth-token"), "tok-abc")
+        self.assertEqual(headers.get("Authorization"), "Bearer tok-abc")
 
     def test_prefixed_division_id_is_idempotent(self) -> None:
         from xp_request_client import _prefixed_division_id, _prefixed_league_id
