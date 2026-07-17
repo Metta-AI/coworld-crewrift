@@ -21,7 +21,7 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    RULESET_STRATEGY_CONFIG_PATH=/config/crewrift_prime.yaml \
+    RULESET_STRATEGY_CONFIG_PATH=/app/crewrift_prime.yaml \
     CREWRIFT_PRIME_INTERVIEW_ENABLED=0 \
     CREWRIFT_PRIME_MAX_SPEND_PER_POD_USD=10
 
@@ -49,7 +49,7 @@ COPY platform_manager.py /app/platform_manager.py
 COPY interview.py /app/interview.py
 COPY crewrift_prime_skill_commissioner.py /app/crewrift_prime_skill_commissioner.py
 COPY debug_decision.py /app/debug_decision.py
-COPY crewrift_prime.yaml /config/crewrift_prime.yaml
+COPY crewrift_prime.yaml /app/crewrift_prime.yaml
 
 # Reconcile once, then advance the complete league lifecycle through REST APIs.
 CMD ["python", "/app/platform_manager.py", "run"]
