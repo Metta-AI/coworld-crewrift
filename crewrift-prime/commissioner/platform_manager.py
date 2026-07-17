@@ -508,10 +508,11 @@ class CrewriftPrimePlatformManager:
                 results,
                 scheduled,
             )
+            assert output.observability is not None
             rankings = output.results[0].rankings
             self.client.score_authored_round(
                 round_.id,
-                rule_id="crewrift-prime-role-weighted-wins",
+                rule_id=output.observability.rule_id,
                 entries=[
                     AuthoredRoundScoreEntry(
                         policy_version_id=entry.policy_version_id,

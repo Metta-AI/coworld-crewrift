@@ -175,6 +175,39 @@ class PlatformCommissionerClientTest(unittest.TestCase):
         self.assertEqual(json.loads(request.data)["idempotency_key"], "submission-21")
         self.assertEqual(membership.status, "competing")
 
+    def test_creates_round_with_json_policy_version_ids(self) -> None:
+        policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        payload = {
+            "id": "round_00000000-0000-0000-0000-000000000061",
+            "round_number": 1,
+            "commissioner_key": "platform",
+            "status": "pending",
+            "division": {
+                "id": "div_00000000-0000-0000-0000-000000000010",
+                "name": "Competition",
+                "level": 1,
+                "type": "competition",
+            },
+            "round_config": {"entrant_policy_version_ids": [str(policy_id)]},
+        }
+        with patch.object(
+            urllib.request, "urlopen", return_value=_Response(payload)
+        ) as urlopen:
+            client = PlatformCommissionerClient(
+                base="https://example.test", token="cmr_secret"
+            )
+            client.create_round(
+                division_id=payload["division"]["id"],
+                idempotency_key="round-21",
+                entrant_policy_version_ids=[policy_id],
+            )
+
+        request_body = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(
+            request_body["round_config"]["entrant_policy_version_ids"],
+            [str(policy_id)],
+        )
+
     def test_reads_typed_round_results_for_commissioner_history(self) -> None:
         policy_id = UUID("00000000-0000-0000-0000-000000000021")
         payload = {
@@ -794,6 +827,9 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
 
         authored = client.score_authored_round.call_args.kwargs
         self.assertEqual(authored["entries"][0].score, 3)
+        self.assertEqual(
+            authored["rule_id"], authored["commissioner_report"].rule_id
+        )
         client.publish_division_leaderboard.assert_called_once()
         client.update_commissioner_state.assert_called_once()
         client.complete_round.assert_called_once_with(running.id)
