@@ -1,8 +1,9 @@
-"""One-shot Crewrift Prime reconciliation through the platform commissioner API.
+"""Crewrift Prime league orchestration through the platform commissioner API.
 
-Run this command with a league-scoped ``cmr_`` credential. It deliberately does
-not poll: callers schedule it at the cadence they own, and every mutation is
-state-idempotent.
+The default ``run`` mode is a durable REST-only worker. It reconciles static
+league configuration once at startup, then continuously advances qualification
+and round state through idempotent API calls using a league-scoped ``cmr_``
+credential. It never serves or connects to the legacy commissioner WebSocket.
 """
 
 from __future__ import annotations
@@ -11,9 +12,10 @@ import argparse
 import hashlib
 import json
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -58,6 +60,7 @@ from xp_request_client import DEFAULT_API_BASE, _observatory_base
 
 COMMISSIONER_TOKEN_ENV = "CREWRIFT_PRIME_COMMISSIONER_TOKEN"
 LEAGUE_ID_ENV = "CREWRIFT_PRIME_LEAGUE_ID"
+POLL_INTERVAL_SECONDS_ENV = "CREWRIFT_PRIME_POLL_INTERVAL_SECONDS"
 
 CREWRIFT_PRIME_DIVISIONS = [
     DivisionDeclaration(name="Competition", level=1, type="competition"),
@@ -94,12 +97,12 @@ PLATFORM_CAPABILITY_GAPS = [
         kind="hosting",
         capability="durable agent invocation and credential delivery",
         blocker=(
-            "The API is request/response only: it does not notify or lease work to an external "
-            "commissioner, and the Coworld runnable manifest has no private cmr_ credential channel."
+            "The REST-only worker is durable, but the Coworld runnable manifest has no private "
+            "cmr_ credential channel and the legacy per-round container launcher requires a WebSocket."
         ),
         required_change=(
-            "Provide a platform-owned commissioner worker/lease or event webhook plus secure "
-            "league-token delivery, so the one-shot agent does not require an operator scheduler."
+            "Deploy this image as a standalone worker and deliver its league token through the "
+            "deployment secret store; do not attach it as a legacy Coworld commissioner runnable."
         ),
     ),
 ]
@@ -220,7 +223,21 @@ class CrewriftPrimePlatformManager:
         )
 
     def run_once(self) -> PlatformRunResult:
+        return self._run_cycle(self.reconcile())
+
+    def run_forever(self, *, poll_interval_seconds: float) -> NoReturn:
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be greater than zero")
         reconcile = self.reconcile()
+        while True:
+            result = self._run_cycle(reconcile)
+            print(
+                json.dumps(result.model_dump(mode="json"), sort_keys=True),
+                flush=True,
+            )
+            time.sleep(poll_interval_seconds)
+
+    def _run_cycle(self, reconcile: PlatformReconcileResult) -> PlatformRunResult:
         league = self.client.get_league(self.league_id)
         rounds_paused = league.rounds_paused_at is not None
         divisions = self.client.list_divisions(self.league_id)
@@ -716,10 +733,22 @@ def _manager_from_env() -> CrewriftPrimePlatformManager:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("inspect", "reconcile", "run"))
+    parser.add_argument(
+        "mode",
+        choices=("inspect", "reconcile", "run", "run-once"),
+        nargs="?",
+        default="run",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=float(os.environ.get(POLL_INTERVAL_SECONDS_ENV, "5")),
+    )
     args = parser.parse_args()
     manager = _manager_from_env()
-    if args.mode == "inspect":
+    if args.mode == "run":
+        manager.run_forever(poll_interval_seconds=args.poll_interval_seconds)
+    elif args.mode == "inspect":
         result = manager.inspect()
     elif args.mode == "reconcile":
         result = manager.reconcile()
