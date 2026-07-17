@@ -566,7 +566,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         self.assertEqual(result.remaining_gaps, PLATFORM_CAPABILITY_GAPS)
         self.assertEqual(
             [gap.kind for gap in result.remaining_gaps],
-            ["cross-surface", "hosting"],
+            ["cross-surface"],
         )
 
     def test_reconcile_does_not_rewrite_matching_settings(self) -> None:

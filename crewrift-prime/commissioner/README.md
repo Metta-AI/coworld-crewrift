@@ -88,20 +88,13 @@ an image to the legacy per-round WebSocket launcher. Deploy it as one standalone
 worker, provide the two required secrets, and set the league's
 `commissioner_key` to `platform` as one coordinated cutover.
 
-Two platform gaps remain:
-
-1. The interview hard gate first needs an uploaded-policy contract for declaring
-   an alternate interview runnable (policy versions currently carry only their
-   normal game command), plus a short-lived API operation that launches it and
-   proxies the question/answer exchange. The shipped image currently disables
-   that gate; enabling it requires `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an
-   operator-launched server, otherwise qualification correctly holds for an
-   infrastructure retry.
-2. This is an operational hosting gap rather than a missing league API endpoint:
-   the Coworld runnable manifest has no private `cmr_` credential channel and its
-   launcher is WebSocket-specific. The REST worker therefore needs a standalone
-   deployment with secret delivery until the platform owns that execution boundary.
-
+One platform gap remains: the interview hard gate first needs an uploaded-policy
+contract for declaring an alternate interview runnable (policy versions currently
+carry only their normal game command), plus a short-lived API operation that launches
+it and proxies the question/answer exchange. The shipped image currently disables
+that gate; enabling it requires `CREWRIFT_PRIME_INTERVIEW_ADDR` to name an
+operator-launched server, otherwise qualification correctly holds for an
+infrastructure retry.
 A game owner or Softmax team member mints the secret with a normal user token;
 the raw `cmr_` value is returned once and cannot mint broader credentials:
 
