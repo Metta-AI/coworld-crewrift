@@ -15,8 +15,8 @@
 #                        ~/.softmax/credentials.yaml, NOT from this env var, so the
 #                        workflow seeds it headlessly via `softmax set-token`.
 #
-# The CLI is pinned to Metta main commit 8409100e4d53c2dbf45c8dcec1e95c5ae25c6c48,
-# which contains the current source build and package-artifact hydration contract.
+# Coworld 0.1.33 is the current PyPI release containing the source build and
+# package-artifact hydration contract used below.
 name: "Deploy Crewrift Game"
 
 on:
@@ -43,7 +43,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install coworld CLI
-        run: uv pip install --system "coworld @ git+https://github.com/Metta-AI/metta.git@8409100e4d53c2dbf45c8dcec1e95c5ae25c6c48#subdirectory=packages/coworld"
+        run: uv pip install --system coworld==0.1.33
 
       - uses: docker/setup-buildx-action@v3
 
