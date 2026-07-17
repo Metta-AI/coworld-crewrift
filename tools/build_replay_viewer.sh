@@ -3,6 +3,21 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_dir="${1:-${repo_dir}/build/static-replay-viewer}"
+if [[ "${output_dir}" != /* ]]; then
+  output_dir="${repo_dir}/${output_dir}"
+fi
+output_dir="${output_dir%/}"
+output_name="$(basename "${output_dir}")"
+if [[ -z "${output_dir}" || "${output_name}" == "." || "${output_name}" == ".." ]]; then
+  echo "Refusing unsafe replay viewer output directory: ${output_dir:-<empty>}" >&2
+  exit 1
+fi
+mkdir -p "$(dirname "${output_dir}")"
+output_dir="$(cd "$(dirname "${output_dir}")" && pwd -P)/${output_name}"
+if [[ "${output_dir}" == "/" || "${output_dir}" == "${repo_dir}" ]]; then
+  echo "Refusing unsafe replay viewer output directory: ${output_dir}" >&2
+  exit 1
+fi
 nimby_root="${NIMBY_ROOT:-${HOME}/.nimby}"
 bitworld_dir="${nimby_root}/pkgs/bitworld"
 emcc_bin="${EMCC:-$(command -v emcc || true)}"
@@ -24,7 +39,8 @@ if [[ -z "${expected_bitworld}" || "${actual_bitworld}" != "${expected_bitworld}
   exit 1
 fi
 
-mkdir -p "${output_dir}" "${output_dir}/nimcache"
+rm -rf "${output_dir}"
+mkdir -p "${output_dir}/nimcache"
 export EM_CACHE="${output_dir}/nimcache/emcache"
 
 nim_paths=("--path:${repo_dir}/src")

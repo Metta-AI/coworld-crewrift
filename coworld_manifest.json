@@ -13,6 +13,9 @@
       ],
       "source_url": "https://github.com/Metta-AI/coworld-crewrift/tree/1cbd4de4eba3905bb46783acabb39150d3ad1b45"
     },
+    "replay_viewer": {
+      "bundle": "build/static-replay-viewer"
+    },
     "config_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "object",

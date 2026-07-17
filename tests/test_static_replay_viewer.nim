@@ -1,5 +1,5 @@
 import
-  std/[os, unittest],
+  std/[json, os, unittest],
   crewrift/static_replay
 
 const
@@ -15,6 +15,15 @@ proc loadFixtureViewer(): StaticReplayViewer =
     setCurrentDir(previousDir)
 
 suite "static replay viewer core":
+  test "manifest uses the executable conventional build hook":
+    let
+      hookPath = GameDir / "tools" / "build_replay_viewer.sh"
+      manifest = parseFile(GameDir / "coworld_manifest.json")
+    check fileExists(hookPath)
+    check fpUserExec in getFilePermissions(hookPath)
+    check manifest["game"]["replay_viewer"]["bundle"].getStr() ==
+      "build/static-replay-viewer"
+
   test "loads the current replay fixture and emits Sprite v1 frames":
     let viewer = loadFixtureViewer()
     check viewer.replayBuild() == "crewrift:1"

@@ -8,14 +8,17 @@ presentation packets consumed by Bitworld's shared global/replay renderer.
 Build it from the repository root:
 
 ```sh
-tools/build_static_replay_viewer.sh
+tools/build_replay_viewer.sh build/static-replay-viewer
 ```
 
-The default bundle directory is `build/static-replay-viewer/`; pass a directory
-as the first argument to override it. The build requires Emscripten and the
-`nimby.lock` dependencies. It refuses to build if the installed Bitworld commit
-does not match the lock file. `index.html` is the entrypoint inferred by
-Coworld; no bundle-internal files or ABI are part of the platform contract.
+`coworld upload` invokes the executable `tools/build_replay_viewer.sh` hook with
+`game.replay_viewer.bundle` as its first argument. The hook also defaults to
+`build/static-replay-viewer/` for direct local use. It recreates that directory
+on every build so removed or renamed assets cannot survive into an upload. The
+build requires Emscripten and the `nimby.lock` dependencies. It refuses to build
+if the installed Bitworld commit does not match the lock file. `index.html` is
+the entrypoint inferred by Coworld; no bundle-internal files or ABI are part of
+the platform contract.
 
 At runtime, pass the browser-readable replay URL as `?replay=<url>`. The aliases
 `replay_url` and `uri` are also accepted. With no URL the page offers a local
@@ -42,4 +45,6 @@ node tests/smoke_static_replay_viewer.mjs \
   'http://127.0.0.1:8000/?replay=/notsus.bitreplay'
 ```
 
-The real production `coworld_manifest.json` is intentionally unchanged.
+The authored manifest names only `build/static-replay-viewer`; Coworld owns
+running the build hook and rewriting the uploaded bundle reference to its
+immutable digest.
