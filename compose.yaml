@@ -1,0 +1,30 @@
+services:
+  game:
+    image: coworld-crewrift-game:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+  player:
+    image: coworld-crewrift-notsus:latest
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: players/notsus/Dockerfile
+      network: host
+  commissioner:
+    image: coworld-crewrift-commissioner:latest
+    platform: linux/amd64
+    build:
+      context: commissioner
+      dockerfile: commissioners/Dockerfile
+      args:
+        COMMISSIONER_KEY: config_driven
+        RULESET_STRATEGY_CONFIG_NAME: among_them
+  grader:
+    image: coworld-crewrift-grader:latest
+    platform: linux/amd64
+    build:
+      context: grader
+      dockerfile: graders/crewrift/crewrift_grader/Dockerfile
