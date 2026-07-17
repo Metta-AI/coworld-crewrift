@@ -30,6 +30,7 @@ from commissioners.common.models import (
     RoundSnapshot,
 )
 from commissioners.common.protocol import (
+    DivisionLeaderboard,
     DivisionInfo,
     EpisodeRequest,
     EpisodeResult,
@@ -52,6 +53,7 @@ from platform_api import (
     ExplicitRoundEpisode,
     MembershipEventEvidence,
     MembershipEventChange,
+    MembershipSummary,
     PlatformCommissionerClient,
     RoundStage,
     RoundSummary,
@@ -146,6 +148,43 @@ class PlatformRunResult(BaseModel):
 
 def _uuid(public_id: str) -> UUID:
     return UUID(public_id.rsplit("_", 1)[-1])
+
+
+def _leaderboard_for_live_roster(
+    leaderboard: DivisionLeaderboard,
+    memberships: list[MembershipSummary],
+) -> DivisionLeaderboard:
+    live_policy_ids_by_player: dict[str, set[UUID]] = {}
+    for membership in memberships:
+        if (
+            membership.player is None
+            or PolicyMembershipStatus(membership.status)
+            not in PolicyMembershipStatus.live()
+        ):
+            continue
+        live_policy_ids_by_player.setdefault(membership.player.id, set()).add(
+            membership.policy_version.id
+        )
+
+    views = []
+    for view in leaderboard.views:
+        rows = []
+        for row in view.rows:
+            if row.subject_id not in live_policy_ids_by_player:
+                continue
+            values = dict(row.values)
+            if "rank" in values:
+                values["rank"] = len(rows) + 1
+            rows.append(
+                row.model_copy(
+                    update={
+                        "values": values,
+                        "policy_version_ids": live_policy_ids_by_player[row.subject_id],
+                    }
+                )
+            )
+        views.append(view.model_copy(update={"rows": rows}))
+    return leaderboard.model_copy(update={"views": views})
 
 
 class CrewriftPrimePlatformManager:
@@ -556,7 +595,8 @@ class CrewriftPrimePlatformManager:
             )
             for leaderboard in output.leaderboards:
                 self.client.publish_division_leaderboard(
-                    round_.division.id, leaderboard
+                    round_.division.id,
+                    _leaderboard_for_live_roster(leaderboard, memberships),
                 )
             next_state = dict(output.state) if isinstance(output.state, dict) else {}
             next_state.pop("round_config", None)

@@ -53,6 +53,7 @@ from platform_manager import (
     CREWRIFT_PRIME_DIVISIONS,
     PLATFORM_CAPABILITY_GAPS,
     CrewriftPrimePlatformManager,
+    _leaderboard_for_live_roster,
     _manager_from_env,
 )
 
@@ -477,6 +478,72 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
             moves=[],
         )
         return client
+
+    def test_leaderboard_rebinds_historical_rows_to_live_roster(self) -> None:
+        division = DivisionRef(
+            id="div_00000000-0000-0000-0000-000000000001",
+            name="Competition",
+            level=1,
+            type="competition",
+        )
+        live_player_id = "ply_00000000-0000-0000-0000-000000000051"
+        departed_player_id = "ply_00000000-0000-0000-0000-000000000052"
+        historical_policy_id = UUID("00000000-0000-0000-0000-000000000021")
+        live_policy_id = UUID("00000000-0000-0000-0000-000000000022")
+        departed_policy_id = UUID("00000000-0000-0000-0000-000000000023")
+        memberships = [
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000041",
+                status="disqualified",
+                is_champion=False,
+                division=division,
+                policy_version=PolicyVersionRef(id=historical_policy_id),
+                player=PlayerRef(id=live_player_id, name="Live Player"),
+            ),
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000042",
+                status="competing",
+                is_champion=True,
+                division=division,
+                policy_version=PolicyVersionRef(id=live_policy_id),
+                player=PlayerRef(id=live_player_id, name="Live Player"),
+            ),
+            MembershipSummary(
+                id="lpm_00000000-0000-0000-0000-000000000043",
+                status="disqualified",
+                is_champion=False,
+                division=division,
+                policy_version=PolicyVersionRef(id=departed_policy_id),
+                player=PlayerRef(id=departed_player_id, name="Departed Player"),
+            ),
+        ]
+        leaderboard = DivisionLeaderboard(
+            division_id=UUID("00000000-0000-0000-0000-000000000001"),
+            views=[
+                DivisionLeaderboardView(
+                    rows=[
+                        DivisionLeaderboardRow(
+                            subject_id=departed_player_id,
+                            values={"rank": 1, "wins": 9},
+                            policy_version_ids={departed_policy_id},
+                        ),
+                        DivisionLeaderboardRow(
+                            subject_id=live_player_id,
+                            values={"rank": 2, "wins": 7},
+                            policy_version_ids={historical_policy_id},
+                        ),
+                    ]
+                )
+            ],
+        )
+
+        published = _leaderboard_for_live_roster(leaderboard, memberships)
+
+        self.assertEqual(len(published.views[0].rows), 1)
+        row = published.views[0].rows[0]
+        self.assertEqual(row.subject_id, live_player_id)
+        self.assertEqual(row.policy_version_ids, {live_policy_id})
+        self.assertEqual(row.values, {"rank": 1, "wins": 7})
 
     def test_reconcile_declares_topology_and_updates_spend_limit(self) -> None:
         client = self._client(current_spend_limit=5, final_spend_limit=10)
