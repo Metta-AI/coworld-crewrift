@@ -11,14 +11,20 @@ Build it from the repository root:
 tools/build_replay_viewer.sh build/static-replay-viewer
 ```
 
-`coworld upload` invokes the executable `tools/build_replay_viewer.sh` hook with
-`game.replay_viewer.bundle` as its first argument. The hook also defaults to
-`build/static-replay-viewer/` for direct local use. It recreates that directory
-on every build so removed or renamed assets cannot survive into an upload. The
-build requires Emscripten and the `nimby.lock` dependencies. It refuses to build
-if the installed Bitworld commit does not match the lock file. `index.html` is
-the entrypoint inferred by Coworld; no bundle-internal files or ABI are part of
-the platform contract.
+During packaging, `coworld build` reads `game.replay_viewer.bundle` from the
+source manifest and invokes the executable `tools/build_replay_viewer.sh` hook.
+Its first argument is the absolute bundle path resolved relative to the
+hydrated output manifest. For example, an output manifest at
+`tmp/crewrift/coworld_manifest.json` receives a bundle at
+`tmp/crewrift/build/static-replay-viewer/`. Coworld writes the hydrated manifest
+only after that directory and its `index.html` exist.
+
+The hook defaults to the repository-local `build/static-replay-viewer/` for
+direct use. It recreates the requested directory on every build so removed or
+renamed assets cannot survive into a package. The build requires Emscripten and
+the `nimby.lock` dependencies. It refuses to build if the installed Bitworld
+commit does not match the lock file. `index.html` is the entrypoint inferred by
+Coworld; no bundle-internal files or ABI are part of the platform contract.
 
 At runtime, pass the browser-readable replay URL as `?replay=<url>`. The aliases
 `replay_url` and `uri` are also accepted. With no URL the page offers a local
@@ -45,6 +51,6 @@ node tests/smoke_static_replay_viewer.mjs \
   'http://127.0.0.1:8000/?replay=/notsus.bitreplay'
 ```
 
-The authored manifest names only `build/static-replay-viewer`; Coworld owns
-running the build hook and rewriting the uploaded bundle reference to its
-immutable digest.
+The source manifest names only the package-relative path
+`build/static-replay-viewer`. `coworld upload-coworld` does not run the hook; it
+validates, archives, and submits the bundle already produced by `coworld build`.

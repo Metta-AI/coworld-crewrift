@@ -15,7 +15,7 @@ proc loadFixtureViewer(): StaticReplayViewer =
     setCurrentDir(previousDir)
 
 suite "static replay viewer core":
-  test "manifest uses the executable conventional build hook":
+  test "source manifest declares the coworld build hook contract":
     let
       hookPath = GameDir / "tools" / "build_replay_viewer.sh"
       manifest = parseFile(GameDir / "coworld_manifest.json")
