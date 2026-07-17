@@ -61,6 +61,7 @@ from xp_request_client import DEFAULT_API_BASE, _observatory_base
 COMMISSIONER_TOKEN_ENV = "CREWRIFT_PRIME_COMMISSIONER_TOKEN"
 LEAGUE_ID_ENV = "CREWRIFT_PRIME_LEAGUE_ID"
 POLL_INTERVAL_SECONDS_ENV = "CREWRIFT_PRIME_POLL_INTERVAL_SECONDS"
+READY_FILE_ENV = "CREWRIFT_PRIME_READY_FILE"
 
 CREWRIFT_PRIME_DIVISIONS = [
     DivisionDeclaration(name="Competition", level=1, type="competition"),
@@ -228,7 +229,10 @@ class CrewriftPrimePlatformManager:
     def run_forever(self, *, poll_interval_seconds: float) -> NoReturn:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be greater than zero")
+        ready_file = Path(os.environ.get(READY_FILE_ENV, "/tmp/crewrift-prime-ready"))
+        ready_file.unlink(missing_ok=True)
         reconcile = self.reconcile()
+        ready_file.touch()
         while True:
             result = self._run_cycle(reconcile)
             print(

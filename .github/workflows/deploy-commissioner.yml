@@ -42,5 +42,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/metta-ai/coworld-crewrift-prime-commissioner:${{ github.sha }}
-            ghcr.io/metta-ai/coworld-crewrift-prime-commissioner:latest
+            ghcr.io/metta-ai/coworld-crewrift-commissioner:prime-rest-${{ github.sha }}
+            ghcr.io/metta-ai/coworld-crewrift-commissioner:prime-rest-latest

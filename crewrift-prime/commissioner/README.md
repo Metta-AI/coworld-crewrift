@@ -552,7 +552,10 @@ docker run --rm \
 
 The process reconciles once, then continues until stopped. Restarting it is safe;
 round creation, planning, dispatch, scoring, state advancement, and completion
-all use platform idempotency or compare-and-swap invariants.
+all use platform idempotency or compare-and-swap invariants. After the first
+authenticated reconciliation succeeds, the worker creates
+`/tmp/crewrift-prime-ready`; the production Deployment uses that as its readiness
+gate, so an absent, expired, or wrong-league token never reports Ready.
 
 ### Unit tests
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 import urllib.request
 from datetime import UTC, datetime
@@ -1153,14 +1154,24 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         manager.reconcile.return_value = reconcile
         manager._run_cycle.return_value = cycle
 
-        with (
-            patch(
-                "platform_manager.time.sleep", side_effect=RuntimeError("stop")
-            ) as sleep,
-            patch("builtins.print") as print_result,
-            self.assertRaisesRegex(RuntimeError, "stop"),
-        ):
-            CrewriftPrimePlatformManager.run_forever(manager, poll_interval_seconds=5)
+        with tempfile.TemporaryDirectory() as directory:
+            ready_file = Path(directory) / "ready"
+            with (
+                patch.dict(
+                    os.environ,
+                    {"CREWRIFT_PRIME_READY_FILE": str(ready_file)},
+                ),
+                patch(
+                    "platform_manager.time.sleep", side_effect=RuntimeError("stop")
+                ) as sleep,
+                patch("builtins.print") as print_result,
+                self.assertRaisesRegex(RuntimeError, "stop"),
+            ):
+                CrewriftPrimePlatformManager.run_forever(
+                    manager, poll_interval_seconds=5
+                )
+
+            self.assertTrue(ready_file.exists())
 
         manager.reconcile.assert_called_once_with()
         manager._run_cycle.assert_called_once_with(reconcile)
