@@ -81,9 +81,17 @@ come from <https://github.com/Metta-AI/coworld-tools>.
 If you are fixing the Crewrift commissioner, first decide whether the change is
 shared or Crewrift-specific. Shared `ruleset_strategy` fixes belong in
 `coworld-tools/commissioners`. Crewrift-specific commissioner behavior belongs
-beside this game, with `coworld_manifest.json` updated to point
+beside this game, with `coworld_manifest_template.json` updated to point
 `commissioner[].source_url` at this repo. Do not patch the archived
 `Metta-AI/commissioners` repo.
+
+The complete Coworld package is built from this repository:
+
+```bash
+coworld build --version 0.1.60
+coworld certify dist/coworld_manifest.json
+coworld upload-coworld dist/coworld_manifest.json
+```
 
 ## Crewrift Rules
 
