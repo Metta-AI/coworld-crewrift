@@ -1,12 +1,12 @@
-# Build, certify, and deploy the source-owned Crewrift Prime Coworld package.
+# Build and deploy the source-owned Crewrift Prime Coworld package.
 #
 # Lifecycle:
 #   1. Materialize the Prime source manifest from the checked-in template + patch.
 #   2. `coworld build` builds the package services from compose.yaml, pins
 #      source URLs to this checkout, stamps the next version, and writes the
 #      hydrated manifest.
-#   3. Certify that exact hydrated manifest, then upload that manifest. Upload
-#      reuses the certification proof and does not patch a hosted Coworld.
+#   3. Upload that exact hydrated manifest. Upload queues hosted certification
+#      and does not patch an existing hosted Coworld.
 #
 # Required repository secret:
 #   SOFTMAX_API_TOKEN  - a TEAM `usr_` token. Set it in
@@ -24,12 +24,8 @@ on:
     branches: [master]
   workflow_dispatch:
     inputs:
-      skip_certify:
-        description: "Skip coworld certify (build only; upload is skipped too)."
-        type: boolean
-        default: false
       skip_upload:
-        description: "Skip coworld upload-coworld (build + certify only)."
+        description: "Skip coworld upload-coworld (build only)."
         type: boolean
         default: false
 
@@ -56,7 +52,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Preflight Docker (required for build/certify)
+      - name: Preflight Docker (required for build)
         run: |
           docker version
           docker info
@@ -116,15 +112,8 @@ jobs:
             "${{ steps.ver.outputs.version }}" \
             tmp/crewrift-prime/dist/coworld_manifest.json
 
-      - name: Certify hydrated Coworld manifest
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_certify != 'true' }}
-        run: |
-          coworld certify \
-            tmp/crewrift-prime/dist/coworld_manifest.json \
-            --no-open-report
-
-      - name: Upload certified Coworld manifest
-        if: ${{ github.event_name != 'workflow_dispatch' || (github.event.inputs.skip_certify != 'true' && github.event.inputs.skip_upload != 'true') }}
+      - name: Upload hydrated Coworld manifest
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
           coworld upload-coworld \
             tmp/crewrift-prime/dist/coworld_manifest.json \
