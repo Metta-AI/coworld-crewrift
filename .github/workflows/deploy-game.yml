@@ -1,4 +1,12 @@
-# Deploy the Crewrift Prime coworld (game image) to the hosted Softmax platform.
+# Build and deploy the source-owned Crewrift Prime Coworld package.
+#
+# Lifecycle:
+#   1. Materialize the Prime source manifest from the checked-in template + patch.
+#   2. `coworld build` builds the package services from compose.yaml, pins
+#      source URLs to this checkout, stamps the next version, and writes the
+#      hydrated manifest.
+#   3. Upload that exact hydrated manifest. Upload queues hosted certification
+#      and does not patch an existing hosted Coworld.
 #
 # Required repository secret:
 #   SOFTMAX_API_TOKEN  - a TEAM `usr_` token. Set it in
@@ -7,23 +15,19 @@
 #                        ~/.softmax/credentials.yaml, NOT from this env var, so the
 #                        workflow seeds it headlessly via `softmax set-token`.
 #
-# coworld CLI version: 0.1.27 (public PyPI, requires Python 3.11-3.12; we use 3.12).
+# Coworld 0.1.33 is the current PyPI release containing the source build and
+# package-artifact hydration contract used below.
 name: "Deploy Crewrift Game"
 
 on:
   push:
     branches: [master]
-    paths:
-      - 'src/**'
-      - 'crewrift.nimble'
-      - 'nimby.lock'
-      - 'config.json'
-      - 'data/**'
-      - 'coworld_manifest.json'
-      - 'Dockerfile'
-      - 'crewrift-prime/crewrift_prime.patch.json'
-      - '.github/workflows/deploy-game.yml'
   workflow_dispatch:
+    inputs:
+      skip_upload:
+        description: "Skip coworld upload-coworld (build only)."
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-game
@@ -33,7 +37,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: SOFTMAX_OBSERVATORY
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -44,17 +48,21 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install coworld CLI
-        run: uv pip install --system coworld==0.1.27
+        run: uv pip install --system coworld==0.1.33
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build game image
+      - name: Preflight Docker (required for build)
         run: |
-          docker buildx build \
-            --platform linux/amd64 \
-            --load \
-            -t crewrift-game:${{ github.sha }} \
-            .
+          docker version
+          docker info
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "docker compose plugin missing; installing docker-compose-plugin..."
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+          fi
+          docker compose version
+          docker ps >/dev/null
 
       - name: Seed Softmax credentials
         env:
@@ -74,11 +82,39 @@ jobs:
           echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "Deploying crewrift_prime:${NEXT}"
 
-      - name: Deploy coworld
+      - name: Materialize Crewrift Prime source manifest
+        run: |
+          mkdir -p tmp/crewrift-prime/source
+          jq -s '
+            def merge_patch($patch):
+              reduce ($patch | keys_unsorted[]) as $key (.;
+                if $patch[$key] == null then del(.[$key])
+                elif ($patch[$key] | type) == "object" then
+                  .[$key] = (
+                    (if (.[$key] | type) == "object" then .[$key] else {} end)
+                    | merge_patch($patch[$key])
+                  )
+                else .[$key] = $patch[$key]
+                end
+              );
+            . as $documents | $documents[0] | merge_patch($documents[1])
+          ' \
+            coworld_manifest_template.json \
+            crewrift-prime/crewrift_prime.patch.json \
+            > tmp/crewrift-prime/source/coworld_manifest.json
+
+      - name: Build hydrated Coworld manifest
+        run: |
+          coworld build \
+            --source-context . \
+            compose.yaml \
+            tmp/crewrift-prime/source/coworld_manifest.json \
+            "${{ steps.ver.outputs.version }}" \
+            tmp/crewrift-prime/dist/coworld_manifest.json
+
+      - name: Upload hydrated Coworld manifest
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
           coworld upload-coworld \
-            --from-coworld crewrift_prime \
-            --patch crewrift-prime/crewrift_prime.patch.json \
-            --version ${{ steps.ver.outputs.version }} \
-            --image game=crewrift-game:${{ github.sha }} \
+            tmp/crewrift-prime/dist/coworld_manifest.json \
             --no-wait-hosted-smoke
