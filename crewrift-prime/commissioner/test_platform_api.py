@@ -290,6 +290,28 @@ class PlatformCommissionerClientTest(unittest.TestCase):
         )
         self.assertEqual(plan.episodes[0].game_config["slots"][0]["role"], "imposter")
 
+    def test_uses_execution_specific_round_episode_routes(self) -> None:
+        round_id = "round_00000000-0000-0000-0000-000000000061"
+        client = PlatformCommissionerClient(
+            base="https://example.test", token="cmr_secret"
+        )
+        with patch.object(
+            client,
+            "_post",
+            return_value={
+                "episode_request_ids": [],
+                "dispatched": 0,
+                "replayed": False,
+            },
+        ) as post:
+            client.dispatch_round(round_id)
+        post.assert_called_once_with(
+            f"/v2/rounds/{round_id}/episodes:dispatch", {}
+        )
+        with patch.object(client, "_get", return_value=[]) as get:
+            client.get_round_episodes(round_id)
+        get.assert_called_once_with(f"/v2/rounds/{round_id}/episode-executions")
+
     def test_persists_authored_score_report_and_round_display(self) -> None:
         policy_id = UUID("00000000-0000-0000-0000-000000000021")
         payload = {
