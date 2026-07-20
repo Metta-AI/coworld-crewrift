@@ -10,6 +10,7 @@ from commissioners.common.protocol import (
     EpisodeScore,
     LeagueInfo,
     MembershipInfo,
+    RankingEntry,
     RoundStart,
     VariantInfo,
 )
@@ -19,6 +20,8 @@ from crewrift_prime_skill_commissioner import (
     NUM_CREW_SEATS,
     NUM_IMPOSTER_SEATS,
     NUM_SEATS,
+    _WIN_HISTORY_STATE_KEY,
+    _WIN_TOTALS_STATE_KEY,
     CrewriftPrimeSkillCommissioner,
 )
 from test_observability import _COMPETITION_DIV, _CONFIG_PATH
@@ -268,6 +271,115 @@ class RoleSchedulingCadenceTest(unittest.TestCase):
 class RoleScoringTest(unittest.TestCase):
     """A role round is scored on the same win-rate board, keyed to the role
     division, with filler seats excluded."""
+
+    def test_legacy_unscoped_history_imports_into_all_role_divisions(self) -> None:
+        commissioner = _commissioner()
+        league_id = uuid4()
+        real_a = uuid4()
+        memberships = _competition_membership_infos(league_id, [(real_a, "ply_a")])
+        round_start = _round_start_for_division(memberships, _IMPOSTERS_DIV, num_episodes=1)
+        legacy_round_id = uuid4()
+        legacy_state = {
+            _WIN_HISTORY_STATE_KEY: [
+                {
+                    "round_id": str(legacy_round_id),
+                    "policy_version_id": str(real_a),
+                    "player_id": "ply_a",
+                    "rank": 1,
+                    "score": 1.0,
+                    "episodes_played": 1,
+                    "tainted": False,
+                }
+            ]
+        }
+
+        _leaderboards, next_state = commissioner._competition_win_leaderboards(
+            incoming_state=legacy_state,
+            division_id=_IMPOSTERS_DIV,
+            round_id=uuid4(),
+            rankings=[
+                RankingEntry(
+                    policy_version_id=real_a,
+                    player_id="ply_a",
+                    rank=1,
+                    score=1.0,
+                    result_metadata={"completed_episode_count": 1},
+                )
+            ],
+            round_start=round_start,
+        )
+
+        totals_by_division = next_state[_WIN_TOTALS_STATE_KEY]
+        self.assertEqual(
+            {str(_COMPETITION_DIV), str(_IMPOSTERS_DIV), str(_CREW_DIV)},
+            set(totals_by_division),
+        )
+        self.assertEqual(totals_by_division[str(_COMPETITION_DIV)]["players"]["ply_a"]["wins"], 1.0)
+        self.assertEqual(totals_by_division[str(_CREW_DIV)]["players"]["ply_a"]["wins"], 1.0)
+        self.assertEqual(totals_by_division[str(_IMPOSTERS_DIV)]["players"]["ply_a"]["wins"], 2.0)
+
+    def test_compact_totals_are_pruned_across_all_role_divisions(self) -> None:
+        commissioner = _commissioner()
+        league_id = uuid4()
+        real_a, real_b = uuid4(), uuid4()
+        old_policy, departed_policy = uuid4(), uuid4()
+        memberships = _competition_membership_infos(league_id, [(real_a, "ply_a"), (real_b, "ply_b")])
+        round_start = _round_start_for_division(memberships, _IMPOSTERS_DIV, num_episodes=1)
+        round_start.state[_WIN_TOTALS_STATE_KEY] = {
+            str(division_id): {
+                "players": {
+                    "ply_a": {
+                        "wins": 3.0,
+                        "points": 3.0,
+                        "episodes_played": 3,
+                        "rounds_played": 3,
+                        "policy_version_ids": [str(old_policy)],
+                    },
+                    "ply_departed": {
+                        "wins": 9.0,
+                        "points": 9.0,
+                        "episodes_played": 9,
+                        "rounds_played": 9,
+                        "policy_version_ids": [str(departed_policy)],
+                    },
+                },
+                "completed_round_ids": [],
+            }
+            for division_id in (_COMPETITION_DIV, _IMPOSTERS_DIV, _CREW_DIV)
+        }
+
+        leaderboards, next_state = commissioner._competition_win_leaderboards(
+            incoming_state=round_start.state,
+            division_id=_IMPOSTERS_DIV,
+            round_id=uuid4(),
+            rankings=[
+                RankingEntry(
+                    policy_version_id=real_a,
+                    player_id="ply_a",
+                    rank=1,
+                    score=1.0,
+                    result_metadata={"completed_episode_count": 1},
+                ),
+                RankingEntry(
+                    policy_version_id=real_b,
+                    player_id="ply_b",
+                    rank=2,
+                    score=0.0,
+                    result_metadata={"completed_episode_count": 1},
+                ),
+            ],
+            round_start=round_start,
+        )
+
+        for division_totals in next_state[_WIN_TOTALS_STATE_KEY].values():
+            self.assertLessEqual(set(division_totals["players"]), {"ply_a", "ply_b"})
+            self.assertIn("ply_a", division_totals["players"])
+            self.assertTrue(
+                all("policy_version_ids" not in player for player in division_totals["players"].values())
+            )
+        rows = {row.subject_id: row for row in leaderboards[0].views[0].rows}
+        self.assertNotIn("ply_departed", rows)
+        self.assertEqual(rows["ply_a"].policy_version_ids, {real_a})
 
     def test_imposter_round_scores_real_entrant_and_excludes_fillers(self) -> None:
         commissioner = _commissioner()

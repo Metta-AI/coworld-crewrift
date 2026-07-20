@@ -452,20 +452,22 @@ PRIME_COMMISSIONER_CHANGELOG: list[CommissionerChangelogEntry] = [
 _WIN_HISTORY_RECORDED_AT_KEY = "recorded_at"
 
 
-# commissioner-state key holding the append-only per-round win history (one entry
-# per scored policy per round) so ``_complete_competition_round`` can aggregate the
-# full division history and publish the SAME win-rate board ``rank_division``
-# computes. Without this, the platform's RoundComplete compat shim fabricates its
-# own board from this round's results and that board ping-pongs against the board
-# the scheduling tick writes — the leaderboard-flip bug. (The state key string is
-# kept for backward compatibility with already-persisted commissioner state.)
+# Legacy commissioner-state key that used to hold an append-only per-policy,
+# per-round win history. New runs fold this into compact per-division totals and
+# drop the blob before emitting RoundComplete so state stays under the platform's
+# 10 MiB protocol cap.
 _WIN_HISTORY_STATE_KEY = "crewrift_prime_mmr_history"
-# Per-(round_id, player_id) role-weighted point totals persisted across round
-# completions. Win-history rows recorded before PR #125 stored only episode-win
-# counts in ``score``; this map is seeded from platform ``recent_results`` (which
-# carry the authoritative role-weighted round score) plus live rankings so the
-# round-complete board matches ``rank_division`` even for gap-era history rows.
+# Legacy per-(round_id, player_id) role-weighted point totals. Folded into the
+# compact totals alongside _WIN_HISTORY_STATE_KEY and omitted from new state.
 _WIN_ROUND_POINTS_STATE_KEY = "crewrift_prime_round_points"
+# Compact state keyed by division id. Each player stores all-time totals; each
+# division keeps only a bounded recent completed-round id ledger for idempotency.
+_WIN_TOTALS_STATE_KEY = "crewrift_prime_win_totals"
+_WIN_COMPLETED_ROUND_ID_LIMIT = int(os.getenv("CREWRIFT_PRIME_WIN_STATE_ROUND_ID_LIMIT", "4096"))
+# Optional recency-window rows. Stored only while STANDINGS_WINDOW_HOURS > 0, and
+# pruned to the active window plus this hard row limit.
+_WIN_WINDOW_ROWS_STATE_KEY = "crewrift_prime_window_rows"
+_WIN_WINDOW_ROW_LIMIT = int(os.getenv("CREWRIFT_PRIME_WIN_STATE_WINDOW_ROW_LIMIT", "5000"))
 # Episode-request tag names recording how the closed-roster 8-seat game was topped
 # up. ``filler_seats`` is the comma-separated 0-based seat indices that are NOT a
 # real, uniquely-seated entrant; ``filler_policy_version_ids`` is the comma-
@@ -2075,21 +2077,40 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
         rankings: list[CommissionerRankingEntry],
         round_start: CommissionerRoundStart | None = None,
     ) -> tuple[list[CommissionerDivisionLeaderboard], dict[str, Any]]:
-        """Accumulate the division's per-round win history and publish the board.
+        """Accumulate compact win totals and publish the division board.
 
-        We keep an append-only list of ``(round_id, policy_version_id, player_id,
-        rank, score, episodes_played)`` in commissioner state and collapse it with
-        the SAME ``_win_total_board`` helper ``rank_division`` uses, so both
-        platform writers (the scheduling tick's ``rank_division`` and this
-        round-complete) emit the SAME all-time WIN-RATE board — the board can't
-        flip between schemes.
+        The platform still needs RoundComplete to publish the same cumulative
+        WIN-RATE board as ``rank_division`` so the completion writer does not
+        overwrite standings with a single-round board. It must also keep
+        RoundComplete.state under the platform's 10 MiB cap. We therefore fold
+        legacy append-only history into compact per-division player totals and
+        retain only a bounded completed-round id ledger for retry idempotency.
 
         Player names are intentionally not stored here (round-start memberships
         don't carry them); the platform's leaderboard read path resolves names live
         from the players table, so the published board's null names render correctly.
         """
         state: dict[str, Any] = dict(incoming_state) if isinstance(incoming_state, dict) else {}
-        history: list[dict[str, Any]] = list(state.get(_WIN_HISTORY_STATE_KEY, []))
+        legacy_history = state.pop(_WIN_HISTORY_STATE_KEY, None)
+        legacy_points_map = state.pop(_WIN_ROUND_POINTS_STATE_KEY, None)
+        points_map = _round_points_map_from_sources(
+            legacy_points_map,
+            rankings=rankings,
+            round_id_str=str(round_id),
+            round_start=round_start,
+            division_id=division_id,
+        )
+        legacy_rows: list[dict[str, Any]] = []
+        for legacy_division_id in _legacy_import_division_ids(round_start, division_id):
+            rows = _normalised_history_rows(
+                legacy_history,
+                division_id=legacy_division_id,
+                points_map=points_map if legacy_division_id == division_id else legacy_points_map,
+            )
+            _apply_history_rows_to_win_totals(_win_totals_for_division(state, legacy_division_id), rows)
+            if legacy_division_id == division_id:
+                legacy_rows = rows
+        totals = _win_totals_for_division(state, division_id)
         # Best-effort division label for the observability log line (matches the
         # role-parallel Competition / Imposters / Crew boards).
         division_label = "Competition"
@@ -2100,112 +2121,46 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             if match is not None:
                 division_label = str(getattr(match, "name", "") or "Competition")
         round_id_str = str(round_id)
-        # Idempotency: a round is appended exactly once. A retried round-complete
-        # must not double-count its results into the cumulative total.
-        already_recorded = any(row.get("round_id") == round_id_str for row in history)
-        if not already_recorded:
-            recorded_at = _now_utc().isoformat()
-            for entry in rankings:
-                tainted = (
-                    int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0
-                )
-                history.append(
-                    {
-                        "round_id": round_id_str,
-                        "policy_version_id": str(entry.policy_version_id),
-                        "player_id": entry.player_id,
-                        "rank": entry.rank,
-                        # Tainted/unranked entries are kept so the participant stays
-                        # visible, but contribute 0 wins / 0 played episodes and are
-                        # excluded from the win-rate numerator/denominator below.
-                        #
-                        # ``entry.score`` is the role-weighted point total; win-rate
-                        # uses role-agnostic episode wins from metadata. Both are
-                        # persisted so the replayed board matches ``rank_division``.
-                        "episode_wins": 0.0
-                        if tainted
-                        else float(entry.result_metadata.get("episode_wins", entry.score)),
-                        "points": 0.0
-                        if tainted
-                        else float(entry.result_metadata.get("points", entry.score)),
-                        "imposter_episode_wins": 0
-                        if tainted
-                        else int(entry.result_metadata.get("imposter_episode_wins", 0)),
-                        "crew_episode_wins": 0
-                        if tainted
-                        else int(entry.result_metadata.get("crew_episode_wins", 0)),
-                        # Legacy field: episode-win count (pre-role-weighting history
-                        # stored only this key).
-                        "score": 0.0
-                        if tainted
-                        else float(entry.result_metadata.get("episode_wins", entry.score)),
-                        # Episodes the player PLAYED this round — the win-rate
-                        # denominator. Persisted so the replayed board matches
-                        # what rank_division computes from result_metadata.
-                        "episodes_played": 0
-                        if tainted
-                        else int(entry.result_metadata.get(COMPLETED_EPISODE_COUNT_METADATA_KEY, 0)),
-                        "tainted": tainted,
-                        # Wall-clock time this round was scored, so the standings
-                        # recency window (see rank_division) can be applied here too
-                        # and both publishing paths keep the SAME windowed board.
-                        _WIN_HISTORY_RECORDED_AT_KEY: recorded_at,
-                    }
-                )
-        state[_WIN_HISTORY_STATE_KEY] = history
-
-        policy_to_player = _player_id_by_policy(round_start.memberships if round_start else [])
-        points_map = _sync_round_points_state(
-            state,
-            history=history,
-            rankings=rankings,
+        current_rows = _history_rows_from_rankings(
             round_id_str=round_id_str,
-            recent_results=list(round_start.recent_results) if round_start else [],
-            policy_to_player=policy_to_player,
             division_id=division_id,
+            rankings=rankings,
+            recorded_at=_now_utc().isoformat(),
         )
+        _apply_history_rows_to_win_totals(totals, current_rows)
+        active_player_ids = _active_player_ids(round_start)
+        totals_by_division = state.get(_WIN_TOTALS_STATE_KEY, {})
+        if isinstance(totals_by_division, dict):
+            for division_totals in totals_by_division.values():
+                if isinstance(division_totals, dict):
+                    _prune_win_totals_to_players(division_totals, active_player_ids)
 
-        # STANDINGS RECENCY WINDOW: consider only history rows whose round was
-        # scored within the last STANDINGS_WINDOW_HOURS hours, mirroring the
-        # per-round timestamp filter ``rank_division`` applies to ``completed_rounds``
-        # — so the scheduling-tick board and this round-complete board stay identical
-        # (no flip) while both grade on recent merit only. Rows persisted before the
-        # timestamp field existed lack it and are treated as in-window (kept).
-        cutoff = _standings_window_cutoff()
-        windowed_history = [row for row in history if _history_row_in_window(row, cutoff)]
-
-        # Best per-round wins/points per player, then collapse with the shared helper.
-        # Every player in the windowed history is a participant (tainted rows
-        # included) so nobody in-window is dropped; tainted rows don't feed metrics.
-        round_wins: dict[tuple[Any, Any], float] = {}
-        round_points: dict[tuple[Any, Any], float] = {}
-        round_episodes: dict[tuple[Any, Any], int] = {}
-        pvids_by_player: dict[Any, set] = {}
-        participants: set = set()
-        for row in windowed_history:
-            player_id = row["player_id"]
-            participants.add(player_id)
-            pvids_by_player.setdefault(player_id, set()).add(UUID(row["policy_version_id"]))
-            if row.get("tainted"):
-                continue
-            key = (player_id, row["round_id"])
-            wins = _history_episode_wins(row)
-            prior = round_wins.get(key)
-            if prior is None or wins > prior:
-                round_wins[key] = wins
-                round_points[key] = _history_points(row, points_map)
-                round_episodes[key] = int(row.get("episodes_played", 0))
-
-        snapshots = self._win_total_board(
-            round_wins,
-            round_points,
-            name_by_player={},
-            pvids_by_player=pvids_by_player,
-            recent=lambda _pid: None,
-            round_episodes=round_episodes,
-            participants=participants,
-            division_label=division_label,
-        )
+        if STANDINGS_WINDOW_HOURS > 0:
+            rows = _window_rows_for_division(state, division_id)
+            rows.extend(row for row in legacy_rows if _history_row_in_window(row, _standings_window_cutoff()))
+            existing_window_rounds = {str(row.get("round_id")) for row in rows}
+            if round_id_str not in existing_window_rounds:
+                rows.extend(current_rows)
+            rows = _pruned_window_rows(rows, _standings_window_cutoff(), active_player_ids)
+            _set_window_rows_for_division(state, division_id, rows)
+            snapshots = self._win_total_board_from_history_rows(
+                rows,
+                division_label,
+                pvids_by_player=_policy_ids_by_player(round_start),
+            )
+        else:
+            state.pop(_WIN_WINDOW_ROWS_STATE_KEY, None)
+            wins_total, episodes_total, rounds_played, points_total = _win_totals_metrics(totals)
+            snapshots = self._win_total_board_from_totals(
+                wins_total,
+                episodes_total,
+                rounds_played,
+                points_total,
+                name_by_player={},
+                pvids_by_player=_policy_ids_by_player(round_start),
+                recent=lambda _pid: None,
+                division_label=division_label,
+            )
         entries = [
             CommissionerDivisionLeaderboardEntry(
                 player_id=str(snapshot.player_id),
@@ -2220,11 +2175,20 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             for snapshot in snapshots
             if snapshot.player_id is not None
         ]
+        win_metrics = {
+            str(snapshot.player_id): (
+                snapshot.episode_wins,
+                snapshot.episodes_played,
+                _clamped_win_rate(snapshot.episode_wins, snapshot.episodes_played),
+            )
+            for snapshot in snapshots
+            if snapshot.player_id is not None
+        }
         leaderboards = [
             _win_rate_leaderboard(
                 division_id=division_id,
                 entries=entries,
-                win_metrics=_win_metrics_by_player(round_wins, round_episodes, participants),
+                win_metrics=win_metrics,
             )
         ]
         return leaderboards, state
@@ -2447,6 +2411,70 @@ class CrewriftPrimeSkillCommissioner(RulesetStrategyCommissioner):
             round_wins, round_episodes, participants
         )
         points_total = _aggregate_cumulative_points(round_points, participants)
+        return self._win_total_board_from_totals(
+            wins_total,
+            episodes_total,
+            rounds_played,
+            points_total,
+            name_by_player=name_by_player,
+            pvids_by_player=pvids_by_player,
+            recent=recent,
+            division_label=division_label,
+        )
+
+    def _win_total_board_from_history_rows(
+        self,
+        rows: list[dict[str, Any]],
+        division_label: str,
+        *,
+        pvids_by_player: dict[Any, set] | None = None,
+    ) -> list[DivisionLeaderboardSnapshot]:
+        round_wins: dict[tuple[Any, Any], float] = {}
+        round_points: dict[tuple[Any, Any], float] = {}
+        round_episodes: dict[tuple[Any, Any], int] = {}
+        resolved_pvids_by_player: dict[Any, set] = {
+            player_id: set(policy_ids)
+            for player_id, policy_ids in (pvids_by_player or {}).items()
+        }
+        use_history_policy_ids = not resolved_pvids_by_player
+        participants: set = set()
+        for row in rows:
+            player_id = row["player_id"]
+            participants.add(player_id)
+            if use_history_policy_ids:
+                resolved_pvids_by_player.setdefault(player_id, set()).add(UUID(row["policy_version_id"]))
+            if row.get("tainted"):
+                continue
+            key = (player_id, row["round_id"])
+            wins = _history_episode_wins(row)
+            prior = round_wins.get(key)
+            if prior is None or wins > prior:
+                round_wins[key] = wins
+                round_points[key] = _history_points(row)
+                round_episodes[key] = int(row.get("episodes_played", 0))
+        return self._win_total_board(
+            round_wins,
+            round_points,
+            name_by_player={},
+            pvids_by_player=resolved_pvids_by_player,
+            recent=lambda _pid: None,
+            round_episodes=round_episodes,
+            participants=participants,
+            division_label=division_label,
+        )
+
+    def _win_total_board_from_totals(
+        self,
+        wins_total: dict[Any, float],
+        episodes_total: dict[Any, int],
+        rounds_played: dict[Any, int],
+        points_total: dict[Any, float],
+        *,
+        name_by_player: dict[Any, str | None],
+        pvids_by_player: dict[Any, set],
+        recent,
+        division_label: str,
+    ) -> list[DivisionLeaderboardSnapshot]:
 
         def _win_rate(player_id: Any) -> float:
             return _clamped_win_rate(
@@ -2616,6 +2644,290 @@ def _most_recent_completed_round_ids(completed_rounds: list[Any]) -> set:
         completed_rounds, key=lambda r: _round_effective_time(r) or epoch
     )
     return {latest.id}
+
+
+def _win_totals_for_division(state: dict[str, Any], division_id: UUID) -> dict[str, Any]:
+    totals_by_division = state.get(_WIN_TOTALS_STATE_KEY)
+    if not isinstance(totals_by_division, dict):
+        totals_by_division = {}
+    else:
+        totals_by_division = dict(totals_by_division)
+    division_key = str(division_id)
+    totals = totals_by_division.get(division_key)
+    if not isinstance(totals, dict):
+        totals = {}
+    totals.setdefault("players", {})
+    totals.setdefault("completed_round_ids", [])
+    totals_by_division[division_key] = totals
+    state[_WIN_TOTALS_STATE_KEY] = totals_by_division
+    return totals
+
+
+def _legacy_import_division_ids(round_start: CommissionerRoundStart | None, current_division_id: UUID) -> list[UUID]:
+    division_ids: list[UUID] = []
+    if round_start is not None:
+        division_ids = [
+            division.id
+            for division in round_start.divisions
+            if str(getattr(division, "type", "")) == _COMPETITION_DIVISION_TYPE
+        ]
+    if current_division_id not in division_ids:
+        division_ids.append(current_division_id)
+    return division_ids
+
+
+def _window_rows_for_division(state: dict[str, Any], division_id: UUID) -> list[dict[str, Any]]:
+    rows_by_division = state.get(_WIN_WINDOW_ROWS_STATE_KEY)
+    if not isinstance(rows_by_division, dict):
+        return []
+    rows = rows_by_division.get(str(division_id), [])
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _set_window_rows_for_division(
+    state: dict[str, Any], division_id: UUID, rows: list[dict[str, Any]]
+) -> None:
+    rows_by_division = state.get(_WIN_WINDOW_ROWS_STATE_KEY)
+    if not isinstance(rows_by_division, dict):
+        rows_by_division = {}
+    else:
+        rows_by_division = dict(rows_by_division)
+    rows_by_division[str(division_id)] = rows
+    state[_WIN_WINDOW_ROWS_STATE_KEY] = rows_by_division
+
+
+def _normalised_history_rows(
+    rows: Any,
+    *,
+    division_id: UUID,
+    points_map: Any = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    points = dict(points_map) if isinstance(points_map, dict) else {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_division_id = row.get("division_id")
+        if row_division_id is not None and str(row_division_id) != str(division_id):
+            continue
+        normalized_row = {
+            "round_id": str(row["round_id"]),
+            "division_id": str(division_id),
+            "policy_version_id": str(row["policy_version_id"]),
+            "player_id": row["player_id"],
+            "rank": int(row.get("rank", 0)),
+            "episode_wins": _history_episode_wins(row),
+            "points": _history_points(row, points),
+            "imposter_episode_wins": int(row.get("imposter_episode_wins", 0)),
+            "crew_episode_wins": int(row.get("crew_episode_wins", 0)),
+            "score": _history_episode_wins(row),
+            "episodes_played": int(row.get("episodes_played", 0)),
+            "tainted": bool(row.get("tainted", False)),
+        }
+        recorded_at = row.get(_WIN_HISTORY_RECORDED_AT_KEY)
+        if recorded_at is not None:
+            normalized_row[_WIN_HISTORY_RECORDED_AT_KEY] = str(recorded_at)
+        normalized.append(normalized_row)
+    return normalized
+
+
+def _round_points_map_from_sources(
+    legacy_points_map: Any,
+    *,
+    rankings: list[CommissionerRankingEntry],
+    round_id_str: str,
+    round_start: CommissionerRoundStart | None,
+    division_id: UUID,
+) -> dict[str, float]:
+    points_map = {
+        str(key): float(value)
+        for key, value in dict(legacy_points_map).items()
+    } if isinstance(legacy_points_map, dict) else {}
+    policy_to_player = _player_id_by_policy(round_start.memberships if round_start else [])
+    for recent in list(round_start.recent_results) if round_start else []:
+        if getattr(recent, "division_id", None) != division_id:
+            continue
+        player_id = policy_to_player.get(str(recent.policy_version_id))
+        if player_id is None:
+            continue
+        points_map[_round_points_map_key(recent.round_id, player_id)] = float(recent.score)
+    for entry in rankings:
+        if entry.player_id is None:
+            continue
+        if int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0:
+            continue
+        points_map[_round_points_map_key(round_id_str, entry.player_id)] = _points_from_ranking_entry(entry)
+    return points_map
+
+
+def _history_rows_from_rankings(
+    *,
+    round_id_str: str,
+    division_id: UUID,
+    rankings: list[CommissionerRankingEntry],
+    recorded_at: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for entry in rankings:
+        tainted = int(entry.result_metadata.get(RANKED_SCORE_COUNT_METADATA_KEY, 1)) <= 0
+        episode_wins = 0.0 if tainted else float(entry.result_metadata.get("episode_wins", entry.score))
+        points = 0.0 if tainted else _points_from_ranking_entry(entry)
+        rows.append(
+            {
+                "round_id": round_id_str,
+                "division_id": str(division_id),
+                "policy_version_id": str(entry.policy_version_id),
+                "player_id": entry.player_id,
+                "rank": entry.rank,
+                "episode_wins": episode_wins,
+                "points": points,
+                "imposter_episode_wins": 0
+                if tainted
+                else int(entry.result_metadata.get("imposter_episode_wins", 0)),
+                "crew_episode_wins": 0
+                if tainted
+                else int(entry.result_metadata.get("crew_episode_wins", 0)),
+                "score": episode_wins,
+                "episodes_played": 0
+                if tainted
+                else int(entry.result_metadata.get(COMPLETED_EPISODE_COUNT_METADATA_KEY, 0)),
+                "tainted": tainted,
+                _WIN_HISTORY_RECORDED_AT_KEY: recorded_at,
+            }
+        )
+    return rows
+
+
+def _apply_history_rows_to_win_totals(totals: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    completed_round_ids = [str(round_id) for round_id in totals.get("completed_round_ids", [])]
+    completed = set(completed_round_ids)
+    round_updates: dict[tuple[str, str], tuple[float, float, int]] = {}
+    newly_completed: set[str] = set()
+    for row in rows:
+        round_id = str(row["round_id"])
+        if round_id in completed:
+            continue
+        if row["player_id"] is None:
+            newly_completed.add(round_id)
+            continue
+        player_id = str(row["player_id"])
+        _win_totals_player(totals, player_id)
+        newly_completed.add(round_id)
+        if row.get("tainted"):
+            continue
+        key = (player_id, round_id)
+        wins = _history_episode_wins(row)
+        prior = round_updates.get(key)
+        if prior is None or wins > prior[0]:
+            round_updates[key] = (wins, _history_points(row), int(row.get("episodes_played", 0)))
+
+    for (player_id, _round_id), (wins, points, episodes_played) in round_updates.items():
+        player = _win_totals_player(totals, player_id)
+        player["wins"] = float(player.get("wins", 0.0)) + wins
+        player["points"] = float(player.get("points", 0.0)) + points
+        player["episodes_played"] = int(player.get("episodes_played", 0)) + episodes_played
+        player["rounds_played"] = int(player.get("rounds_played", 0)) + 1
+
+    for round_id in sorted(newly_completed):
+        _record_completed_round_id(totals, round_id)
+
+
+def _win_totals_player(totals: dict[str, Any], player_id: str) -> dict[str, Any]:
+    players = totals.setdefault("players", {})
+    player = players.get(player_id)
+    if not isinstance(player, dict):
+        player = {}
+    player.setdefault("wins", 0.0)
+    player.setdefault("points", 0.0)
+    player.setdefault("episodes_played", 0)
+    player.setdefault("rounds_played", 0)
+    player.pop("policy_version_ids", None)
+    players[player_id] = player
+    return player
+
+
+def _record_completed_round_id(totals: dict[str, Any], round_id: str) -> None:
+    round_ids = [str(value) for value in totals.get("completed_round_ids", []) if str(value) != round_id]
+    round_ids.append(round_id)
+    if len(round_ids) > _WIN_COMPLETED_ROUND_ID_LIMIT:
+        round_ids = round_ids[-_WIN_COMPLETED_ROUND_ID_LIMIT:]
+    totals["completed_round_ids"] = round_ids
+
+
+def _win_totals_metrics(
+    totals: dict[str, Any],
+) -> tuple[dict[Any, float], dict[Any, int], dict[Any, int], dict[Any, float]]:
+    wins_total: dict[Any, float] = {}
+    episodes_total: dict[Any, int] = {}
+    rounds_played: dict[Any, int] = {}
+    points_total: dict[Any, float] = {}
+    players = totals.get("players", {})
+    if not isinstance(players, dict):
+        return wins_total, episodes_total, rounds_played, points_total
+    for player_id, player in players.items():
+        if not isinstance(player, dict):
+            continue
+        wins_total[player_id] = float(player.get("wins", 0.0))
+        episodes_total[player_id] = int(player.get("episodes_played", 0))
+        rounds_played[player_id] = int(player.get("rounds_played", 0))
+        points_total[player_id] = float(player.get("points", 0.0))
+    return wins_total, episodes_total, rounds_played, points_total
+
+
+def _active_player_ids(round_start: CommissionerRoundStart | None) -> set[str] | None:
+    if round_start is None:
+        return None
+    return {
+        str(membership.player_id)
+        for membership in round_start.memberships
+        if getattr(membership, "player_id", None) is not None
+    }
+
+
+def _policy_ids_by_player(round_start: CommissionerRoundStart | None) -> dict[str, set[UUID]]:
+    pvids_by_player: dict[str, set[UUID]] = {}
+    if round_start is None:
+        return pvids_by_player
+    for membership in round_start.memberships:
+        if getattr(membership, "player_id", None) is None:
+            continue
+        pvids_by_player.setdefault(str(membership.player_id), set()).add(membership.policy_version_id)
+    return pvids_by_player
+
+
+def _prune_win_totals_to_players(totals: dict[str, Any], active_player_ids: set[str] | None) -> None:
+    players = totals.get("players", {})
+    if not isinstance(players, dict):
+        totals["players"] = {}
+        return
+    kept: dict[str, Any] = {}
+    for player_id, player in players.items():
+        if active_player_ids is not None and str(player_id) not in active_player_ids:
+            continue
+        if not isinstance(player, dict):
+            continue
+        player.pop("policy_version_ids", None)
+        kept[str(player_id)] = player
+    totals["players"] = kept
+
+
+def _pruned_window_rows(
+    rows: list[dict[str, Any]], cutoff: datetime | None, active_player_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    pruned = [row for row in rows if _history_row_in_window(row, cutoff)]
+    if active_player_ids is not None:
+        pruned = [
+            row
+            for row in pruned
+            if row.get("player_id") is not None and str(row["player_id"]) in active_player_ids
+        ]
+    if len(pruned) > _WIN_WINDOW_ROW_LIMIT:
+        pruned = pruned[-_WIN_WINDOW_ROW_LIMIT:]
+    return pruned
 
 
 def _clamped_win_rate(wins: float, episodes_played: int) -> float:

@@ -511,11 +511,15 @@ class PlatformCommissionerClient(XpRequestClient):
         return RoundEpisodePlan.model_validate(payload)
 
     def dispatch_round(self, round_id: str) -> DispatchRoundResult:
-        payload = self._post(f"/v2/rounds/{urllib.parse.quote(round_id)}/episodes", {})
+        payload = self._post(
+            f"/v2/rounds/{urllib.parse.quote(round_id)}/episodes:dispatch", {}
+        )
         return DispatchRoundResult.model_validate(payload)
 
     def get_round_episodes(self, round_id: str) -> list[RoundEpisodeResult]:
-        payload = self._get(f"/v2/rounds/{urllib.parse.quote(round_id)}/episodes")
+        payload = self._get(
+            f"/v2/rounds/{urllib.parse.quote(round_id)}/episode-executions"
+        )
         return [RoundEpisodeResult.model_validate(row) for row in payload]
 
     def score_round(self, round_id: str, *, rule: str) -> ScoreRoundResult:
