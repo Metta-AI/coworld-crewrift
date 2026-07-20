@@ -37,11 +37,10 @@ from commissioners.common.utils import COMPLETED_EPISODE_COUNT_METADATA_KEY
 import decision
 from crewrift_prime_skill_commissioner import (
     _FILLER_SEATS_TAG,
-    _WIN_HISTORY_STATE_KEY,
     CrewriftPrimeSkillCommissioner,
 )
 from decision import episode_is_void
-from test_leaderboard_flip import _rank_division_board
+from test_leaderboard_flip import _rank_division_board, _round_result_snapshots, _round_snapshots
 from test_observability import _CONFIG_PATH, _COMPETITION_DIV, _divisions
 
 
@@ -220,6 +219,8 @@ class VoidGameExclusionTest(unittest.TestCase):
         memberships = _memberships([(policy_a, "ply_a"), (policy_b, "ply_b"), (policy_c, "ply_c")])
         state: Any = {"round_config": {"current_division_id": str(_COMPETITION_DIV)}}
         last_complete = None
+        completed_round_ids: list[UUID] = []
+        round_results = []
         seats = [policy_a, policy_b, policy_c]
         for round_number in range(1, 7):
             rs = _round_start(memberships, round_number, state)
@@ -231,10 +232,13 @@ class VoidGameExclusionTest(unittest.TestCase):
                 rs, episode_results=[won, void], scheduled_episodes=[], failed_episodes=[]
             )
             state = last_complete.state
+            completed_round_ids.append(rs.round_id)
+            round_results.extend(_round_result_snapshots(rs.round_id, last_complete.results[0].rankings))
 
-        history = state[_WIN_HISTORY_STATE_KEY]
         published = last_complete.leaderboards[0].views[0].rows
-        rank_div_snapshots = _rank_division_board(commissioner, memberships, history)
+        rank_div_snapshots = _rank_division_board(
+            commissioner, memberships, _round_snapshots(completed_round_ids), round_results
+        )
         self.assertEqual(
             [row.subject_id for row in published],
             [str(s.player_id) for s in rank_div_snapshots],

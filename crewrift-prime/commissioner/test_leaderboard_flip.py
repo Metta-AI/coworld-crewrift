@@ -16,6 +16,7 @@ accumulation is idempotent on a retried round-complete.
 
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Any
 from uuid import UUID, uuid4
@@ -45,6 +46,7 @@ from commissioners.common.utils import (
 from crewrift_prime_skill_commissioner import (
     _COMPETITION_SCORE_KIND,
     _WIN_HISTORY_STATE_KEY,
+    _WIN_TOTALS_STATE_KEY,
     CrewriftPrimeSkillCommissioner,
 )
 from decision import count_competition_wins
@@ -97,34 +99,8 @@ def _two_seat_episode(seat_policies: list[UUID], winner_seat: int) -> EpisodeRes
     )
 
 
-def _rank_division_board(commissioner, memberships, history_rows):
-    """The board ``rank_division`` produces for the same accumulated history."""
-    completed_ids = [UUID(rid) for rid in dict.fromkeys(row["round_id"] for row in history_rows)]
-    round_results = [
-        LeaderboardRoundResultSnapshot(
-            round_id=UUID(row["round_id"]),
-            policy_version_id=UUID(row["policy_version_id"]),
-            rank=row["rank"],
-            score=row["score"],
-            player_id=row["player_id"],
-            player_name=None,
-            result_metadata={
-                COMPLETED_EPISODE_COUNT_METADATA_KEY: row.get("episodes_played", 0),
-            },
-        )
-        for row in history_rows
-    ]
-    completed_rounds = [
-        RoundSnapshot(
-            id=rid,
-            public_id=str(rid),
-            division_id=_COMPETITION_DIV,
-            round_number=0,
-            status="completed",
-            round_config={},
-        )
-        for rid in completed_ids
-    ]
+def _rank_division_board(commissioner, memberships, completed_rounds, round_results):
+    """The board ``rank_division`` produces for the same completed round results."""
     ctx = DivisionLeaderboardContext(
         league=LeagueSnapshot(id=memberships[0].league_id, commissioner_key="container", commissioner_config=None),
         division=DivisionSnapshot(
@@ -135,6 +111,35 @@ def _rank_division_board(commissioner, memberships, history_rows):
         round_results=round_results,
     )
     return commissioner.rank_division(ctx)
+
+
+def _round_snapshots(round_ids: list[UUID]) -> list[RoundSnapshot]:
+    return [
+        RoundSnapshot(
+            id=rid,
+            public_id=str(rid),
+            division_id=_COMPETITION_DIV,
+            round_number=n,
+            status="completed",
+            round_config={},
+        )
+        for n, rid in enumerate(round_ids, start=1)
+    ]
+
+
+def _round_result_snapshots(round_id: UUID, rankings) -> list[LeaderboardRoundResultSnapshot]:
+    return [
+        LeaderboardRoundResultSnapshot(
+            round_id=round_id,
+            policy_version_id=ranking.policy_version_id,
+            rank=ranking.rank,
+            score=ranking.score,
+            player_id=ranking.player_id,
+            player_name=None,
+            result_metadata=ranking.result_metadata,
+        )
+        for ranking in rankings
+    ]
 
 
 class LeaderboardFlipRegressionTest(unittest.TestCase):
@@ -185,6 +190,8 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
 
         state: Any = {"round_config": {"current_division_id": str(_COMPETITION_DIV)}}
         last_complete = None
+        completed_round_ids: list[UUID] = []
+        round_results: list[LeaderboardRoundResultSnapshot] = []
         for round_number in range(1, 9):
             rs = _round_start(memberships, round_number, state)
             seats = [policy_a, policy_b, policy_c]
@@ -194,12 +201,15 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
                 rs, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
             )
             state = last_complete.state
+            completed_round_ids.append(rs.round_id)
+            round_results.extend(_round_result_snapshots(rs.round_id, last_complete.results[0].rankings))
 
-        history = state[_WIN_HISTORY_STATE_KEY]
         published = last_complete.leaderboards[0].views[0].rows
 
-        # rank_division over the SAME history must yield the SAME ordering + scores.
-        rank_div_snapshots = _rank_division_board(commissioner, memberships, history)
+        # rank_division over the SAME completed results must yield the SAME ordering + scores.
+        rank_div_snapshots = _rank_division_board(
+            commissioner, memberships, _round_snapshots(completed_round_ids), round_results
+        )
         self.assertEqual(
             [row.subject_id for row in published],
             [str(s.player_id) for s in rank_div_snapshots],
@@ -301,23 +311,96 @@ class LeaderboardFlipRegressionTest(unittest.TestCase):
         first = commissioner.complete_round_for_round_start(
             rs, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
         )
-        history_after_first = list(first.state[_WIN_HISTORY_STATE_KEY])
 
-        # Re-run the SAME round (same round_id via the same RoundStart) with the
-        # already-updated state: a retried round-complete must not double-count.
+        # Re-run the SAME round with the already-updated state: a retried
+        # round-complete must not double-count.
+        retried_round_start = rs.model_copy(update={"state": first.state})
         retried = commissioner.complete_round_for_round_start(
-            rs, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
+            retried_round_start, episode_results=[episode], scheduled_episodes=[], failed_episodes=[]
         )
-        # Idempotent up to the wall-clock ``recorded_at`` stamp (which is captured
-        # fresh each run when the retry starts from the same pre-round state): the
-        # same round contributes the SAME set of scored rows, never a doubled list.
-        def _without_recorded_at(rows: list) -> list:
-            return [{k: v for k, v in row.items() if k != "recorded_at"} for row in rows]
+        totals = retried.state[_WIN_TOTALS_STATE_KEY][str(_COMPETITION_DIV)]["players"]
+        self.assertEqual(totals["ply_a"]["wins"], 1.0)
+        self.assertEqual(totals["ply_a"]["episodes_played"], 1)
+        self.assertEqual(totals["ply_a"]["rounds_played"], 1)
 
-        self.assertEqual(
-            _without_recorded_at(retried.state[_WIN_HISTORY_STATE_KEY]),
-            _without_recorded_at(history_after_first),
+    def test_oversized_legacy_history_is_compacted_before_round_complete_state(self) -> None:
+        commissioner = _commissioner()
+        policy_a, policy_b = uuid4(), uuid4()
+        memberships = _memberships([(policy_a, "ply_a"), (policy_b, "ply_b")])
+        legacy_rows = [
+            {
+                "round_id": str(uuid4()),
+                "policy_version_id": str(policy_a),
+                "player_id": "ply_a",
+                "rank": 1,
+                "score": 1.0,
+                "episodes_played": 1,
+                "tainted": False,
+                "padding": "x" * 4096,
+            }
+            for _ in range(3000)
+        ]
+        state: Any = {
+            "round_config": {"current_division_id": str(_COMPETITION_DIV)},
+            _WIN_HISTORY_STATE_KEY: legacy_rows,
+        }
+        self.assertGreater(len(json.dumps(state).encode()), 10 * 1024 * 1024)
+        rs = _round_start(memberships, 1, state)
+        complete = commissioner.complete_round_for_round_start(
+            rs,
+            episode_results=[_two_seat_episode([policy_a, policy_b], winner_seat=0)],
+            scheduled_episodes=[],
+            failed_episodes=[],
         )
+        self.assertNotIn(_WIN_HISTORY_STATE_KEY, complete.state)
+        players = complete.state[_WIN_TOTALS_STATE_KEY][str(_COMPETITION_DIV)]["players"]
+        self.assertTrue(all("policy_version_ids" not in player for player in players.values()))
+        self.assertLess(len(json.dumps(complete.state).encode()), 10 * 1024 * 1024)
+
+    def test_compact_state_prunes_departed_players_and_uses_live_policy_ids(self) -> None:
+        commissioner = _commissioner()
+        old_policy, live_policy, other_policy = uuid4(), uuid4(), uuid4()
+        departed_policy = uuid4()
+        memberships = _memberships([(live_policy, "ply_a"), (other_policy, "ply_b")])
+        state: Any = {
+            "round_config": {"current_division_id": str(_COMPETITION_DIV)},
+            _WIN_TOTALS_STATE_KEY: {
+                str(_COMPETITION_DIV): {
+                    "players": {
+                        "ply_a": {
+                            "wins": 7.0,
+                            "points": 7.0,
+                            "episodes_played": 7,
+                            "rounds_played": 7,
+                            "policy_version_ids": [str(old_policy)],
+                        },
+                        "ply_departed": {
+                            "wins": 99.0,
+                            "points": 99.0,
+                            "episodes_played": 99,
+                            "rounds_played": 99,
+                            "policy_version_ids": [str(departed_policy)],
+                        },
+                    },
+                    "completed_round_ids": [],
+                }
+            },
+        }
+        rs = _round_start(memberships, 1, state)
+        complete = commissioner.complete_round_for_round_start(
+            rs,
+            episode_results=[_two_seat_episode([live_policy, other_policy], winner_seat=0)],
+            scheduled_episodes=[],
+            failed_episodes=[],
+        )
+
+        players = complete.state[_WIN_TOTALS_STATE_KEY][str(_COMPETITION_DIV)]["players"]
+        self.assertEqual(set(players), {"ply_a", "ply_b"})
+        self.assertTrue(all("policy_version_ids" not in player for player in players.values()))
+        rows = {row.subject_id: row for row in complete.leaderboards[0].views[0].rows}
+        self.assertNotIn("ply_departed", rows)
+        self.assertEqual(rows["ply_a"].policy_version_ids, {live_policy})
+        self.assertNotIn(old_policy, rows["ply_a"].policy_version_ids)
 
 
 class EveryParticipantVisibleTest(unittest.TestCase):
@@ -491,7 +574,6 @@ class WinRateIsEpisodesWonOverPlayedTest(unittest.TestCase):
         for EVERY crew seat. Both crew entrants must be credited the win — proving
         the win count is per-player team membership, not a single finisher.
         """
-        winner_a, winner_b, loser = uuid4(), uuid4(), uuid4()
         # 3-seat game: seats 0,1 are crew (win), seat 2 is the imposter (loses).
         game_results = {"win": [1, 1, 0], "imposter": [0, 0, 1], "crew": [1, 1, 0]}
 
