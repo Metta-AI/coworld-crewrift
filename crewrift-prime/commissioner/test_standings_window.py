@@ -9,8 +9,8 @@ BOTH publishing paths that share ``_win_total_board``:
 * ``rank_division`` drops rounds older than the window (by ``completed_at`` /
   ``started_at`` / ``created_at``) and keeps rounds inside it.
 * The round-complete board (``_competition_win_leaderboards``) applies the SAME
-  window over its persisted per-round win history via the ``recorded_at`` stamp,
-  so the two writers stay in lockstep.
+  window over bounded per-round rows via the ``recorded_at`` stamp, so the two
+  writers stay in lockstep without retaining unbounded history.
 * The window is configurable and reverts to all-time when set to 0.
 """
 
@@ -37,6 +37,7 @@ from commissioners.common.utils import (
 from crewrift_prime_skill_commissioner import (
     _WIN_HISTORY_RECORDED_AT_KEY,
     _WIN_HISTORY_STATE_KEY,
+    _WIN_WINDOW_ROWS_STATE_KEY,
     CrewriftPrimeSkillCommissioner,
 )
 from test_observability import _CONFIG_PATH, _COMPETITION_DIV
@@ -280,10 +281,15 @@ class RoundCompleteWindowTest(unittest.TestCase):
         self.assertNotIn("ply_stale", subjects)
         self.assertIn("ply_recent", subjects)
         self.assertIn("ply_now", subjects)
-        # State still retains the full append-only history (the window is applied to
-        # the PUBLISHED board only, not by pruning persisted state).
-        history_players = {row["player_id"] for row in next_state[_WIN_HISTORY_STATE_KEY]}
-        self.assertIn("ply_stale", history_players)
+        # Persisted state prunes stale rows and drops the legacy append-only key so
+        # RoundComplete.state stays bounded.
+        self.assertNotIn(_WIN_HISTORY_STATE_KEY, next_state)
+        window_players = {
+            row["player_id"]
+            for row in next_state[_WIN_WINDOW_ROWS_STATE_KEY][str(_COMPETITION_DIV)]
+        }
+        self.assertNotIn("ply_stale", window_players)
+        self.assertIn("ply_recent", window_players)
 
 
 if __name__ == "__main__":

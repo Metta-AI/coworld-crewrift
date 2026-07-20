@@ -286,11 +286,11 @@ class CompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):
         )
         row = leaderboards[0].views[0].rows[0]
         self.assertAlmostEqual(float(row.values["score"]), 13.0, places=9)
-        self.assertEqual(
-            next_state[comm._WIN_ROUND_POINTS_STATE_KEY][f"{round_id}:{player_id}"],
-            13.0,
-        )
-        self.assertEqual(next_state[comm._WIN_HISTORY_STATE_KEY][0]["points"], 13.0)
+        player_totals = next_state[comm._WIN_TOTALS_STATE_KEY][str(division_id)]["players"][player_id]
+        self.assertEqual(player_totals["points"], 13.0)
+        self.assertEqual(player_totals["wins"], 5.0)
+        self.assertNotIn(comm._WIN_ROUND_POINTS_STATE_KEY, next_state)
+        self.assertNotIn(comm._WIN_HISTORY_STATE_KEY, next_state)
 
 
 class NonCompetitionScoreIsFlooredCumulativeSumTest(unittest.TestCase):

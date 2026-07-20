@@ -42,7 +42,6 @@ from commissioners.common.utils import (
 )
 
 from crewrift_prime_skill_commissioner import (
-    _WIN_HISTORY_STATE_KEY,
     CrewriftPrimeSkillCommissioner,
 )
 from test_observability import _CONFIG_PATH, _COMPETITION_DIV
