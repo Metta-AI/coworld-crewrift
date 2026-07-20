@@ -20,6 +20,7 @@ nimcache
 *.ilk
 *.out
 out/
+build/
 dist/
 tmp/
 __pycache__/
