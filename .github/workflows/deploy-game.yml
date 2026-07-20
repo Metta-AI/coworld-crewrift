@@ -15,8 +15,9 @@
 #                        ~/.softmax/credentials.yaml, NOT from this env var, so the
 #                        workflow seeds it headlessly via `softmax set-token`.
 #
-# Coworld 0.1.34 contains the project-owned build and replay-viewer bundle
-# contracts used below.
+# The Coworld CLI is installed from the public package repo so deploys use the
+# current registry/version allocator and project-owned replay-viewer build
+# contract without waiting for a PyPI/package release.
 name: "Deploy Crewrift Game"
 
 on:
@@ -24,6 +25,10 @@ on:
     branches: [master]
   workflow_dispatch:
     inputs:
+      version:
+        description: "Explicit crewrift_prime version to publish. Leave blank to auto-resolve."
+        required: false
+        default: ""
       skip_upload:
         description: "Skip coworld upload-coworld (build only)."
         type: boolean
@@ -32,6 +37,9 @@ on:
 concurrency:
   group: deploy-game
   cancel-in-progress: false
+
+env:
+  COWORLD_CLI: "coworld[auth] @ git+https://github.com/Metta-AI/coworld.git@main"
 
 jobs:
   deploy:
@@ -48,7 +56,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install coworld CLI
-        run: uv pip install --system coworld==0.1.34
+        run: uvx --from "$COWORLD_CLI" coworld --help >/dev/null
 
       - uses: treeform/setup-nim-action@v6
 
@@ -81,13 +89,19 @@ jobs:
             echo "::error::SOFTMAX_API_TOKEN secret is empty. Set a team usr_ token in repo Settings -> Secrets and variables -> Actions."
             exit 1
           fi
-          softmax set-token "$SOFTMAX_API_TOKEN" --server https://softmax.com/api
-          python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
+          uvx --from "$COWORLD_CLI" softmax set-token "$SOFTMAX_API_TOKEN" --server https://softmax.com/api
+          uv run --with "$COWORLD_CLI" python3 -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
 
       - name: Resolve next version
         id: ver
         run: |
-          NEXT=$(coworld next-version crewrift_prime)
+          set -euo pipefail
+          INPUT_VERSION="${{ inputs.version || '' }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            NEXT="$INPUT_VERSION"
+          else
+            NEXT=$(uvx --from "$COWORLD_CLI" coworld next-version crewrift_prime)
+          fi
           echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "Deploying crewrift_prime:${NEXT}"
 
@@ -116,7 +130,7 @@ jobs:
 
       - name: Build hydrated Coworld manifest
         run: |
-          coworld build \
+          uvx --from "$COWORLD_CLI" coworld build \
             --project . \
             --template coworld_manifest_prime_template.json \
             --version "${{ steps.ver.outputs.version }}" \
@@ -125,6 +139,29 @@ jobs:
       - name: Upload hydrated Coworld manifest
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
-          coworld upload-coworld \
+          uvx --from "$COWORLD_CLI" coworld upload-coworld \
             tmp/crewrift-prime/dist/coworld_manifest.json \
-            --no-wait-hosted-smoke
+            --wait-hosted-smoke \
+            --hosted-smoke-timeout-seconds 1800
+
+      - name: Verify canonical upload
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
+        run: |
+          set -euo pipefail
+          uvx --from "$COWORLD_CLI" coworld list --json --limit 500 > /tmp/coworlds-after.json
+          python3 - "${{ steps.ver.outputs.version }}" <<'EOF'
+          import json
+          import sys
+
+          expected = sys.argv[1]
+          rows = json.load(open("/tmp/coworlds-after.json"))
+          match = next(
+              (row for row in rows if row.get("name") == "crewrift_prime" and row.get("version") == expected),
+              None,
+          )
+          if match is None:
+              raise SystemExit(f"::error::Uploaded crewrift_prime:{expected} not found")
+          if not match.get("canonical"):
+              raise SystemExit(f"::error::crewrift_prime:{expected} is not canonical after hosted smoke")
+          print(f"crewrift_prime:{expected} is canonical ({match['id']})")
+          EOF
