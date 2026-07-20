@@ -15,8 +15,8 @@
 #                        ~/.softmax/credentials.yaml, NOT from this env var, so the
 #                        workflow seeds it headlessly via `softmax set-token`.
 #
-# Coworld 0.1.33 is the current PyPI release containing the source build and
-# package-artifact hydration contract used below.
+# Coworld 0.1.34 contains the project-owned build and replay-viewer bundle
+# contracts used below.
 name: "Deploy Crewrift Game"
 
 on:
@@ -48,7 +48,16 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install coworld CLI
-        run: uv pip install --system coworld==0.1.33
+        run: uv pip install --system coworld==0.1.34
+
+      - uses: treeform/setup-nim-action@v6
+
+      - name: Install Nim dependencies
+        run: nimby sync nimby.lock -g
+
+      - uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: 6.0.3
 
       - uses: docker/setup-buildx-action@v3
 
@@ -84,7 +93,6 @@ jobs:
 
       - name: Materialize Crewrift Prime source manifest
         run: |
-          mkdir -p tmp/crewrift-prime/source
           jq -s '
             def merge_patch($patch):
               reduce ($patch | keys_unsorted[]) as $key (.;
@@ -97,20 +105,22 @@ jobs:
                 else .[$key] = $patch[$key]
                 end
               );
-            . as $documents | $documents[0] | merge_patch($documents[1])
+            . as $documents
+            | $documents[0]
+            | merge_patch($documents[1])
+            | del(.game.version)
           ' \
             coworld_manifest_template.json \
             crewrift-prime/crewrift_prime.patch.json \
-            > tmp/crewrift-prime/source/coworld_manifest.json
+            > coworld_manifest_prime_template.json
 
       - name: Build hydrated Coworld manifest
         run: |
           coworld build \
-            --source-context . \
-            compose.yaml \
-            tmp/crewrift-prime/source/coworld_manifest.json \
-            "${{ steps.ver.outputs.version }}" \
-            tmp/crewrift-prime/dist/coworld_manifest.json
+            --project . \
+            --template coworld_manifest_prime_template.json \
+            --version "${{ steps.ver.outputs.version }}" \
+            --output tmp/crewrift-prime/dist/coworld_manifest.json
 
       - name: Upload hydrated Coworld manifest
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
