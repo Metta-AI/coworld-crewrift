@@ -119,11 +119,9 @@ jobs:
       - name: Build hydrated Coworld manifest
         run: |
           uvx --from "$COWORLD_CLI" coworld build \
-            --source-context . \
-            compose.yaml \
-            tmp/crewrift-prime/source/coworld_manifest.json \
-            "${{ steps.ver.outputs.version }}" \
-            tmp/crewrift-prime/dist/coworld_manifest.json
+            --version "${{ steps.ver.outputs.version }}" \
+            --template tmp/crewrift-prime/source/coworld_manifest.json \
+            --output tmp/crewrift-prime/dist/coworld_manifest.json
 
       - name: Upload hydrated Coworld manifest
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
