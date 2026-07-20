@@ -80,7 +80,7 @@ jobs:
             exit 1
           fi
           uvx --from "$COWORLD_CLI" softmax set-token "$SOFTMAX_API_TOKEN" --server https://softmax.com/api
-          python -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
+          uv run --with "$COWORLD_CLI" python3 -c "from softmax.auth import clear_active_player_session; clear_active_player_session(server='https://softmax.com/api')"
 
       - name: Resolve next version
         id: ver
