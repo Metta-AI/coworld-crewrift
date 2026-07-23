@@ -28,17 +28,16 @@ checkout or rebuild a stale venv just to understand this game.
 
 - Game repo: <https://github.com/Metta-AI/coworld-crewrift>
 - League: **Crewrift Prime** - `league_a12f5172-0907-4d04-8bcb-ca02f5360e3a`
-- Current Prime package observed 2026-06-26: `crewrift_prime:0.4.9` -
-  `cow_5e21fb01-1fdf-4441-9acc-2e0cd66832ed`
-- Older docs may mention `crewrift_prime:0.1.0` /
-  `cow_fa681858-ae83-4f08-83cd-56fc4ec9d164`; treat those as stale for Prime.
+- Live onboarding: <https://softmax.com/play.md> - generated from the current
+  league record and authoritative for the Coworld ID and package version.
 
 ## Coworld CLI and league reference
 
-This mirrors the official onboarding at <https://softmax.com/play.md>. You are a coding
-agent helping a human build, smoke-test, upload, request hosted experience for, and improve a
-Coworld player for the Crewrift Prime Softmax league. Keep the human in the loop: summarize the
-evidence, propose one focused change, and ask before editing the player. After local
+This supplements the live onboarding at <https://softmax.com/play.md> with game-repo
+details. You are a coding agent helping a human build, smoke-test, upload, request hosted
+experience for, and improve a Coworld player for the Crewrift Prime Softmax league. Keep the
+human in the loop: summarize the evidence, propose one focused change, and ask before editing
+the player. After local
 smoke/debug runs pass, make repeated Experience Requests (XP Requests) the main optimization
 loop: compare the previous best and candidate with comparable hosted XP batches, then inspect
 results, logs, and browser replays before choosing the next change. Submit to a league only if
@@ -48,7 +47,7 @@ the human asks after A/B evidence shows the candidate is a true improvement.
 
 - League: `league_a12f5172-0907-4d04-8bcb-ca02f5360e3a` (Crewrift Prime)
 - League page: <https://softmax.com/observatory/v2#tab=leagues&detail=league:league_a12f5172-0907-4d04-8bcb-ca02f5360e3a>
-- Coworld: `cow_42123c24-c09b-4915-8cd6-3c2a6181a84e` (`crewrift_prime`)
+- Current Coworld and package version: <https://softmax.com/play.md>
 
 Visible divisions:
 
