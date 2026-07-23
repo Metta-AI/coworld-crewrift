@@ -3,7 +3,7 @@ import
   bitworld/client as bitworldClient, bitworld/profile, bitworld/spriteprotocol,
   bitworld/runtime,
   curly, mummy,
-  sim, global, replays
+  sim, global, replays, replay_runtime
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -867,12 +867,7 @@ proc runServerLoop*(
     config.resolveRandomSeed()
   var
     replayWriter = openReplayWriter(saveReplayPath, config.configJson())
-    replayPlayer =
-      if replayLoaded:
-        initReplayPlayer(replayData)
-      else:
-        ReplayPlayer()
-  replayPlayer.mismatchQuit = runtimeConfig.mismatchQuit
+    replayPlayer = ReplayPlayer()
   startProfileTrace()
   defer:
     finishProfileTrace()
@@ -897,13 +892,23 @@ proc runServerLoop*(
   httpServer.waitUntilReady()
 
   var
-    sim = initSimServer(config)
+    sim: SimServer
     lastTick = getMonoTime()
     prevInputs: seq[InputState]
     liveSpeedIndex = config.liveSpeedIndex()
     gamesPlayed = 0
   if replayLoaded:
-    replayPlayer.buildReplayKeyframes(sim)
+    let replayRuntime = initReplayRuntime(
+      replayData,
+      looping = true,
+      mismatchQuit = runtimeConfig.mismatchQuit,
+      buildKeyframes = true,
+      gameEventLoggingEnabled = true
+    )
+    sim = replayRuntime.sim
+    replayPlayer = replayRuntime.replay
+  else:
+    sim = initSimServer(config)
 
   while true:
     var
@@ -932,10 +937,15 @@ proc runServerLoop*(
     if pendingReplayUri.len > 0:
       replayData = loadReplayUri(pendingReplayUri)
       config = replayData.replayGameConfig()
-      sim = initSimServer(config)
-      replayPlayer = initReplayPlayer(replayData)
-      replayPlayer.mismatchQuit = runtimeConfig.mismatchQuit
-      replayPlayer.buildReplayKeyframes(sim)
+      let replayRuntime = initReplayRuntime(
+        replayData,
+        looping = true,
+        mismatchQuit = runtimeConfig.mismatchQuit,
+        buildKeyframes = true,
+        gameEventLoggingEnabled = true
+      )
+      sim = replayRuntime.sim
+      replayPlayer = replayRuntime.replay
       replayLoaded = true
       {.gcsafe.}:
         withLock appState.lock:
@@ -1284,17 +1294,8 @@ proc runServerLoop*(
       continue
 
     if replayLoaded:
-      for seekTick in replaySeekTicks:
-        replayPlayer.applyReplaySeek(sim, seekTick)
-      for command in replayCommands:
-        replayPlayer.applyReplayCommand(sim, command)
-      if replayPlayer.playing:
-        for _ in 0 ..< replayPlayer.replaySpeed():
-          if replayPlayer.playing:
-            replayPlayer.stepReplay(sim)
-        if replayPlayer.looping and not replayPlayer.playing:
-          replayPlayer.seekReplay(sim, 0)
-          replayPlayer.playing = true
+      sim.applyReplayControls(replayPlayer, replaySeekTicks, replayCommands)
+      sim.advanceReplayFrame(replayPlayer)
     else:
       for command in replayCommands:
         liveSpeedIndex.applySpeedCommand(command)
@@ -1387,20 +1388,26 @@ proc runServerLoop*(
 
     for i in 0 ..< globalViewers.len:
       var nextState: GlobalViewerState
-      let packet = sim.buildSpriteProtocolUpdates(
-        globalStates[i],
-        nextState,
-        if replayLoaded: sim.tickCount else: sim.gameTicksElapsed(),
-        replayPlayer.playing,
-        if replayLoaded: replayPlayer.replaySpeed()
-        else: playbackSpeed(liveSpeedIndex),
-        if replayLoaded: replayPlayer.replayMaxTick()
-        else: liveProgressMaxTick(config),
-        replayPlayer.looping,
-        replayLoaded,
-        if replayLoaded: replayPlayer.hashMismatchTick else: -1,
-        if replayLoaded: replayPlayer.debugSprites else: @[]
-      )
+      let packet =
+        if replayLoaded:
+          sim.buildReplayGlobalUpdates(
+            replayPlayer,
+            globalStates[i],
+            nextState
+          )
+        else:
+          sim.buildSpriteProtocolUpdates(
+            globalStates[i],
+            nextState,
+            sim.gameTicksElapsed(),
+            replayPlayer.playing,
+            playbackSpeed(liveSpeedIndex),
+            liveProgressMaxTick(config),
+            replayPlayer.looping,
+            false,
+            -1,
+            @[]
+          )
       if packet.len == 0:
         continue
       try:

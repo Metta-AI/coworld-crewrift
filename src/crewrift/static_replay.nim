@@ -1,5 +1,6 @@
 import
   global,
+  replay_runtime,
   replays,
   sim
 
@@ -14,17 +15,10 @@ type
 proc renderFrame*(viewer: StaticReplayViewer) =
   ## Produces the next public Bitworld Sprite v1 presentation packet.
   var nextState: GlobalViewerState
-  viewer.frame = viewer.sim.buildSpriteProtocolUpdates(
+  viewer.frame = viewer.sim.buildReplayGlobalUpdates(
+    viewer.replay,
     viewer.viewerState,
-    nextState,
-    viewer.sim.tickCount,
-    viewer.replay.playing,
-    viewer.replay.replaySpeed(),
-    viewer.replay.replayMaxTick(),
-    viewer.replay.looping,
-    true,
-    viewer.replay.hashMismatchTick,
-    viewer.replay.debugSprites
+    nextState
   )
   viewer.viewerState = nextState
 
@@ -37,47 +31,37 @@ proc renderFrame*(viewer: StaticReplayViewer) =
   viewer.viewerState.replaySeekTick = -1
   viewer.viewerState.replayCommands.setLen(0)
   if seekTick >= 0:
-    viewer.replay.applyReplaySeek(viewer.sim, seekTick)
-  for command in commands:
-    viewer.replay.applyReplayCommand(viewer.sim, command)
+    viewer.sim.applyReplayControls(viewer.replay, [seekTick], commands)
+  elif commands.len > 0:
+    viewer.sim.applyReplayControls(viewer.replay, [], commands)
 
   if seekTick >= 0 or commands.len > 0:
     var postCommandState: GlobalViewerState
-    viewer.frame.add viewer.sim.buildSpriteProtocolUpdates(
+    viewer.frame.add viewer.sim.buildReplayGlobalUpdates(
+      viewer.replay,
       viewer.viewerState,
-      postCommandState,
-      viewer.sim.tickCount,
-      viewer.replay.playing,
-      viewer.replay.replaySpeed(),
-      viewer.replay.replayMaxTick(),
-      viewer.replay.looping,
-      true,
-      viewer.replay.hashMismatchTick,
-      viewer.replay.debugSprites
+      postCommandState
     )
     viewer.viewerState = postCommandState
 
 proc initStaticReplayViewer*(bytes: string): StaticReplayViewer =
   ## Parses and pins playback to this Crewrift build's replay contract.
-  let data = parseReplayBytes(bytes)
+  let runtime = initReplayRuntime(
+    parseReplayBytes(bytes),
+    looping = false,
+    mismatchQuit = true,
+    buildKeyframes = false,
+    gameEventLoggingEnabled = false
+  )
   result = StaticReplayViewer()
-  result.sim = initSimServer(data.replayGameConfig())
-  result.sim.gameEventLoggingEnabled = false
-  result.replay = initReplayPlayer(data)
-  result.replay.looping = false
-  result.replay.mismatchQuit = true
+  result.sim = runtime.sim
+  result.replay = runtime.replay
   result.viewerState = initGlobalViewerState()
   result.renderFrame()
 
 proc advanceFrame*(viewer: StaticReplayViewer) =
   ## Advances one 24 fps presentation frame at the selected replay speed.
-  if viewer.replay.playing:
-    for _ in 0 ..< viewer.replay.replaySpeed():
-      if viewer.replay.playing:
-        viewer.replay.stepReplay(viewer.sim)
-    if viewer.replay.looping and not viewer.replay.playing:
-      viewer.replay.seekReplay(viewer.sim, 0)
-      viewer.replay.playing = true
+  viewer.sim.advanceReplayFrame(viewer.replay)
   viewer.renderFrame()
 
 proc applyClientPacket*(viewer: StaticReplayViewer, packet: string) =
@@ -87,7 +71,7 @@ proc applyClientPacket*(viewer: StaticReplayViewer, packet: string) =
 
 proc applyCommand*(viewer: StaticReplayViewer, command: char) =
   ## Applies one replay transport command (primarily useful to tests).
-  viewer.replay.applyReplayCommand(viewer.sim, command)
+  viewer.sim.applyReplayControls(viewer.replay, [], [command])
   viewer.renderFrame()
 
 proc frameBytes*(viewer: StaticReplayViewer): string =
