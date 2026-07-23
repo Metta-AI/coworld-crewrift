@@ -153,6 +153,19 @@ proc buildGlobalMessages(
   ## Builds and parses one global sprite packet.
   sim.buildSpriteProtocolUpdates(state, nextState).parseSpritePacket()
 
+proc buildPlayerMessages(
+  sim: var SimServer,
+  playerIndex: int,
+  state: PlayerViewerState,
+  nextState: var PlayerViewerState
+): seq[SpritePacketMessage] =
+  ## Builds and parses one playable player-view sprite packet.
+  sim.buildSpriteProtocolPlayerUpdates(
+    playerIndex,
+    state,
+    nextState
+  ).parseSpritePacket()
+
 proc spriteCenter(player: Player): tuple[x, y: int] =
   ## Returns the center of a player sprite in global map coordinates.
   (
@@ -316,6 +329,58 @@ proc testPlayerLabelsUpdateOnlyWhenTextChanges() =
     "player label|voter|-> target"
   )
 
+proc testPlayerViewsShowVisiblePolicyNames() =
+  ## Tests that playable views label the character sprites they can see.
+  var game = initCrewriftForTest(defaultGameConfig())
+  let
+    viewerIndex = game.addPlayer("viewer-policy:v1")
+    targetIndex = game.addPlayer("crewborg:v112")
+  game.phase = Playing
+  game.players[viewerIndex].alive = false
+
+  var
+    state = initPlayerViewerState()
+    nextState: PlayerViewerState
+  let messages = game.buildPlayerMessages(
+    viewerIndex,
+    state,
+    nextState
+  )
+  doAssert messages.hasSpriteLabel("player label|viewer-policy:v1")
+  doAssert messages.hasSpriteLabel("player label|crewborg:v112")
+
+  let
+    labelSprite = messages.spriteWithLabel("player label|crewborg:v112")
+    targetObjectId = PlayerObjectBase + game.players[targetIndex].joinOrder
+  var
+    targetY = high(int)
+    labelY = high(int)
+  for message in messages:
+    if message.kind != spkObject:
+      continue
+    if message.objectDef.id == targetObjectId:
+      targetY = message.objectDef.y
+    if message.objectDef.spriteId == labelSprite.id:
+      labelY = message.objectDef.y
+  doAssert targetY != high(int)
+  doAssert labelY != high(int)
+  doAssert labelY < targetY
+
+  var hiddenConfig = defaultGameConfig()
+  hiddenConfig.showPlayerLabels = false
+  var hiddenGame = initCrewriftForTest(hiddenConfig)
+  let hiddenViewer = hiddenGame.addPlayer("viewer-policy:v1")
+  discard hiddenGame.addPlayer("crewborg:v112")
+  hiddenGame.phase = Playing
+  hiddenGame.players[hiddenViewer].alive = false
+  state = initPlayerViewerState()
+  let hiddenMessages = hiddenGame.buildPlayerMessages(
+    hiddenViewer,
+    state,
+    nextState
+  )
+  doAssert not hiddenMessages.hasSpriteLabel("player label|crewborg:v112")
+
 proc testScoreboardStrikesDeadPlayers() =
   ## Tests top-left scoreboard names are struck when players die.
   var game = initCrewriftForTest(defaultGameConfig())
@@ -341,5 +406,6 @@ testMapClickSelectsNearestPlayer()
 testSelectedPovClearsOverlayOnly()
 testRoleRevealInterstitialUsesImposterView()
 testPlayerLabelsUpdateOnlyWhenTextChanges()
+testPlayerViewsShowVisiblePolicyNames()
 testScoreboardStrikesDeadPlayers()
 echo "ok"

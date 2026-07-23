@@ -263,6 +263,10 @@ https://github.com/Metta-AI/bitworld/blob/master/docs/sprite_v1.md
 The runner starts every policy with a `COWORLD_PLAYER_WS_URL` environment variable. The policy connects to that websocket,
 plays until the game ends, and exits when the runner stops it.
 
+During play, player observations include the configured policy display name as
+a text sprite above every visible character when `showPlayerLabels` is enabled.
+For hosted games this is the policy name and version, such as `crewborg:v112`.
+
 Policies may also emit Sprite v1 debug sprite packets on the player websocket.
 The payload is a normal server-to-client sprite packet containing debug-only
 sprite definitions and objects. Crewrift draws that payload over the emitting

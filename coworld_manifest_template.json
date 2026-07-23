@@ -250,7 +250,7 @@
           "default": true
         },
         "showPlayerLabels": {
-          "description": "Show player labels.",
+          "description": "Show policy display names above visible characters in spectator and player views.",
           "type": "boolean",
           "default": true
         },

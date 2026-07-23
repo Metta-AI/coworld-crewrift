@@ -114,6 +114,8 @@ const
   SpritePlayerKillProgressObjectId = 10004
   SpritePlayerVoteDotObjectBase = 10100
   SpritePlayerVoteSkipDotObjectBase = 10400
+  SpritePlayerNameSpriteBase = 11000
+  SpritePlayerNameObjectBase = 11000
   SpritePlayerTaskArrowObjectBase = 7000
   MapMarkerSpriteBase = 20000
   MapMarkerObjectBase = 20000
@@ -2343,8 +2345,16 @@ proc spritePlayerNameSpriteId(player: Player): int =
   ## Returns the global protocol sprite id for a player name label.
   PlayerNameSpriteBase + player.joinOrder
 
+proc spritePlayerViewNameObjectId(player: Player): int =
+  ## Returns the player-view protocol object id for a player name label.
+  SpritePlayerNameObjectBase + player.joinOrder
+
+proc spritePlayerViewNameSpriteId(player: Player): int =
+  ## Returns the player-view protocol sprite id for a player name label.
+  SpritePlayerNameSpriteBase + player.joinOrder
+
 proc playerLabelText(player: Player): string =
-  ## Returns the per-player name label text for the global viewer.
+  ## Returns the display text shared by global and player-view labels.
   result = player.address
   if result.len == 0:
     result = "?"
@@ -3043,18 +3053,52 @@ proc buildSpriteProtocolPlayerUpdates*(
             continue
       elif not viewerIsGhost:
         continue
-      let objectId = other.spriteObjectId()
+      let
+        objectId = other.spriteObjectId()
+        actorX = other.x - SpriteDrawOffX - 1 - cameraX
+        actorY = other.y - SpriteDrawOffY - 1 - cameraY
       currentIds.addProtocolObject(
         result,
         objectId,
-        other.x - SpriteDrawOffX - 1 - cameraX,
-        other.y - SpriteDrawOffY - 1 - cameraY,
+        actorX,
+        actorY,
         other.y,
         layerId,
         other.spriteActorSpriteId(-1),
         objectIdOffset,
         spriteIdOffset
       )
+      if sim.config.showPlayerLabels:
+        let
+          crew = sim.crewSpriteForSlot(other.joinOrder)
+          labelText = other.playerLabelText()
+          label = sim.buildSpriteProtocolTextSprite(
+            [labelText],
+            PlayerNameColor
+          )
+          labelSpriteId = other.spritePlayerViewNameSpriteId()
+          labelObjectId = other.spritePlayerViewNameObjectId()
+          labelX = actorX + (crew.width + 2 - label.width) div 2
+          labelY = actorY - label.height - 1
+        currentIds.add(
+          labelObjectId.protocolObjectId(objectIdOffset)
+        )
+        result.addSpriteChanged(
+          nextState.spriteDefs,
+          labelSpriteId.protocolSpriteId(spriteIdOffset),
+          label.width,
+          label.height,
+          label.pixels,
+          "player label|" & labelText
+        )
+        result.addObject(
+          labelObjectId.protocolObjectId(objectIdOffset),
+          labelX,
+          labelY,
+          PlayerNameZ,
+          layerId,
+          labelSpriteId.protocolSpriteId(spriteIdOffset)
+        )
 
     if player.role == Crewmate:
       let bob = [0, 0, -1, -1, -1, 0, 0, 1, 1, 1]
