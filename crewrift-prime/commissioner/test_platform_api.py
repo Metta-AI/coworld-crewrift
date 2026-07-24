@@ -152,6 +152,48 @@ class PlatformCommissionerClientTest(unittest.TestCase):
 
         self.assertIs(state.state.root, False)
 
+    def test_typed_league_settings_accept_platform_ladder_field(self) -> None:
+        # Prod GET /v2/leagues/{id}/settings now always includes settings.ladder
+        # (null when unset). Extra-forbid without the field crashed reconcile.
+        payload = {
+            "settings": {
+                "ladder": None,
+                "episodes_per_round": None,
+                "round_interval_minutes": None,
+                "episode_player_pod_llm_spend_limit_usd": 10.0,
+                "leaderboard": None,
+            },
+            "defaults": {
+                "episodes_per_round": 36,
+                "round_interval_minutes": 10,
+            },
+        }
+        with patch.object(
+            urllib.request, "urlopen", return_value=_Response(payload)
+        ):
+            client = PlatformCommissionerClient(
+                base="https://example.test", token="cmr_secret"
+            )
+            settings = client.get_typed_league_settings(
+                "league_00000000-0000-0000-0000-000000000001"
+            )
+
+        self.assertIsNone(settings.settings.ladder)
+        self.assertEqual(settings.settings.episode_player_pod_llm_spend_limit_usd, 10.0)
+
+        with_ladder = LeagueSettingsResponse.model_validate(
+            {
+                **payload,
+                "settings": {
+                    **payload["settings"],
+                    "ladder": {"enabled": True, "divisions": []},
+                },
+            }
+        )
+        self.assertEqual(
+            with_ladder.settings.ladder, {"enabled": True, "divisions": []}
+        )
+
     def test_admits_membership_with_idempotency_key(self) -> None:
         payload = {
             "league_policy_membership_id": "lpm_00000000-0000-0000-0000-000000000020",
@@ -569,6 +611,27 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
 
     def test_reconcile_declares_topology_and_updates_spend_limit(self) -> None:
         client = self._client(current_spend_limit=5, final_spend_limit=10)
+        ladder = {"enabled": True, "divisions": [{"division_id": "div_1", "name": "Competition"}]}
+        client.get_typed_league_settings.side_effect = [
+            LeagueSettingsResponse(
+                settings=LeagueSettings(
+                    ladder=ladder,
+                    episode_player_pod_llm_spend_limit_usd=5,
+                ),
+                defaults=LeagueSettingsDefaults(
+                    episodes_per_round=36, round_interval_minutes=10
+                ),
+            ),
+            LeagueSettingsResponse(
+                settings=LeagueSettings(
+                    ladder=ladder,
+                    episode_player_pod_llm_spend_limit_usd=10,
+                ),
+                defaults=LeagueSettingsDefaults(
+                    episodes_per_round=36, round_interval_minutes=10
+                ),
+            ),
+        ]
         manager = CrewriftPrimePlatformManager(
             client, self.league_id, spend_limit_usd=10
         )
@@ -580,6 +643,7 @@ class CrewriftPrimePlatformManagerTest(unittest.TestCase):
         )
         settings = client.replace_league_settings.call_args.args[1]
         self.assertEqual(settings.episode_player_pod_llm_spend_limit_usd, 10)
+        self.assertEqual(settings.ladder, ladder)
         self.assertTrue(result.settings_updated)
         self.assertEqual(
             result.snapshot.division_names, ["Competition", "Imposters", "Crew"]

@@ -403,7 +403,7 @@ class XpRequestClient:
 
         Calls ``GET /v2/leagues/{league_id}/settings`` (the same league-config API
         that serves the filler policies) and returns the ``settings`` payload — the
-        platform's ``LeagueSettings`` shape (``episodes_per_round``,
+        platform's ``LeagueSettings`` shape (``ladder``, ``episodes_per_round``,
         ``round_interval_minutes``, ``episode_player_pod_llm_spend_limit_usd``).
         The spend-limit field is the platform's enforced per-episode per-player-pod
         LLM (Bedrock) ceiling: at episode dispatch it is injected into each player

@@ -143,6 +143,10 @@ class LeaderboardSettings(BaseModel):
 class LeagueSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # Platform-owned ladder document from app_backend LeagueSettings. Opaque here —
+    # crewrift only round-trips it on settings replace so spend-limit updates do not
+    # wipe a configured ladder.
+    ladder: JsonValue | None = None
     episodes_per_round: int | None = None
     round_interval_minutes: int | None = None
     episode_player_pod_llm_spend_limit_usd: float | None = None
