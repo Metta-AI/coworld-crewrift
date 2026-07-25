@@ -165,6 +165,10 @@ class LeagueSettingsResponse(BaseModel):
 
     settings: LeagueSettings
     defaults: LeagueSettingsDefaults
+    # Added by metta #18226. Opaque here — crewrift does not interpret ladder
+    # effective config; it only needs the response to validate under extra=forbid.
+    effective_ladder_config: JsonValue | None = None
+    commissioner_key: str | None = None
 
 
 class CommissionerState(RootModel[JsonValue]):

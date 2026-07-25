@@ -153,8 +153,9 @@ class PlatformCommissionerClientTest(unittest.TestCase):
         self.assertIs(state.state.root, False)
 
     def test_typed_league_settings_accept_platform_ladder_field(self) -> None:
-        # Prod GET /v2/leagues/{id}/settings now always includes settings.ladder
-        # (null when unset). Extra-forbid without the field crashed reconcile.
+        # Prod GET /v2/leagues/{id}/settings includes settings.ladder (#159) and,
+        # after metta #18226, top-level effective_ladder_config + commissioner_key.
+        # Extra-forbid without those fields crashes reconcile.
         payload = {
             "settings": {
                 "ladder": None,
@@ -167,6 +168,8 @@ class PlatformCommissionerClientTest(unittest.TestCase):
                 "episodes_per_round": 36,
                 "round_interval_minutes": 10,
             },
+            "effective_ladder_config": {"enabled": False, "divisions": []},
+            "commissioner_key": "platform",
         }
         with patch.object(
             urllib.request, "urlopen", return_value=_Response(payload)
@@ -180,6 +183,8 @@ class PlatformCommissionerClientTest(unittest.TestCase):
 
         self.assertIsNone(settings.settings.ladder)
         self.assertEqual(settings.settings.episode_player_pod_llm_spend_limit_usd, 10.0)
+        self.assertEqual(settings.commissioner_key, "platform")
+        self.assertEqual(settings.effective_ladder_config, {"enabled": False, "divisions": []})
 
         with_ladder = LeagueSettingsResponse.model_validate(
             {
