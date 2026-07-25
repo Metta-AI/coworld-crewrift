@@ -1,6 +1,10 @@
 # Publish the REST-only Crewrift Prime commissioner worker image. The worker is
 # deliberately not attached with `coworld patch-commissioner`, which is the
 # legacy per-round WebSocket deployment path.
+#
+# Prod does NOT track prime-rest-latest. After this workflow publishes
+# prime-rest-<sha>, bump the pin in Metta-AI/metta:
+#   devops/app-manifests/values.yaml → orchestrator.crewriftPrimeCommissioner.image.tag
 name: "Publish Crewrift Prime REST Commissioner"
 
 on:
@@ -44,3 +48,7 @@ jobs:
           tags: |
             ghcr.io/metta-ai/coworld-crewrift-commissioner:prime-rest-${{ github.sha }}
             ghcr.io/metta-ai/coworld-crewrift-commissioner:prime-rest-latest
+
+      - name: Print prod pin to bump in metta
+        run: |
+          echo "::notice title=Prod image pin::Bump Metta-AI/metta devops/app-manifests/values.yaml orchestrator.crewriftPrimeCommissioner.image.tag to prime-rest-${{ github.sha }} (prime-rest-latest is local/dev only)."
