@@ -1,6 +1,7 @@
 import
   bitworld/spriteprotocol,
-  crewrift/[global, sim]
+  crewrift/[global, sim],
+  ../players/notsus/notsus/protocols
 
 proc testQuickPressRelease() =
   ## Tests that a down and up packet leaves one pressed bit.
@@ -62,6 +63,26 @@ proc testHeldRetap() =
   doAssert downMask == ButtonA
   doAssert (pressedMask and ButtonA) == ButtonA
 
+proc testActionTapBlob() =
+  ## Tests that action tap packets press and release the action button.
+  var
+    state = initPlayerViewerState()
+    downMask = ButtonA
+    pressedMask = 0'u8
+    chatText = ""
+    debugSprites: seq[uint8] = @[]
+
+  state.applyPlayerViewerMessage(
+    actionTapBlob(ButtonRight or ButtonA),
+    downMask,
+    pressedMask,
+    chatText,
+    debugSprites
+  )
+
+  doAssert downMask == ButtonRight
+  doAssert (pressedMask and ButtonA) == ButtonA
+
 proc testDebugSpritePackets() =
   ## Tests that player debug sprite packets are captured beside input state.
   var
@@ -90,5 +111,6 @@ echo "Testing input buffer"
 testQuickPressRelease()
 testHeldRepeat()
 testHeldRetap()
+testActionTapBlob()
 testDebugSpritePackets()
 echo "ok"

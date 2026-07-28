@@ -38,6 +38,17 @@ type
     html*: string
     quality*: ReplayQuality
 
+  ReplayPlayerResult* = object
+    slot*: int
+    label*: string
+    role*: string
+    won*: bool
+    hasResult*: bool
+    score*: int
+    tasks*: int
+    kills*: int
+    chats*: int
+
   PlayerInfo = object
     label: string
     role: string
@@ -608,6 +619,31 @@ proc collectPlayers(timeline: ReplayTimeline): seq[PlayerInfo] =
     for player in result.mitems:
       if player.label.len > 0:
         player.hasResult = true
+
+proc replayPlayerResultsForTimeline*(
+  timeline: ReplayTimeline
+): seq[ReplayPlayerResult] =
+  ## Returns slot-indexed player result rows for one replay timeline.
+  let players = timeline.collectPlayers()
+  for slot, player in players:
+    if player.label.len == 0 and player.role.len == 0:
+      continue
+    result.add ReplayPlayerResult(
+      slot: slot,
+      label: player.label,
+      role: player.role,
+      won: player.won,
+      hasResult: player.hasResult,
+      score: player.score,
+      tasks: player.tasks,
+      kills: player.kills,
+      chats: player.chats
+    )
+
+proc replayPlayerResultsForPath*(path: string): seq[ReplayPlayerResult] =
+  ## Loads one replay and returns slot-indexed player result rows.
+  let timeline = expandReplayTimeline(loadReplay(path))
+  replayPlayerResultsForTimeline(timeline)
 
 proc roleDisplay(role: string): string =
   ## Returns the role shown in player tables.

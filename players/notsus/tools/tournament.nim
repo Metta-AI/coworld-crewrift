@@ -33,6 +33,8 @@ const
   HeatRightLabelWidth = HeatLeftLabelWidth
   HeatTopLabelHeight = 130
   HeatPadding = 12
+  HeatLowColor = [255, 255, 248]
+  HeatHighColor = [17, 17, 17]
   WinRatePlotWidth = 738
   WinRateLeftPadding = 80
   WinRateRightPadding = 80
@@ -79,8 +81,9 @@ Options:
                            Cached rounds are merged automatically.
       --rebuild            Refresh all cached report rounds in the scan window.
       --auto MINUTES       Rebuild repeatedly, starting every MINUTES minutes.
-      --with-replays       Download replay artifacts. Off by default.
-      --no-replays         Do not download replay artifacts.
+      --with-replays       Download replay artifacts for game pages.
+                           Off by default except score recovery.
+      --no-replays         Do not download replay artifacts or recover ties.
       --no-s3-sync         Do not publish the report to S3.
       --s3-bucket NAME     S3 bucket to sync. Extra objects are preserved.
                            Default: crewrift-prime-tournament.
@@ -122,6 +125,11 @@ type
     wins: int
     losses: int
     ties: int
+
+  HeatScale = object
+    found: bool
+    minValue: float
+    maxValue: float
 
   WinRatePoint = object
     id: string
@@ -214,6 +222,7 @@ type
     renderRound: string
     autoMinutes: int
     downloadReplays: bool
+    recoverReplayScores: bool
     syncS3: bool
     s3Bucket: string
     s3Prefix: string
@@ -253,6 +262,7 @@ proc defaultConfig(): ToolConfig =
     tufteDir: workspaceDir() / "offstream" / "tufte",
     roundLimit: DefaultRoundLimit,
     downloadReplays: false,
+    recoverReplayScores: true,
     syncS3: true,
     s3Bucket: DefaultS3Bucket,
     s3Prefix: DefaultS3Prefix,
@@ -344,8 +354,10 @@ proc parseConfig(): ToolConfig =
       )
     of "no-replays":
       result.downloadReplays = false
+      result.recoverReplayScores = false
     of "with-replays":
       result.downloadReplays = true
+      result.recoverReplayScores = true
     of "no-s3-sync":
       result.syncS3 = false
     of "s3-bucket":
@@ -1223,6 +1235,164 @@ proc scoreFor(game: Game, policyId: string): tuple[found: bool, score: float] =
       return (true, score.score)
   (false, 0.0)
 
+proc nearScore(value, target: float): bool =
+  ## Returns true when a score is close enough to a target.
+  abs(value - target) <= ScoreEpsilon
+
+proc binaryScore(value: float): bool =
+  ## Returns true when one score belongs to the binary result format.
+  value.nearScore(0.0) or value.nearScore(1.0)
+
+proc binaryScoreFlags(scores: openArray[Score]): tuple[
+  binary,
+  hasZero,
+  hasOne: bool
+] =
+  ## Returns the binary-state flags for one set of policy scores.
+  if scores.len == 0:
+    return (false, false, false)
+  result.binary = true
+  for score in scores:
+    if not score.score.binaryScore():
+      result.binary = false
+      return
+    if score.score.nearScore(0.0):
+      result.hasZero = true
+    if score.score.nearScore(1.0):
+      result.hasOne = true
+
+proc noResultBinaryScores(scores: openArray[Score]): bool =
+  ## Returns true when binary scores carry no winner signal.
+  let flags = scores.binaryScoreFlags()
+  flags.binary and not (flags.hasZero and flags.hasOne)
+
+proc replayPath(config: ToolConfig, game: Game): string
+
+proc downloadReplay(game: Game, path: string): string
+
+proc replayPolicyWinScores(
+  config: ToolConfig,
+  game: Game
+): Table[string, float] =
+  ## Returns recovered binary policy scores from replay win flags.
+  let path = config.replayPath(game)
+  if not fileExists(path):
+    return
+  let players = replayPlayerResultsForPath(path)
+  var slots: seq[tuple[found: bool, won: bool]]
+  for player in players:
+    if player.slot < 0:
+      continue
+    if not player.hasResult:
+      continue
+    while slots.len <= player.slot:
+      slots.add (found: false, won: false)
+    slots[player.slot] = (found: true, won: player.won)
+  var stats = initTable[string, tuple[wins, count: int]]()
+  for participant in game.participants:
+    if participant.policyId.len == 0:
+      continue
+    let slot = participant.position
+    if slot < 0 or slot >= slots.len or not slots[slot].found:
+      continue
+    var item = stats.getOrDefault(participant.policyId)
+    if slots[slot].won:
+      inc item.wins
+    inc item.count
+    stats[participant.policyId] = item
+
+  var
+    hasZero = false
+    hasOne = false
+    recovered = initTable[string, float]()
+  for score in game.scores:
+    if score.policyId.len == 0:
+      return
+    let item = stats.getOrDefault(score.policyId)
+    if item.count == 0:
+      return
+    if item.wins == 0:
+      recovered[score.policyId] = 0.0
+      hasZero = true
+    elif item.wins == item.count:
+      recovered[score.policyId] = 1.0
+      hasOne = true
+    else:
+      return
+  if hasZero and hasOne:
+    result = recovered
+
+proc replayBinaryScores(
+  config: ToolConfig,
+  game: Game
+): Table[string, float] =
+  ## Returns recovered binary policy scores from replay win flags.
+  config.replayPolicyWinScores(game)
+
+proc hasTiedNonBinaryScores(scores: openArray[Score]): bool =
+  ## Returns true when stale numeric scores may hide win results.
+  for score in scores:
+    if not score.score.binaryScore():
+      for i in 0 ..< scores.len:
+        for j in i + 1 ..< scores.len:
+          if scores[i].score.nearScore(scores[j].score):
+            return true
+      return false
+  false
+
+proc replayScoreRecoveryCandidate(game: Game): bool =
+  ## Returns true when replay data may improve cached scores.
+  if game.scores.noResultBinaryScores():
+    return true
+  game.scores.hasTiedNonBinaryScores()
+
+proc fillReplayScores(
+  config: ToolConfig,
+  games: var seq[Game],
+  freshIds: HashSet[string]
+) =
+  ## Recovers stale tournament rows from replay win tables.
+  if not config.recoverReplayScores:
+    return
+  createDir(config.outDir / "replays")
+  var
+    checked = 0
+    downloaded = 0
+    failed = 0
+    recoveredCount = 0
+  for game in games.mitems:
+    if game.status != "completed" or not game.replayScoreRecoveryCandidate():
+      continue
+    let path = config.replayPath(game)
+    let canDownload =
+      config.downloadReplays or freshIds.contains(game.id)
+    if not fileExists(path) and not canDownload:
+      continue
+    inc checked
+    echo "Recovering replay score ", checked, " for ", game.id.shortId()
+    if not fileExists(path) and canDownload:
+      let replayError = game.downloadReplay(path)
+      if replayError.len > 0:
+        inc failed
+        echo "Replay score recovery download skipped for ",
+          game.id.shortId(), ": ", replayError.shortCommandError()
+      elif fileExists(path):
+        inc downloaded
+    try:
+      let recovered = config.replayBinaryScores(game)
+      if recovered.len == 0:
+        continue
+      for score in game.scores.mitems:
+        if recovered.hasKey(score.policyId):
+          score.score = recovered[score.policyId]
+      inc recoveredCount
+    except CatchableError as e:
+      echo "Replay score recovery skipped for ", game.id.shortId(),
+        ": ", e.msg.shortCommandError()
+  if checked > 0 or downloaded > 0 or failed > 0:
+    echo "Replay score recovery checked ", checked, " games, recovered ",
+      recoveredCount, ", downloaded ", downloaded, ", failed ", failed, "."
+
 proc stripVersionSuffix(label: string): string =
   ## Returns a display label without a trailing version suffix.
   let clean = label.strip()
@@ -1263,27 +1433,44 @@ proc policyResult(game: Game, policyId: string): string =
   let opponents = game.opponentScores(policyId)
   if opponents.len == 0:
     return "-"
-  var bestOpponent = opponents[0]
-  for i in 1 ..< opponents.len:
-    bestOpponent = max(bestOpponent, opponents[i])
-  let margin = own.score - bestOpponent
-  if margin > ScoreEpsilon:
-    "W"
-  elif margin < -ScoreEpsilon:
+  let binary = game.scores.binaryScoreFlags()
+  if binary.binary:
+    if binary.hasZero and binary.hasOne:
+      if own.score.nearScore(1.0):
+        return "W"
+      return "L"
+    return "-"
+  var
+    best = own.score
+    bestCount = 1
+    scoreCount = 1
+  for opponent in opponents:
+    inc scoreCount
+    if opponent > best + ScoreEpsilon:
+      best = opponent
+      bestCount = 1
+    elif opponent.nearScore(best):
+      inc bestCount
+  if own.score + ScoreEpsilon < best:
     "L"
-  else:
+  elif bestCount == scoreCount:
     "T"
+  else:
+    "W"
 
 proc updateStats(stats: var PolicyStats, game: Game, policyId: string) =
   ## Adds one game to a policy summary.
   if game.status != "completed":
+    return
+  let resultText = game.policyResult(policyId)
+  if resultText notin ["W", "L", "T"]:
     return
   inc stats.games
   let score = game.scoreFor(policyId)
   if score.found:
     inc stats.scoredGames
     stats.totalScore += score.score
-  case game.policyResult(policyId)
+  case resultText
   of "W":
     inc stats.wins
   of "L":
@@ -2614,6 +2801,8 @@ proc heatScoreStats(games: openArray[Game]): Table[string, PolicyStats] =
   for game in games:
     if game.status != "completed":
       continue
+    if game.scores.noResultBinaryScores():
+      continue
     for score in game.scores:
       if score.policyId.len == 0:
         continue
@@ -2673,6 +2862,8 @@ proc heatFamilyScoreStats(
   for game in games:
     if game.status != "completed":
       continue
+    if game.scores.noResultBinaryScores():
+      continue
     for score in game.scores:
       if score.policyId.len == 0:
         continue
@@ -2725,8 +2916,20 @@ proc heatKey(rowId, columnId: string): string =
   ## Returns a table key for one heat-map matchup.
   rowId & "\t" & columnId
 
-proc addHeatResult(stats: var HeatStats, margin: float) =
+proc addHeatResult(
+  stats: var HeatStats,
+  rowScore,
+  columnScore: float,
+  binary: bool
+) =
   ## Adds one score comparison to a heat-map cell.
+  if binary:
+    if rowScore.nearScore(1.0):
+      inc stats.wins
+    elif rowScore.nearScore(0.0):
+      inc stats.losses
+    return
+  let margin = rowScore - columnScore
   if margin > ScoreEpsilon:
     inc stats.wins
   elif margin < -ScoreEpsilon:
@@ -2747,6 +2950,8 @@ proc heatRate(stats: HeatStats): float =
 
 proc heatScoreEntries(game: Game): seq[tuple[key: string, score: float]] =
   ## Returns scored versionless heat-map entries for one game.
+  if game.scores.noResultBinaryScores():
+    return
   for score in game.scores:
     if score.policyId.len == 0:
       continue
@@ -2760,6 +2965,7 @@ proc computeHeat(games: openArray[Game]): Table[string, HeatStats] =
   for game in games:
     if game.status != "completed":
       continue
+    let binary = game.scores.binaryScoreFlags()
     let entries = game.heatScoreEntries()
     for i in 0 ..< entries.len:
       for j in 0 ..< entries.len:
@@ -2767,12 +2973,35 @@ proc computeHeat(games: openArray[Game]): Table[string, HeatStats] =
           continue
         let key = heatKey(entries[i].key, entries[j].key)
         var stats = result.getOrDefault(key)
-        stats.addHeatResult(entries[i].score - entries[j].score)
+        stats.addHeatResult(
+          entries[i].score,
+          entries[j].score,
+          binary.binary
+        )
         result[key] = stats
 
-proc heatShade(rate: float): int =
-  ## Returns one gray shade for a heat-map win rate.
-  255 - int(rate * 255.0 + 0.5)
+proc heatRatio(value: float, scale: HeatScale): float =
+  ## Returns a normalized heat-map value within a local chart scale.
+  if not scale.found:
+    return 0.0
+  if scale.maxValue <= scale.minValue + ScoreEpsilon:
+    return 1.0
+  result = (value - scale.minValue) / (scale.maxValue - scale.minValue)
+  if result < 0.0:
+    result = 0.0
+  elif result > 1.0:
+    result = 1.0
+
+proc heatColor(value: float, scale: HeatScale): string =
+  ## Returns one locally scaled heat-map fill color.
+  let ratio = value.heatRatio(scale)
+  var colors: array[3, int]
+  for i in 0 ..< colors.len:
+    colors[i] = int(
+      HeatLowColor[i].float +
+        (HeatHighColor[i] - HeatLowColor[i]).float * ratio + 0.5
+    )
+  "rgb(" & $colors[0] & "," & $colors[1] & "," & $colors[2] & ")"
 
 proc heatTitle(row, column: HeatPolicy, stats: HeatStats): string =
   ## Returns the tooltip text for one heat-map cell.
@@ -2781,38 +3010,54 @@ proc heatTitle(row, column: HeatPolicy, stats: HeatStats): string =
     $stats.wins & "-" & $stats.losses & "-" & $stats.ties &
     ", " & text
 
-proc heatTextColor(rate: float): string =
+proc heatTextColor(ratio: float): string =
   ## Returns a readable text color for one heat-map tile.
-  if rate >= 0.25:
+  if ratio >= 0.55:
     "#fff"
   else:
     "#111"
 
-proc maxHeatGames(
+proc heatRateScale(
   heat: Table[string, HeatStats],
   rows: openArray[HeatPolicy]
-): int =
-  ## Returns the largest matchup count in a heat-map matrix.
+): HeatScale =
+  ## Returns the local min and max win rate for one heat-map matrix.
+  for row in rows:
+    for column in rows:
+      if row.id == column.id:
+        continue
+      let stats = heat.getOrDefault(heatKey(row.id, column.id))
+      if stats.heatGames() == 0:
+        continue
+      let rate = stats.heatRate()
+      if not result.found:
+        result = HeatScale(found: true, minValue: rate, maxValue: rate)
+      else:
+        result.minValue = min(result.minValue, rate)
+        result.maxValue = max(result.maxValue, rate)
+
+proc heatGameScale(
+  heat: Table[string, HeatStats],
+  rows: openArray[HeatPolicy]
+): HeatScale =
+  ## Returns the local min and max nonzero game count for a heat map.
   for row in rows:
     for column in rows:
       if row.id == column.id:
         continue
       let games = heat.getOrDefault(heatKey(row.id, column.id)).heatGames()
-      result = max(result, games)
+      if games == 0:
+        continue
+      let value = games.float
+      if not result.found:
+        result = HeatScale(found: true, minValue: value, maxValue: value)
+      else:
+        result.minValue = min(result.minValue, value)
+        result.maxValue = max(result.maxValue, value)
 
-proc heatCountShade(games, maxGames: int): int =
-  ## Returns one gray shade for a matchup-count heat-map tile.
-  if maxGames <= 0:
-    return 255
-  let rate = games.float / maxGames.float
-  255 - int(rate * 255.0 + 0.5)
-
-proc heatCountTextColor(games, maxGames: int): string =
+proc heatCountTextColor(games: int, scale: HeatScale): string =
   ## Returns a readable text color for one count heat-map tile.
-  if maxGames > 0 and games.float / maxGames.float >= 0.45:
-    "#fff"
-  else:
-    "#111"
+  games.float.heatRatio(scale).heatTextColor()
 
 proc heatCountTitle(row, column: HeatPolicy, games: int): string =
   ## Returns tooltip text for one matchup-count heat-map cell.
@@ -2827,6 +3072,7 @@ proc heatRectSvg(
   row: HeatPolicy,
   column: HeatPolicy,
   heat: Table[string, HeatStats],
+  scale: HeatScale,
   x,
   y: int
 ): string =
@@ -2839,27 +3085,25 @@ proc heatRectSvg(
     return
   let
     rate = stats.heatRate()
-    shade = rate.heatShade()
     percent = numberText(rate * 100.0, 0) & "%"
     textX = x + HeatCellSize div 2
     textY = y + HeatCellSize div 2 + 4
   result.add "<rect x=\"" & $x & "\" y=\"" & $y
   result.add "\" width=\"" & $HeatCellSize
   result.add "\" height=\"" & $HeatCellSize
-  result.add "\" fill=\"rgb(" & $shade & "," & $shade
-  result.add "," & $shade & ")\"><title>"
+  result.add "\" fill=\"" & rate.heatColor(scale) & "\"><title>"
   result.add heatTitle(row, column, stats).htmlEscape()
   result.add "</title></rect>\n"
   result.add "<text class=\"heat-rate\" x=\"" & $textX
-  result.add "\" y=\"" & $textY
-  result.add "\" text-anchor=\"middle\" fill=\"" & rate.heatTextColor()
+  result.add "\" y=\"" & $textY & "\" text-anchor=\"middle\" fill=\""
+  result.add rate.heatRatio(scale).heatTextColor()
   result.add "\">" & percent.htmlEscape() & "</text>\n"
 
 proc heatCountRectSvg(
   row: HeatPolicy,
   column: HeatPolicy,
   heat: Table[string, HeatStats],
-  maxGames: int,
+  scale: HeatScale,
   x,
   y: int
 ): string =
@@ -2868,21 +3112,24 @@ proc heatCountRectSvg(
     return
   let
     games = heat.getOrDefault(heatKey(row.id, column.id)).heatGames()
-    shade = heatCountShade(games, maxGames)
+    color =
+      if games == 0:
+        "rgb(255,255,255)"
+      else:
+        games.float.heatColor(scale)
     textX = x + HeatCellSize div 2
     textY = y + HeatCellSize div 2 + 4
   result.add "<rect x=\"" & $x & "\" y=\"" & $y
   result.add "\" width=\"" & $HeatCellSize
   result.add "\" height=\"" & $HeatCellSize
-  result.add "\" fill=\"rgb(" & $shade & "," & $shade
-  result.add "," & $shade & ")\"><title>"
+  result.add "\" fill=\"" & color & "\"><title>"
   result.add heatCountTitle(row, column, games).htmlEscape()
   result.add "</title></rect>\n"
   if games > 0:
     result.add "<text class=\"heat-rate\" x=\"" & $textX
     result.add "\" y=\"" & $textY
     result.add "\" text-anchor=\"middle\" fill=\""
-    result.add heatCountTextColor(games, maxGames)
+    result.add heatCountTextColor(games, scale)
     result.add "\">" & $games & "</text>\n"
 
 proc renderHeatMap(
@@ -2896,6 +3143,7 @@ proc renderHeatMap(
     labels = heatFamilyLabels(policies, games, includeMissing)
     scores = heatFamilyScoreStats(games)
     heatRows = heatPolicies(labels, scores)
+    scale = heat.heatRateScale(heatRows)
   if heatRows.len == 0:
     return "<p>No completed matchup data yet.</p>\n"
   let
@@ -2930,7 +3178,7 @@ proc renderHeatMap(
       let
         x = gridX + j * HeatCellSize
         y = gridY + i * HeatCellSize
-      result.add heatRectSvg(row, column, heat, x, y)
+      result.add heatRectSvg(row, column, heat, scale, x, y)
   result.add "</svg>\n</div>\n"
 
 proc renderHeatCountMap(
@@ -2944,7 +3192,7 @@ proc renderHeatCountMap(
     labels = heatFamilyLabels(policies, games, includeMissing)
     scores = heatFamilyScoreStats(games)
     heatRows = heatPolicies(labels, scores)
-    maxGames = heat.maxHeatGames(heatRows)
+    scale = heat.heatGameScale(heatRows)
   if heatRows.len == 0:
     return "<p>No completed matchup game-count data yet.</p>\n"
   let
@@ -2979,7 +3227,7 @@ proc renderHeatCountMap(
       let
         x = gridX + j * HeatCellSize
         y = gridY + i * HeatCellSize
-      result.add heatCountRectSvg(row, column, heat, maxGames, x, y)
+      result.add heatCountRectSvg(row, column, heat, scale, x, y)
   result.add "</svg>\n</div>\n"
 
 proc chartOutcome(resultText: string): ScoreChartOutcome =
@@ -3075,6 +3323,8 @@ proc participantAt(game: Game, position: int): Participant =
 proc bestScore(game: Game): tuple[found: bool, score: float] =
   ## Returns the best score in one completed game.
   if game.status != "completed":
+    return
+  if game.scores.noResultBinaryScores():
     return
   for score in game.scores:
     if not result.found or score.score > result.score:
@@ -3432,7 +3682,8 @@ proc renderIndexGroup(
   scoreTitle = "Scores",
   strategyDocs = StrategyDocs(),
   showStrategy = false,
-  showWinRates = false
+  showWinRates = false,
+  showScores = false
 ): string =
   ## Renders one grouped index section.
   result.add "<section>\n"
@@ -3446,8 +3697,9 @@ proc renderIndexGroup(
   if showWinRates:
     result.add "<h3>Win Rates</h3>\n"
     result.add renderWinRateChart(policies, stats)
-  result.add "<h3>" & scoreTitle.htmlEscape() & "</h3>\n"
-  result.add renderScorePlot(policies, games, includeMissing = false)
+  if showScores:
+    result.add "<h3>" & scoreTitle.htmlEscape() & "</h3>\n"
+    result.add renderScorePlot(policies, games, includeMissing = false)
   result.add "<div class=\"hidden-report-section\">\n"
   result.add "<h3>Matchups</h3>\n"
   result.add renderHeatMap(policies, games, includeMissing = false)
@@ -3684,24 +3936,35 @@ proc writeReport(
 ) =
   ## Writes all tournament report artifacts.
   createDir(config.outDir)
-  echo "Writing tournament metadata..."
-  writeMetadata(config, games)
   echo "Copying report assets..."
   copyAssets(config.outDir, config.tufteDir)
   echo "Writing strategy page..."
   let strategyDocs = readStrategyDocs()
   writeStrategyPage(config, strategyDocs)
-  renderGamePages(config, games, freshGames)
+  var freshIds: HashSet[string]
+  for game in freshGames:
+    freshIds.incl game.id
+  var scoredGames = @games
+  config.fillReplayScores(scoredGames, freshIds)
+  renderGamePages(config, scoredGames, freshGames)
+  echo "Writing tournament metadata..."
+  writeMetadata(config, scoredGames)
   echo "Computing tournament stats..."
-  let stats = computeStats(policies, games)
+  let stats = computeStats(policies, scoredGames)
   echo "Rendering round pages..."
-  renderRoundPages(config, policies, games)
+  renderRoundPages(config, policies, scoredGames)
   echo "Rendering index page..."
-  renderIndex(config, policies, stats, games, rounds, strategyDocs)
+  renderIndex(config, policies, stats, scoredGames, rounds, strategyDocs)
   echo "Rendering bot pages..."
   cleanHtmlFiles(config.outDir / "bots")
   for policy in sortedPolicies(policies):
-    renderBotPage(config, policies, policy, stats.getOrDefault(policy.id), games)
+    renderBotPage(
+      config,
+      policies,
+      policy,
+      stats.getOrDefault(policy.id),
+      scoredGames
+    )
   printSummary(policies, stats)
 
 proc syncReport(config: ToolConfig) =
