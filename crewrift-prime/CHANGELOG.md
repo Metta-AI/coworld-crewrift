@@ -1,8 +1,24 @@
 # Crewrift Prime Changelog
 
-Recent game, commissioner, and league updates. The Observatory also renders
-commissioner-specific entries live under **League Overview → Commissioner Changelog**
-(from `PRIME_COMMISSIONER_CHANGELOG` in the deployed commissioner).
+Recent game and league updates.
+
+---
+
+## 2026-07-27
+
+### Game
+
+- **Qualification skill scalars in results** — Episode results now include
+  `any_seat_voted_or_no_meeting`, `mean_kills_per_imposter_seat`, and
+  `mean_tasks_per_seat` for platform ladder gates. Configure those keys in
+  Observatory league settings; do not rely on the deprecated Crewrift Prime
+  commissioner.
+
+### Platform / ops
+
+- **Crewrift Prime commissioner deprecated** — Custom commissioner image CI/CD
+  (`deploy-commissioner`) removed. Qualification and ranking are platform-owned.
+  `crewrift-prime/commissioner/` remains in-tree as historical reference only.
 
 ---
 

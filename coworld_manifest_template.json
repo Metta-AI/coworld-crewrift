@@ -385,6 +385,20 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "any_seat_voted_or_no_meeting": {
+          "description": "True if any seat cast a deliberate vote or skip this episode, or if no meeting occurred (no vote opportunity). Self-play: any seat is the submitted policy.",
+          "type": "boolean"
+        },
+        "mean_kills_per_imposter_seat": {
+          "description": "Mean kill count across seats that were imposter this episode (sum of imposter-seat kills / number of imposter seats). 0 if none.",
+          "type": "number",
+          "minimum": 0
+        },
+        "mean_tasks_per_seat": {
+          "description": "Mean completed-task count across all seats this episode (sum of seat tasks / seat count).",
+          "type": "number",
+          "minimum": 0
         }
       }
     },

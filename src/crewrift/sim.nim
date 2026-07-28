@@ -2628,6 +2628,43 @@ proc playerResultsJson*(sim: SimServer): string =
   results["vote_timeout"] = voteTimeoutList
   results["connect_timeout"] = connectTimeoutList
   results["disconnect_timeout"] = disconnectTimeoutList
+
+  # Episode-level skill scalars for platform qualification gates. Self-play fills
+  # every seat with the same policy, so seat aggregates are policy metrics.
+  var
+    voteActions = 0
+    voteActivity = 0
+    imposterKills = 0.0
+    imposterSeats = 0
+    taskSum = 0.0
+  for i in 0 ..< votePlayersList.len:
+    let
+      vp = votePlayersList[i].getInt()
+      vs = voteSkipList[i].getInt()
+      vt = voteTimeoutList[i].getInt()
+    voteActions += vp + vs
+    voteActivity += vp + vs + vt
+    taskSum += float(tasksList[i].getInt())
+    if imposterList[i].getInt() == 1:
+      imposterKills += float(killsList[i].getInt())
+      inc imposterSeats
+  let
+    meetingOccurred = voteActivity > 0
+    # No meeting -> no vote opportunity; do not fail the policy.
+    anySeatVotedOrNoMeeting = (not meetingOccurred) or (voteActions > 0)
+    meanKillsPerImposterSeat =
+      if imposterSeats > 0:
+        imposterKills / float(imposterSeats)
+      else:
+        0.0
+    meanTasksPerSeat =
+      if tasksList.len > 0:
+        taskSum / float(tasksList.len)
+      else:
+        0.0
+  results["any_seat_voted_or_no_meeting"] = %anySeatVotedOrNoMeeting
+  results["mean_kills_per_imposter_seat"] = %meanKillsPerImposterSeat
+  results["mean_tasks_per_seat"] = %meanTasksPerSeat
   $results
 
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =

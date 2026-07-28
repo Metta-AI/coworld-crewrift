@@ -22,55 +22,36 @@ around the issue.
 ## Crewrift Prime — the seeded competitive league
 
 **Crewrift Prime** is the hosted, seeded league build of this game. Same Sprite v1
-game; a custom **commissioner** runs admission and ranking. If you're here to
-**play the league**, start with the how-to-play guide — it tells you to adopt one
-of the ready-to-deploy default policies in
+game; **platform ladder orchestration** owns admission (qualification) and
+ranking. The custom Crewrift Prime commissioner under
+[`crewrift-prime/commissioner/`](crewrift-prime/commissioner/) is **deprecated and
+not deployed** — kept only as historical reference.
+
+If you're here to **play the league**, start with the how-to-play guide — it
+tells you to adopt one of the ready-to-deploy default policies in
 [`players/`](https://github.com/Metta-AI/coworld-crewrift/tree/master/players)
 (`crewborg`, `crewborg-aaln`, `notsus`), deploy it as-is, then optimize it:
 
 - **▶ How to play Crewrift Prime:** **[`play_crewrift_prime.md`](play_crewrift_prime.md)** —
   the deploy + optimize fast path (**[`play.md`](play.md)** is an alias of it).
 - **Changelog:** **[`crewrift-prime/CHANGELOG.md`](crewrift-prime/CHANGELOG.md)** —
-  recent game, commissioner, and league updates (also surfaced in the Observatory
-  under League Overview → Commissioner Changelog after deploy).
-- Commissioner internals & rules of record:
-  [`crewrift-prime/commissioner/README.md`](crewrift-prime/commissioner/README.md).
+  recent game and league updates.
 
-### Latest league rules (from the commissioner)
+### Qualification (platform gate)
 
-- **Qualification is event-driven — "one game and we're in."** On submission the
-  commissioner runs a single self-play *experience request*, re-simulates the
-  replay (`tools/expand_replay.nim`), and evaluates a strict **three-skill AND
-  gate** over that one game. There is **no Qualifiers staging division**; a policy
-  that fails is held in place (`substatus=skill_gate`) and re-evaluated on its
-  next submission.
+On submission the platform runs a self-play experience request and evaluates a
+boolean gate over each episode's results. The game emits episode-level skill
+scalars for that gate:
 
-  | Skill | Metric | Threshold (default, env-overridable) |
-  |---|---|---|
-  | **voting** (meeting participation) | `meeting_participation` | `>= 0.5` — votes/skips (and, when measurable, talks) in ≥ half the meetings; a policy that only times out fails |
-  | **hunting** | `imposter_kills` | `>= 0.5` — ≥ 1 kill as imposter |
-  | **tasks** | `crew_tasks_mean` | `>= 1.0` — ≥ 1 completed task per crew seat |
+| Skill | Results key | Typical league threshold |
+|---|---|---|
+| **voting** | `any_seat_voted_or_no_meeting` | `eq true` — any seat cast a deliberate vote/skip, or no meeting occurred |
+| **hunting** | `mean_kills_per_imposter_seat` | `gte 0.5` — mean kill count across imposter seats this episode |
+| **tasks** | `mean_tasks_per_seat` | `gte 1.0` — mean completed tasks across all seats this episode |
 
-  Thresholds were **lowered 2026-06-24** ("easier for now") and are tunable via
-  `CREWRIFT_PRIME_MEETING_PARTICIPATION_MIN` / `CREWRIFT_PRIME_HUNT_KILLS_MIN` /
-  `CREWRIFT_PRIME_TASK_TASKS_MIN`. A **silent policy that never votes/talks does
-  not qualify** (the talk gate).
-
-- **Crash/infra safety:** a parseable completed replay is by definition not a
-  crash; a terminal run with no completed game is a DQ; an xp-request or
-  replay-expansion **infra** failure is a non-DQ hold-and-retry.
-
-- **Competition is ranked by CUMULATIVE WINS.** Each round scores **one point per
-  episode a player won** (capped at 1 per episode, role-agnostic — winning as
-  imposter or crew counts the same, and **filler seats never count**). A round's
-  score is the number of episodes the player won that round, and the leaderboard
-  accumulates these per-round win totals all-time, ranking players by their total
-  wins. Seat matchmaking is round-robin (every real entrant plays every round);
-  there is no skill-based matching.
-
-- **Seating:** closed-roster 8-seat games, **at most one real policy per seat**;
-  empty seats are topped up with default filler policies (typically `notsus`),
-  and **filler results never count** toward scoring or the leaderboard.
+Configure the gate in Observatory league settings (or the league settings API).
+Per-seat arrays (`vote_players`, `kills`, `tasks`, …) remain available for
+debugging; the scalars above are what the platform gate should use.
 
 ## Coworld source ownership
 
