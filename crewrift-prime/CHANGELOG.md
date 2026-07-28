@@ -9,9 +9,10 @@ Recent game and league updates.
 ### Game
 
 - **Qualification skill scalars in results** — Episode results now include
-  `voted`, `kills_as_imposter`, and `mean_tasks` for platform ladder gates.
-  Configure those keys in Observatory league settings; do not rely on the
-  deprecated Crewrift Prime commissioner.
+  `any_seat_voted_or_no_meeting`, `mean_kills_per_imposter_seat`, and
+  `mean_tasks_per_seat` for platform ladder gates. Configure those keys in
+  Observatory league settings; do not rely on the deprecated Crewrift Prime
+  commissioner.
 
 ### Platform / ops
 

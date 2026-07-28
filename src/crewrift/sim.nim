@@ -2651,20 +2651,20 @@ proc playerResultsJson*(sim: SimServer): string =
   let
     meetingOccurred = voteActivity > 0
     # No meeting -> no vote opportunity; do not fail the policy.
-    voted = (not meetingOccurred) or (voteActions > 0)
-    killsAsImposter =
+    anySeatVotedOrNoMeeting = (not meetingOccurred) or (voteActions > 0)
+    meanKillsPerImposterSeat =
       if imposterSeats > 0:
         imposterKills / float(imposterSeats)
       else:
         0.0
-    meanTasks =
+    meanTasksPerSeat =
       if tasksList.len > 0:
         taskSum / float(tasksList.len)
       else:
         0.0
-  results["voted"] = %voted
-  results["kills_as_imposter"] = %killsAsImposter
-  results["mean_tasks"] = %meanTasks
+  results["any_seat_voted_or_no_meeting"] = %anySeatVotedOrNoMeeting
+  results["mean_kills_per_imposter_seat"] = %meanKillsPerImposterSeat
+  results["mean_tasks_per_seat"] = %meanTasksPerSeat
   $results
 
 proc completeTask*(sim: var SimServer, playerIndex, taskIndex: int) =

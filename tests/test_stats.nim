@@ -910,16 +910,16 @@ suite "stats":
     discard sim.addPlayer("imp2", 1) # second imposter seat; 0 kills in this test
     sim.startGame()
 
-    # No meeting activity -> voted is true (no opportunity).
+    # No meeting activity -> true (no opportunity).
     var results = parseJson(sim.playerResultsJson())
-    check results["voted"].getBool()
-    check results["kills_as_imposter"].getFloat() == 0.0
-    check results["mean_tasks"].getFloat() == 0.0
+    check results["any_seat_voted_or_no_meeting"].getBool()
+    check results["mean_kills_per_imposter_seat"].getFloat() == 0.0
+    check results["mean_tasks_per_seat"].getFloat() == 0.0
 
-    # Meeting via timeout only (no deliberate vote/skip) -> voted is false.
+    # Meeting via timeout only (no deliberate vote/skip) -> false.
     sim.recordVoteTimeout(crew1)
     results = parseJson(sim.playerResultsJson())
-    check not results["voted"].getBool()
+    check not results["any_seat_voted_or_no_meeting"].getBool()
 
     # Deliberate vote/skip passes; imposter kills 2 and 0 -> mean 1.0;
     # tasks 0,0,2,4 -> mean 1.5.
@@ -933,6 +933,6 @@ suite "stats":
     sim.recordTask(crew2)
     sim.recordTask(crew2)
     results = parseJson(sim.playerResultsJson())
-    check results["voted"].getBool()
-    check results["kills_as_imposter"].getFloat() == 1.0
-    check results["mean_tasks"].getFloat() == 1.5
+    check results["any_seat_voted_or_no_meeting"].getBool()
+    check results["mean_kills_per_imposter_seat"].getFloat() == 1.0
+    check results["mean_tasks_per_seat"].getFloat() == 1.5

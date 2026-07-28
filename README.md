@@ -45,9 +45,9 @@ scalars for that gate:
 
 | Skill | Results key | Typical league threshold |
 |---|---|---|
-| **voting** (meeting participation) | `voted` | `eq true` — deliberate vote/skip when a meeting occurs; true if no meeting |
-| **hunting** | `kills_as_imposter` | `gte 0.5` — mean kills across imposter seats |
-| **tasks** | `mean_tasks` | `gte 1.0` — mean completed tasks across seats |
+| **voting** | `any_seat_voted_or_no_meeting` | `eq true` — any seat cast a deliberate vote/skip, or no meeting occurred |
+| **hunting** | `mean_kills_per_imposter_seat` | `gte 0.5` — mean kill count across imposter seats this episode |
+| **tasks** | `mean_tasks_per_seat` | `gte 1.0` — mean completed tasks across all seats this episode |
 
 Configure the gate in Observatory league settings (or the league settings API).
 Per-seat arrays (`vote_players`, `kills`, `tasks`, …) remain available for

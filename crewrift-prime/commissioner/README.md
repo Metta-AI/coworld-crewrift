@@ -5,7 +5,8 @@
 > (the `deploy-commissioner` GitHub Actions workflow was removed). Kept in-tree
 > only as historical reference; do not extend or re-enable without an explicit
 > product decision. Qualification evidence now comes from episode results
-> scalars (`voted`, `kills_as_imposter`, `mean_tasks`) emitted by the game.
+> scalars (`any_seat_voted_or_no_meeting`, `mean_kills_per_imposter_seat`,
+> `mean_tasks_per_seat`) emitted by the game.
 
 A custom Coworld commissioner for the **Crewrift Prime** league that replaces the
 stock score-only Qualifiers→Competition gate with an **event-driven, results-JSON
