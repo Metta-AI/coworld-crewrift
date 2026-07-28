@@ -885,3 +885,54 @@ suite "stats":
     check results["crew"][6].getInt() == 0
     check results["imposter"][7].getInt() == 0
     check results["crew"][7].getInt() == 0
+
+  test "player result json emits qualification skill scalars":
+    var config = defaultGameConfig()
+    config.minPlayers = 4
+    config.imposterCount = 2
+    config.autoImposterCount = false
+    config.roleRevealTicks = 0
+    config.startWaitTicks = 0
+    config.tasksPerPlayer = 0
+    config.maxGames = 1
+    config.slots = @[
+      roleSlot("imp1", Imposter),
+      roleSlot("imp2", Imposter),
+      roleSlot("crew1", Crewmate),
+      roleSlot("crew2", Crewmate)
+    ]
+
+    var sim = initCrewriftForTest(config)
+    let
+      imp1 = sim.addPlayer("imp1", 0)
+      crew1 = sim.addPlayer("crew1", 2)
+      crew2 = sim.addPlayer("crew2", 3)
+    discard sim.addPlayer("imp2", 1) # second imposter seat; 0 kills in this test
+    sim.startGame()
+
+    # No meeting activity -> voted is true (no opportunity).
+    var results = parseJson(sim.playerResultsJson())
+    check results["voted"].getBool()
+    check results["kills_as_imposter"].getFloat() == 0.0
+    check results["mean_tasks"].getFloat() == 0.0
+
+    # Meeting via timeout only (no deliberate vote/skip) -> voted is false.
+    sim.recordVoteTimeout(crew1)
+    results = parseJson(sim.playerResultsJson())
+    check not results["voted"].getBool()
+
+    # Deliberate vote/skip passes; imposter kills 2 and 0 -> mean 1.0;
+    # tasks 0,0,2,4 -> mean 1.5.
+    sim.recordVotePlayer(imp1)
+    sim.recordKill(imp1)
+    sim.recordKill(imp1)
+    sim.recordTask(crew1)
+    sim.recordTask(crew1)
+    sim.recordTask(crew2)
+    sim.recordTask(crew2)
+    sim.recordTask(crew2)
+    sim.recordTask(crew2)
+    results = parseJson(sim.playerResultsJson())
+    check results["voted"].getBool()
+    check results["kills_as_imposter"].getFloat() == 1.0
+    check results["mean_tasks"].getFloat() == 1.5

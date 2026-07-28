@@ -385,6 +385,20 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "voted": {
+          "description": "True if any seat cast a deliberate vote or skip, or if no meeting occurred (no vote opportunity).",
+          "type": "boolean"
+        },
+        "kills_as_imposter": {
+          "description": "Mean kills across seats that were imposter. 0 if none.",
+          "type": "number",
+          "minimum": 0
+        },
+        "mean_tasks": {
+          "description": "Mean completed tasks across all seats.",
+          "type": "number",
+          "minimum": 0
         }
       }
     },

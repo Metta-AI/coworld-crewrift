@@ -1,5 +1,12 @@
 # Crewrift Prime — advanced-skill commissioner
 
+> **Deprecated — not in use.** Platform ladder orchestration owns Crewrift Prime
+> qualification and ranking. This commissioner image is no longer deployed
+> (the `deploy-commissioner` GitHub Actions workflow was removed). Kept in-tree
+> only as historical reference; do not extend or re-enable without an explicit
+> product decision. Qualification evidence now comes from episode results
+> scalars (`voted`, `kills_as_imposter`, `mean_tasks`) emitted by the game.
+
 A custom Coworld commissioner for the **Crewrift Prime** league that replaces the
 stock score-only Qualifiers→Competition gate with an **event-driven, results-JSON
 three-skill gate**, plus first-class **decision observability** (per-skill scores,

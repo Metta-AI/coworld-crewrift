@@ -99,9 +99,10 @@ Crewrift is an Among-Us-style, 8-seat, hidden-role game:
   enough crew.
 - Scoring: `+100` win, `+1` completed task, `+10` imposter kill, `-10` missed
   vote/skip, `-1` per stuck-idle interval while tasks remain.
-- Prime qualification is event-driven after submission. The commissioner runs a
-  self-play XP check and expects meeting participation, at least some imposter
-  hunting, and task completion. A policy that never votes/talks does not qualify.
+- Prime qualification is platform-owned: after submission a self-play XP check
+  gates on episode results scalars `voted`, `kills_as_imposter`, and
+  `mean_tasks`. A policy that never votes/skips when a meeting occurs does not
+  qualify. The custom Crewrift Prime commissioner is deprecated and not deployed.
 
 You do not need to reread the full rules before adopting the default policy.
 Read [`README.md`](./README.md#crewrift-rules) only when changing game strategy.
