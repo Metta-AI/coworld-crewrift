@@ -20,6 +20,7 @@ import
   test_rooms,
   test_slots,
   test_start_wait,
+  test_static_replay_frame_buffer,
   test_tasks,
   test_tick_marker,
   test_stats,

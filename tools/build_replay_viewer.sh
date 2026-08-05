@@ -64,7 +64,7 @@ done
   --clang.linkerexe:"${emcc_bin}" \
   --nimcache:"${output_dir}/nimcache" \
   --out:"${output_dir}/crewrift_core.js" \
-  --passL:"-s MODULARIZE=1 -s EXPORT_NAME=createCrewriftCore -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web -s EXPORTED_FUNCTIONS=['_cr_load_replay','_cr_advance','_cr_input','_cr_frame_ptr','_cr_frame_len','_cr_tick','_cr_max_tick','_cr_playing','_cr_error_ptr','_malloc','_free'] -s EXPORTED_RUNTIME_METHODS=['UTF8ToString','HEAPU8'] --preload-file ${repo_dir}/data@data --preload-file ${repo_dir}/data@client/data" \
+  --passL:"-s MODULARIZE=1 -s EXPORT_NAME=createCrewriftCore -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web -s EXPORTED_FUNCTIONS=['_cr_load_replay','_cr_advance','_cr_input','_cr_frame_ptr','_cr_frame_len','_cr_frame_clear','_cr_tick','_cr_max_tick','_cr_playing','_cr_error_ptr','_malloc','_free'] -s EXPORTED_RUNTIME_METHODS=['UTF8ToString','HEAPU8'] --preload-file ${repo_dir}/data@data --preload-file ${repo_dir}/data@client/data" \
   "${nim_paths[@]}" \
   "${repo_dir}/replay_viewer/crewrift_replay_wasm.nim"
 

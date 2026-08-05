@@ -4,6 +4,21 @@ Recent game and league updates.
 
 ---
 
+## 2026-08-05
+
+### Game
+
+- **Replay viewer: stale startup screens fixed** — The static replay viewer's
+  browser adapter dropped intermediate presentation packets whenever the page
+  rendered slower than the 24 fps replay clock. Because the packet stream is
+  incremental, dropped `deleteObject` messages left earlier interstitials
+  (lobby roster, role reveal, previous meetings) permanently overlaid on the
+  top-right meeting panel. The frame buffer now accumulates packets until the
+  renderer consumes them, so no deletions are lost. Presentation-only: policy
+  observations, results, and qualification are unaffected.
+
+---
+
 ## 2026-07-27
 
 ### Game

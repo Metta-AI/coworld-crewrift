@@ -13,14 +13,21 @@ proc bytesFromMemory(data: pointer, length: cint): string =
     copyMem(result[0].addr, data, int(length))
 
 proc refreshFrame() =
+  ## Appends the newest packet so no delta is lost between frame reads.
+  ## The Sprite v1 stream is incremental; replacing the buffer would drop
+  ## deleteObject messages whenever the page reads slower than we render,
+  ## leaving stale interstitial sprites (lobby, role reveal, old votes)
+  ## stuck on screen. The page clears the buffer via cr_frame_clear after
+  ## each read.
   if not viewer.isNil:
-    frameBuffer = viewer.frameBytes()
+    frameBuffer.add viewer.frameBytes()
 
 proc crLoadReplay(data: pointer, length: cint): cint
     {.exportc: "cr_load_replay", cdecl.} =
   try:
     viewer = initStaticReplayViewer(bytesFromMemory(data, length))
     lastError.setLen(0)
+    frameBuffer.setLen(0)
     refreshFrame()
     1
   except CatchableError as error:
@@ -50,6 +57,9 @@ proc crFramePointer(): pointer {.exportc: "cr_frame_ptr", cdecl.} =
 
 proc crFrameLength(): cint {.exportc: "cr_frame_len", cdecl.} =
   cint(frameBuffer.len)
+
+proc crFrameClear() {.exportc: "cr_frame_clear", cdecl.} =
+  frameBuffer.setLen(0)
 
 proc crTick(): cint {.exportc: "cr_tick", cdecl.} =
   if viewer.isNil: -1 else: cint(viewer.sim.tickCount)
