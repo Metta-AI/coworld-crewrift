@@ -28,7 +28,11 @@
     const copy = core.HEAPU8.slice(pointer, pointer + length);
     document.documentElement.dataset.replayTick = String(core._cr_tick());
     document.documentElement.dataset.replayMaxTick = String(core._cr_max_tick());
-    if (socket.onmessage) socket.onmessage({ data: copy.buffer });
+    if (!socket.onmessage) return;
+    // The buffer accumulates incremental packets; clear it only once they
+    // are actually handed to the renderer so no deletions are ever dropped.
+    core._cr_frame_clear();
+    socket.onmessage({ data: copy.buffer });
   }
 
   function passToCore(bytes) {
@@ -48,12 +52,12 @@
       const frameMs = 1000 / ReplayFps;
       if (!lastFrameAt) lastFrameAt = now;
       let frames = Math.min(4, Math.floor((now - lastFrameAt) / frameMs));
-      const shouldEmit = frames > 0;
+      if (frames === 4) lastFrameAt = now - 4 * frameMs;
       while (frames-- > 0) {
         core._cr_advance();
         lastFrameAt += frameMs;
       }
-      if (shouldEmit) emitFrame();
+      emitFrame();
       const error = coreError();
       if (error) status(error);
     } else {
