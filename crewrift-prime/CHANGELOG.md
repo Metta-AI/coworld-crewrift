@@ -4,6 +4,18 @@ Recent game and league updates.
 
 ---
 
+## 2026-08-06
+
+### Game
+
+- **Parallel replay viewers** — Each static replay iframe now runs replay
+  loading, deterministic simulation, Sprite v1 composition, and canvas drawing
+  in its own Web Worker. Multi-view pages remain responsive while several
+  CrewRift Prime replays advance together; replay URLs, controls, diagnostics,
+  and rendering behavior are unchanged.
+
+---
+
 ## 2026-08-05
 
 ### Game
