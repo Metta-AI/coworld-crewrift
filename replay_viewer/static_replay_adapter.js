@@ -1,177 +1,355 @@
 (function () {
   "use strict";
 
-  const ReplayFps = 24;
-  let socket = null;
-  let core = null;
-  let lastFrameAt = 0;
-  let loading = false;
+  const canvas = document.getElementById("c");
+  const statusNode = document.getElementById("status");
+  const debugPanel = document.getElementById("debugPanel");
+  const debugDown = document.getElementById("debugDown");
+  const debugUp = document.getElementById("debugUp");
+  const debugSprites = document.getElementById("debugSprites");
+  const scriptUrl = document.currentScript && document.currentScript.src;
+  const workerUrl = new URL("./static_replay_worker.js", scriptUrl || location.href);
+  let worker = null;
+  let failed = false;
+  let disposed = false;
+  let loaded = false;
+  let clockInFlight = false;
+  let clockFrame = 0;
+  let inputFrame = 0;
+  let resizeFrame = 0;
+  let resizeObserver = null;
   let pendingReplayBytes = null;
+  let pendingPointerMove = null;
+  let pendingWheel = null;
+  let fileInput = null;
+  let debugOpen = false;
 
   function status(text) {
-    const node = document.getElementById("status");
-    if (!node) return;
-    node.textContent = text;
-    node.classList.toggle("hidden", !text);
+    if (!statusNode) return;
+    statusNode.textContent = text;
+    statusNode.classList.toggle("hidden", !text);
   }
 
-  function coreError() {
-    const pointer = core._cr_error_ptr();
-    return pointer ? core.UTF8ToString(pointer) : "Unknown Crewrift replay error";
+  function showFailure(error) {
+    if (failed || disposed) return;
+    failed = true;
+    console.error(error);
+    status("Replay failed: " + (error.message || String(error)));
+    stopWorker();
   }
 
-  function emitFrame() {
-    if (!core || !socket || socket.readyState !== StaticReplaySocket.OPEN) return;
-    const length = core._cr_frame_len();
-    if (length <= 0) return;
-    const pointer = core._cr_frame_ptr();
-    const copy = core.HEAPU8.slice(pointer, pointer + length);
-    document.documentElement.dataset.replayTick = String(core._cr_tick());
-    document.documentElement.dataset.replayMaxTick = String(core._cr_max_tick());
-    if (!socket.onmessage) return;
-    // The buffer accumulates incremental packets; clear it only once they
-    // are actually handed to the renderer so no deletions are ever dropped.
-    core._cr_frame_clear();
-    socket.onmessage({ data: copy.buffer });
-  }
-
-  function passToCore(bytes) {
-    const packet = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    const pointer = core._malloc(packet.length || 1);
-    try {
-      core.HEAPU8.set(packet, pointer);
-      core._cr_input(pointer, packet.length);
-    } finally {
-      core._free(pointer);
+  function formatBytes(value) {
+    const units = ["B", "KB", "MB", "GB"];
+    let amount = Number(value) || 0;
+    let unit = 0;
+    while (amount >= 1024 && unit < units.length - 1) {
+      amount /= 1024;
+      unit++;
     }
-    emitFrame();
+    return (unit === 0 ? String(amount) : amount.toFixed(1)) + " " + units[unit];
   }
 
-  function animationFrame(now) {
-    if (core && core._cr_playing()) {
-      const frameMs = 1000 / ReplayFps;
-      if (!lastFrameAt) lastFrameAt = now;
-      let frames = Math.min(4, Math.floor((now - lastFrameAt) / frameMs));
-      if (frames === 4) lastFrameAt = now - 4 * frameMs;
-      while (frames-- > 0) {
-        core._cr_advance();
-        lastFrameAt += frameMs;
-      }
-      emitFrame();
-      const error = coreError();
-      if (error) status(error);
-    } else {
-      lastFrameAt = now;
+  function renderDebug(snapshot) {
+    if (!debugDown || !debugUp || !debugSprites) return;
+    debugDown.textContent = formatBytes(snapshot.bytesDown);
+    debugUp.textContent = formatBytes(snapshot.bytesUp);
+    debugSprites.textContent = "";
+    for (const sprite of snapshot.sprites || []) {
+      const row = document.createElement("div");
+      const label = document.createElement("div");
+      const preview = document.createElement("canvas");
+      const meta = document.createElement("div");
+      const text = document.createElement("div");
+      const size = document.createElement("div");
+      const traffic = document.createElement("div");
+      row.className = "debugSprite";
+      row.classList.toggle("updated", !!sprite.updated);
+      label.className = "debugSpriteId";
+      meta.className = "debugSpriteMeta";
+      text.className = "debugSpriteText";
+      size.className = "debugSpriteSize";
+      traffic.className = "debugSpriteTraffic";
+      label.textContent = "#" + sprite.id;
+      text.textContent = sprite.label || "(no label)";
+      size.textContent = sprite.width + "x" + sprite.height;
+      traffic.textContent = formatBytes(sprite.bytesDown) + " / " + sprite.updates + "x";
+      preview.width = 64;
+      preview.height = 64;
+      const previewContext = preview.getContext("2d");
+      previewContext.drawImage(sprite.bitmap, 0, 0);
+      sprite.bitmap.close();
+      label.append(size, traffic);
+      meta.append(text);
+      row.append(label, preview, meta);
+      debugSprites.append(row);
     }
-    requestAnimationFrame(animationFrame);
   }
 
-  async function loadReplayBytes(bytes) {
-    if (loading) return;
-    loading = true;
-    status("loading replay...");
+  function setReplayState(message) {
+    if (message.tick >= 0) document.documentElement.dataset.replayTick = String(message.tick);
+    if (message.maxTick >= 0) {
+      document.documentElement.dataset.replayMaxTick = String(message.maxTick);
+    }
+    document.documentElement.dataset.replayPlaying = String(!!message.playing);
+  }
+
+  function onWorkerMessage(event) {
+    if (failed || disposed) return;
+    const message = event.data || {};
     try {
-      const replay = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-      const pointer = core._malloc(replay.length || 1);
-      let loaded;
-      try {
-        core.HEAPU8.set(replay, pointer);
-        loaded = core._cr_load_replay(pointer, replay.length);
-      } finally {
-        core._free(pointer);
+      if (message.type === "ready") {
+        document.documentElement.dataset.replayWorker = "true";
+        document.documentElement.dataset.replayWorkerId = message.workerId;
+      } else if (message.type === "status") {
+        status(message.text || "");
+      } else if (message.type === "loaded") {
+        loaded = true;
+        document.documentElement.dataset.replayLoaded = "true";
+        setReplayState(message);
+        status("");
+        if (fileInput) {
+          fileInput.remove();
+          fileInput = null;
+        }
+        if (!clockFrame) clockFrame = requestAnimationFrame(clock);
+      } else if (message.type === "clock") {
+        clockInFlight = false;
+        setReplayState(message);
+      } else if (message.type === "state") {
+        setReplayState(message);
+      } else if (message.type === "resized") {
+        document.documentElement.dataset.replayViewport =
+          Math.round(message.width) + "x" + Math.round(message.height);
+      } else if (message.type === "debug") {
+        if (debugOpen) renderDebug(message.snapshot || {});
+        else {
+          for (const sprite of (message.snapshot && message.snapshot.sprites) || []) {
+            sprite.bitmap.close();
+          }
+        }
+      } else if (message.type === "error") {
+        showFailure(new Error(message.message || "Replay Worker failed"));
       }
-      if (!loaded) throw new Error(coreError());
-      socket.readyState = StaticReplaySocket.OPEN;
-      document.documentElement.dataset.replayLoaded = "true";
-      if (socket.onopen) socket.onopen();
-      status("");
-      emitFrame();
     } catch (error) {
-      loading = false;
-      status("Unable to load replay: " + error.message);
-      throw error;
+      showFailure(error);
     }
+  }
+
+  function clock(now) {
+    clockFrame = 0;
+    if (disposed || failed || !loaded || !worker) return;
+    if (!clockInFlight) {
+      clockInFlight = true;
+      worker.postMessage({ type: "clock", now });
+    }
+    clockFrame = requestAnimationFrame(clock);
+  }
+
+  function viewport() {
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, innerWidth || rect.width || 1);
+    const height = Math.max(1, innerHeight || rect.height || 1);
+    canvas.style.width = width + "px";
+    canvas.style.height = height + "px";
+    return { width, height, dpr: window.devicePixelRatio || 1 };
+  }
+
+  function sendResize() {
+    resizeFrame = 0;
+    if (!worker || disposed || failed) return;
+    worker.postMessage({ type: "resize", ...viewport() });
+  }
+
+  function scheduleResize() {
+    if (!resizeFrame) resizeFrame = requestAnimationFrame(sendResize);
+  }
+
+  function replayBuffer(value) {
+    if (value instanceof ArrayBuffer) return value;
+    if (ArrayBuffer.isView(value)) {
+      return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    }
+    return null;
+  }
+
+  function sendReplay(value) {
+    const bytes = replayBuffer(value);
+    if (!bytes) return false;
+    if (worker) worker.postMessage({ type: "replay", bytes }, [bytes]);
+    else pendingReplayBytes = bytes;
+    return true;
   }
 
   function showFilePicker() {
+    if (fileInput) return;
     status("Choose a Crewrift .bitreplay file");
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".bitreplay,application/octet-stream";
-    input.style.cssText = "position:fixed;left:50%;top:58%;transform:translate(-50%,-50%);z-index:20;color:white";
-    input.addEventListener("change", async () => {
-      if (input.files && input.files[0]) {
-        await loadReplayBytes(await input.files[0].arrayBuffer());
-        input.remove();
+    fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".bitreplay,application/octet-stream";
+    fileInput.style.cssText =
+      "position:fixed;left:50%;top:58%;transform:translate(-50%,-50%);" +
+      "z-index:20;color:white";
+    fileInput.addEventListener("change", async () => {
+      if (fileInput.files && fileInput.files[0]) {
+        sendReplay(await fileInput.files[0].arrayBuffer());
       }
     });
-    document.body.appendChild(input);
+    document.body.appendChild(fileInput);
   }
 
-  async function boot() {
-    if (core || loading) return;
-    status("starting Crewrift replay core...");
-    core = await createCrewriftCore({
-      locateFile: name => new URL(name, document.baseURI).toString()
+  function flushInput() {
+    inputFrame = 0;
+    if (!worker || failed || disposed) return;
+    if (pendingWheel) {
+      worker.postMessage({ type: "input", action: "wheel", ...pendingWheel });
+      pendingWheel = null;
+    }
+    if (pendingPointerMove) {
+      worker.postMessage({ type: "input", action: "pointermove", ...pendingPointerMove });
+      pendingPointerMove = null;
+    }
+  }
+
+  function scheduleInput() {
+    if (!inputFrame) inputFrame = requestAnimationFrame(flushInput);
+  }
+
+  function pointerPosition(event) {
+    return {
+      x: Math.max(-32768, Math.min(32767, Number(event.clientX) || 0)),
+      y: Math.max(-32768, Math.min(32767, Number(event.clientY) || 0))
+    };
+  }
+
+  function sendInput(action, event) {
+    if (!worker || failed || disposed) return;
+    worker.postMessage({ type: "input", action, ...pointerPosition(event) });
+  }
+
+  function installInputHandlers() {
+    addEventListener("wheel", event => {
+      event.preventDefault();
+      const point = pointerPosition(event);
+      if (pendingWheel) {
+        pendingWheel.x = point.x;
+        pendingWheel.y = point.y;
+        pendingWheel.deltaY += Number(event.deltaY) || 0;
+      } else {
+        pendingWheel = { ...point, deltaY: Number(event.deltaY) || 0 };
+      }
+      pendingWheel.deltaY = Math.max(-1200, Math.min(1200, pendingWheel.deltaY));
+      scheduleInput();
+    }, { passive: false });
+
+    addEventListener("pointerdown", event => {
+      flushInput();
+      sendInput("pointerdown", event);
+      try { canvas.setPointerCapture(event.pointerId); } catch (ignored) {}
     });
+    addEventListener("pointermove", event => {
+      pendingPointerMove = pointerPosition(event);
+      scheduleInput();
+    });
+    addEventListener("pointerup", event => {
+      flushInput();
+      sendInput("pointerup", event);
+      try { canvas.releasePointerCapture(event.pointerId); } catch (ignored) {}
+    });
+    addEventListener("pointercancel", event => {
+      flushInput();
+      sendInput("pointercancel", event);
+    });
+    addEventListener("dblclick", event => sendInput("dblclick", event));
+
+    for (const eventName of ["pointerdown", "pointermove", "pointerup", "dblclick"]) {
+      debugPanel.addEventListener(eventName, event => event.stopPropagation());
+    }
+    debugPanel.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
+    addEventListener("keydown", event => {
+      if (event.key !== "F2") return;
+      event.preventDefault();
+      debugOpen = !debugOpen;
+      debugPanel.classList.toggle("hidden", !debugOpen);
+      if (worker) worker.postMessage({ type: "debug", enabled: debugOpen });
+    });
+  }
+
+  function startWorker() {
+    if (!canvas || typeof canvas.transferControlToOffscreen !== "function") {
+      showFailure(new Error("This browser does not support OffscreenCanvas Workers"));
+      return;
+    }
+    if (typeof Worker !== "function") {
+      showFailure(new Error("This browser does not support Dedicated Workers"));
+      return;
+    }
     const params = new URL(location.href).searchParams;
     const replayUrl = params.get("replay") || params.get("replay_url") || params.get("uri");
-    if (pendingReplayBytes) {
-      const bytes = pendingReplayBytes;
+    const size = viewport();
+    try {
+      worker = new Worker(workerUrl, { name: "crewrift-static-replay" });
+      worker.onmessage = onWorkerMessage;
+      worker.onerror = event => {
+        showFailure(new Error(event.message || "Replay Worker crashed"));
+      };
+      worker.onmessageerror = () => {
+        showFailure(new Error("Replay Worker sent an unreadable message"));
+      };
+      const offscreen = canvas.transferControlToOffscreen();
+      const init = {
+        type: "init",
+        replayUrl,
+        replayBytes: pendingReplayBytes,
+        canvas: offscreen,
+        ...size
+      };
+      const transfers = [offscreen];
+      if (pendingReplayBytes) transfers.push(pendingReplayBytes);
       pendingReplayBytes = null;
-      await loadReplayBytes(bytes);
-    } else if (replayUrl) {
-      const response = await fetch(replayUrl);
-      if (!response.ok) throw new Error("Replay fetch failed (HTTP " + response.status + ")");
-      await loadReplayBytes(await response.arrayBuffer());
-    } else {
-      showFilePicker();
-    }
-    requestAnimationFrame(animationFrame);
-  }
-
-  class StaticReplaySocket {
-    static CONNECTING = 0;
-    static OPEN = 1;
-    static CLOSING = 2;
-    static CLOSED = 3;
-
-    constructor() {
-      this.binaryType = "arraybuffer";
-      this.readyState = StaticReplaySocket.CONNECTING;
-      socket = this;
-      queueMicrotask(() => boot().catch(error => status(error.message)));
-    }
-
-    send(bytes) {
-      if (core && this.readyState === StaticReplaySocket.OPEN) passToCore(bytes);
-    }
-
-    close() {
-      this.readyState = StaticReplaySocket.CLOSED;
-      if (this.onclose) this.onclose();
+      worker.postMessage(init, transfers);
+      if (!replayUrl && !init.replayBytes) showFilePicker();
+    } catch (error) {
+      showFailure(error);
     }
   }
 
-  for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) {
-    StaticReplaySocket.prototype[name] = StaticReplaySocket[name];
+  function stopWorker() {
+    if (!worker) return;
+    const stoppedWorker = worker;
+    worker = null;
+    try { stoppedWorker.postMessage({ type: "dispose" }); } catch (ignored) {}
+    setTimeout(() => stoppedWorker.terminate(), 100);
   }
-  window.WebSocket = StaticReplaySocket;
+
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    if (clockFrame) cancelAnimationFrame(clockFrame);
+    if (inputFrame) cancelAnimationFrame(inputFrame);
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    if (resizeObserver) resizeObserver.disconnect();
+    stopWorker();
+  }
 
   addEventListener("message", event => {
     const message = event.data;
     if (message && message.type === "coworld-replay" && message.bytes) {
-      if (core) {
-        loadReplayBytes(message.bytes).catch(error => status(error.message));
-      } else {
-        pendingReplayBytes = message.bytes;
-      }
+      if (!sendReplay(message.bytes)) status("Unable to read replay bytes");
     }
   });
   addEventListener("dragover", event => event.preventDefault());
   addEventListener("drop", event => {
     event.preventDefault();
     const file = event.dataTransfer && event.dataTransfer.files[0];
-    if (file) file.arrayBuffer().then(loadReplayBytes).catch(error => status(error.message));
+    if (file) file.arrayBuffer().then(sendReplay).catch(showFailure);
   });
+  addEventListener("resize", scheduleResize);
+  addEventListener("pagehide", dispose, { once: true });
+
+  installInputHandlers();
+  if (typeof ResizeObserver === "function") {
+    resizeObserver = new ResizeObserver(scheduleResize);
+    resizeObserver.observe(document.documentElement);
+  }
+  queueMicrotask(startWorker);
 })();
