@@ -1,12 +1,13 @@
-# Build and deploy the source-owned Crewrift Prime Coworld package.
+# Build and deploy the source-owned shared Crewrift Coworld catalog.
 #
 # Lifecycle:
-#   1. Materialize the Prime source manifest from the checked-in template + patch.
-#   2. `coworld build` builds the package services from compose.yaml, pins
+#   1. `coworld build` builds the package services from compose.yaml, pins
 #      source URLs to this checkout, stamps the next version, and writes the
 #      hydrated manifest.
-#   3. Upload that exact hydrated manifest. Upload queues hosted certification
+#   2. Upload that exact hydrated manifest. Upload queues hosted certification
 #      and does not patch an existing hosted Coworld.
+#   3. Wait for the complete hosted certification transcript, not only the
+#      initial smoke upload gate.
 #
 # Required repository secret:
 #   SOFTMAX_API_TOKEN  - a TEAM `usr_` token. Set it in
@@ -26,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Explicit crewrift_prime version to publish. Leave blank to auto-resolve."
+        description: "Explicit crewrift version to publish. Leave blank to auto-resolve."
         required: false
         default: ""
       skip_upload:
@@ -100,47 +101,24 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             NEXT="$INPUT_VERSION"
           else
-            NEXT=$(uvx --from "$COWORLD_CLI" coworld next-version crewrift_prime)
+            NEXT=$(uvx --from "$COWORLD_CLI" coworld next-version crewrift)
           fi
           echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "Deploying crewrift_prime:${NEXT}"
-
-      - name: Materialize Crewrift Prime source manifest
-        run: |
-          jq -s '
-            def merge_patch($patch):
-              reduce ($patch | keys_unsorted[]) as $key (.;
-                if $patch[$key] == null then del(.[$key])
-                elif ($patch[$key] | type) == "object" then
-                  .[$key] = (
-                    (if (.[$key] | type) == "object" then .[$key] else {} end)
-                    | merge_patch($patch[$key])
-                  )
-                else .[$key] = $patch[$key]
-                end
-              );
-            . as $documents
-            | $documents[0]
-            | merge_patch($documents[1])
-            | del(.game.version)
-          ' \
-            coworld_manifest_template.json \
-            crewrift-prime/crewrift_prime.patch.json \
-            > coworld_manifest_prime_template.json
+          echo "Deploying crewrift:${NEXT}"
 
       - name: Build hydrated Coworld manifest
         run: |
           uvx --from "$COWORLD_CLI" coworld build \
             --project . \
-            --template coworld_manifest_prime_template.json \
+            --template coworld_manifest_template.json \
             --version "${{ steps.ver.outputs.version }}" \
-            --output tmp/crewrift-prime/dist/coworld_manifest.json
+            --output tmp/crewrift/dist/coworld_manifest.json
 
       - name: Upload hydrated Coworld manifest
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
           uvx --from "$COWORLD_CLI" coworld upload-coworld \
-            tmp/crewrift-prime/dist/coworld_manifest.json \
+            tmp/crewrift/dist/coworld_manifest.json \
             --wait-hosted-smoke \
             --hosted-smoke-timeout-seconds 1800
 
@@ -148,20 +126,26 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
           set -euo pipefail
-          uvx --from "$COWORLD_CLI" coworld list --json --limit 500 > /tmp/coworlds-after.json
-          python3 - "${{ steps.ver.outputs.version }}" <<'EOF'
-          import json
-          import sys
-
-          expected = sys.argv[1]
-          rows = json.load(open("/tmp/coworlds-after.json"))
-          match = next(
-              (row for row in rows if row.get("name") == "crewrift_prime" and row.get("version") == expected),
-              None,
-          )
-          if match is None:
-              raise SystemExit(f"::error::Uploaded crewrift_prime:{expected} not found")
-          if not match.get("canonical"):
-              raise SystemExit(f"::error::crewrift_prime:{expected} is not canonical after hosted smoke")
-          print(f"crewrift_prime:{expected} is canonical ({match['id']})")
-          EOF
+          COWORLD_ID="$({ uvx --from "$COWORLD_CLI" coworld list --json --limit 500; } \
+            | jq -r --arg version "${{ steps.ver.outputs.version }}" \
+              '.[] | select(.name == "crewrift" and .version == $version) | .id')"
+          if [ -z "$COWORLD_ID" ]; then
+            echo "::error::Uploaded crewrift:${{ steps.ver.outputs.version }} not found"
+            exit 1
+          fi
+          for attempt in $(seq 1 90); do
+            STATUS="$(uvx --from "$COWORLD_CLI" coworld status "$COWORLD_ID" --json)"
+            STATE="$(jq -r '.certification.state // "pending"' <<<"$STATUS")"
+            if [ "$STATE" = "certified" ]; then
+              echo "crewrift:${{ steps.ver.outputs.version }} is canonical and certified ($COWORLD_ID)"
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ]; then
+              jq '.certification' <<<"$STATUS"
+              exit 1
+            fi
+            echo "Certification state: $STATE (attempt $attempt/90)"
+            sleep 20
+          done
+          echo "::error::Timed out waiting for complete hosted certification of $COWORLD_ID"
+          exit 1
