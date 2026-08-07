@@ -101,7 +101,7 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             NEXT="$INPUT_VERSION"
           else
-            NEXT=$(uvx --from "$COWORLD_CLI" coworld next-version crewrift)
+            NEXT=$(uvx --from "$COWORLD_CLI" coworld --elevated next-version crewrift)
           fi
           echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
           echo "Deploying crewrift:${NEXT}"
@@ -117,7 +117,7 @@ jobs:
       - name: Upload hydrated Coworld manifest
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
-          uvx --from "$COWORLD_CLI" coworld upload-coworld \
+          uvx --from "$COWORLD_CLI" coworld --elevated upload-coworld \
             tmp/crewrift/dist/coworld_manifest.json \
             --wait-hosted-smoke \
             --hosted-smoke-timeout-seconds 1800
@@ -126,7 +126,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
           set -euo pipefail
-          COWORLD_ID="$({ uvx --from "$COWORLD_CLI" coworld list --json --limit 500; } \
+          COWORLD_ID="$({ uvx --from "$COWORLD_CLI" coworld --elevated list --json --limit 500; } \
             | jq -r --arg version "${{ steps.ver.outputs.version }}" \
               '.[] | select(.name == "crewrift" and .version == $version) | .id')"
           if [ -z "$COWORLD_ID" ]; then
@@ -134,7 +134,7 @@ jobs:
             exit 1
           fi
           for attempt in $(seq 1 90); do
-            STATUS="$(uvx --from "$COWORLD_CLI" coworld status "$COWORLD_ID" --json)"
+            STATUS="$(uvx --from "$COWORLD_CLI" coworld --elevated status "$COWORLD_ID" --json)"
             STATE="$(jq -r '.certification.state // "pending"' <<<"$STATUS")"
             if [ "$STATE" = "certified" ]; then
               echo "crewrift:${{ steps.ver.outputs.version }} is canonical and certified ($COWORLD_ID)"
