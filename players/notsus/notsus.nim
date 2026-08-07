@@ -8173,7 +8173,8 @@ when not defined(italkalotLibrary):
     url = "",
     token = "",
     slot = -1,
-    exitOnDisconnect = false
+    exitOnDisconnect = false,
+    exitOnGameOver = false
   ) =
     ## Connects to a Crewrift server and processes player frames.
     ## If `url` is non-empty it is used as the WebSocket endpoint (scheme,
@@ -8278,6 +8279,11 @@ when not defined(italkalotLibrary):
           else:
             profileBlock "update protocol detections":
               bot.updateProtocolDetections(client)
+          if exitOnGameOver and bot.interstitialText.isGameOverText():
+            echo "game over: ", bot.interstitialText, "; exiting"
+            flushFile(stdout)
+            ws.closeConnection()
+            return
           bot.clearPacketWait()
           var nextMask = 0'u8
           if gui:
@@ -8363,6 +8369,7 @@ when isMainModule and not defined(italkalotLibrary):
       token: string
       slot: int
       exitOnDisconnect: bool
+      exitOnGameOver: bool
       connectionMethod: string
 
   proc requireOptionValue(key, val: string) =
@@ -8459,6 +8466,13 @@ when isMainModule and not defined(italkalotLibrary):
               "Option --exit-on-disconnect does not take a value."
             )
           result.exitOnDisconnect = true
+        of "exit-on-game-over":
+          if val.len > 0:
+            raise newException(
+              ValueError,
+              "Option --exit-on-game-over does not take a value."
+            )
+          result.exitOnGameOver = true
         else:
           raise newException(ValueError, "Unknown option: --" & key)
       of cmdShortOption:
@@ -8519,5 +8533,6 @@ when isMainModule and not defined(italkalotLibrary):
     config.url,
     config.token,
     config.slot,
-    config.exitOnDisconnect
+    config.exitOnDisconnect,
+    config.exitOnGameOver
   )

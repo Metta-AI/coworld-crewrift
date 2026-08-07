@@ -21,9 +21,14 @@ around the issue.
 
 ## Crewrift Prime — the seeded competitive league
 
-**Crewrift Prime** is the hosted, seeded league build of this game. Same Sprite v1
-game; **platform ladder orchestration** owns admission (qualification) and
-ranking. The custom Crewrift Prime commissioner under
+**Crewrift Classic** and **Crewrift Prime** are separate hosted leagues over one
+source-owned Coworld catalog. Classic binds `crewrift-classic`; Prime binds
+`crewrift-prime`. Prime's three `crewrift-prime-*` scenario variants remain
+available for training and XP without entering its competition rotation.
+Each league keeps its own roster, settings, qualification, cadence, and ladder.
+
+Platform ladder orchestration owns Prime admission (qualification) and ranking.
+The custom Crewrift Prime commissioner under
 [`crewrift-prime/commissioner/`](crewrift-prime/commissioner/) is **deprecated and
 not deployed** — kept only as historical reference.
 
@@ -66,10 +71,10 @@ beside this game, with `coworld_manifest_template.json` updated to point
 `commissioner[].source_url` at this repo. Do not patch the archived
 `Metta-AI/commissioners` repo.
 
-The complete Coworld package is built from this repository:
+The complete shared Coworld package is built from this repository:
 
 ```bash
-coworld build --version 0.1.60
+coworld build --template coworld_manifest_template.json --version 0.1.60
 coworld certify dist/coworld_manifest.json
 coworld upload-coworld dist/coworld_manifest.json
 ```
