@@ -964,6 +964,7 @@ proc runServerLoop*(
             let playerIndex = appState.playerIndices[websocket]
             if playerIndex >= 0 and playerIndex < sim.players.len:
               if sim.canGraceDisconnect(playerIndex):
+                replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 sim.markPlayerDisconnected(playerIndex)
                 replayWriter.writeInputMaskChange(
                   tickTime(sim.tickCount),
@@ -1001,6 +1002,10 @@ proc runServerLoop*(
               if playerIndex >= 0 and playerIndex < sim.players.len:
                 sim.recordGameAbandon(playerIndex)
                 replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
+                if sim.canGraceDisconnect(playerIndex):
+                  # A second leave distinguishes an immediate administrative
+                  # removal from the first leave's reconnect-grace transition.
+                  replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
                   replayWriter.lastMasks.delete(playerIndex)
                 if playerIndex < prevInputs.len:
@@ -1060,6 +1065,14 @@ proc runServerLoop*(
                 appState.inputPressedMasks[websocket] = 0
                 appState.lastAppliedMasks[websocket] = 0
                 sim.markPlayerConnected(reconnectIndex)
+                let player = sim.players[reconnectIndex]
+                replayWriter.writeJoin(
+                  tickTime(sim.tickCount),
+                  reconnectIndex,
+                  player.address,
+                  player.joinOrder,
+                  token
+                )
                 progressed = true
                 continue
               if sim.phase == Lobby and
