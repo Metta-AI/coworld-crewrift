@@ -5,8 +5,9 @@ parses existing `.bitreplay` bytes, resimulates them with the deterministic
 Crewrift core from the same build, and emits the public Bitworld Sprite v1
 presentation packets consumed by Bitworld's shared global/replay renderer.
 Each iframe owns a Dedicated Worker that fetches and parses the replay, runs
-the WASM simulation, decodes and composes Sprite v1 packets, and draws the
-visible transferred `OffscreenCanvas`. The iframe Window retains only its DOM
+the WASM simulation, and drives Bitworld's shared worker-safe renderer
+(`client/sprite_renderer.js` from the pinned Bitworld package) to decode and
+compose Sprite v1 packets onto the visible transferred `OffscreenCanvas`. The iframe Window retains only its DOM
 status/debug UI and bounded input, resize, and clock forwarding. Successful
 startup exposes `data-replay-worker="true"` and a per-instance
 `data-replay-worker-id` on the document element for diagnostics.

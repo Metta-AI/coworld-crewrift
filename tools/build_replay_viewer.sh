@@ -69,8 +69,8 @@ done
   "${repo_dir}/replay_viewer/crewrift_replay_wasm.nim"
 
 cp "${bitworld_dir}/client/snappyjs.min.js" "${output_dir}/snappyjs.min.js"
+cp "${bitworld_dir}/client/sprite_renderer.js" "${output_dir}/sprite_renderer.js"
 cp "${repo_dir}/replay_viewer/static_replay_adapter.js" "${output_dir}/static_replay_adapter.js"
-cp "${repo_dir}/replay_viewer/static_replay_renderer.js" "${output_dir}/static_replay_renderer.js"
 cp "${repo_dir}/replay_viewer/static_replay_worker.js" "${output_dir}/static_replay_worker.js"
 
 sed '/<script src="snappyjs.min.js"><\/script>/,/<\/body>/c\
@@ -81,7 +81,7 @@ sed '/<script src="snappyjs.min.js"><\/script>/,/<\/body>/c\
 for asset in \
   index.html \
   static_replay_adapter.js \
-  static_replay_renderer.js \
+  sprite_renderer.js \
   static_replay_worker.js \
   snappyjs.min.js \
   crewrift_core.js \
@@ -91,7 +91,8 @@ do
   test -s "${output_dir}/${asset}"
 done
 grep -q 'static_replay_worker.js' "${output_dir}/static_replay_adapter.js"
-grep -q 'static_replay_renderer.js' "${output_dir}/static_replay_worker.js"
+grep -q 'sprite_renderer.js' "${output_dir}/static_replay_worker.js"
+grep -q 'BitworldSpriteRenderer' "${output_dir}/sprite_renderer.js"
 grep -q 'static_replay_adapter.js' "${output_dir}/index.html"
 if grep -q 'worker environment detected but not enabled' "${output_dir}/crewrift_core.js"; then
   echo "Emscripten replay runtime does not support Worker execution." >&2

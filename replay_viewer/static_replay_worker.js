@@ -1,11 +1,8 @@
 "use strict";
 
-// SnappyJS publishes through `window`; a classic Dedicated Worker supplies the
-// same global alias without loading any replay/runtime code on the iframe Window.
-self.window = self;
 importScripts(
   "./snappyjs.min.js",
-  "./static_replay_renderer.js",
+  "./sprite_renderer.js",
   "./crewrift_core.js"
 );
 
@@ -117,7 +114,7 @@ async function initialize(message) {
   if (!(message.canvas instanceof OffscreenCanvas)) {
     throw new Error("Replay Worker did not receive an OffscreenCanvas");
   }
-  renderer = self.CrewriftReplayRenderer.create({
+  renderer = self.BitworldSpriteRenderer.create({
     canvas: message.canvas,
     width: message.width,
     height: message.height,

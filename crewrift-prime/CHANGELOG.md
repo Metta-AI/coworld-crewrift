@@ -12,7 +12,9 @@ Recent game and league updates.
   loading, deterministic simulation, Sprite v1 composition, and canvas drawing
   in its own Web Worker. Multi-view pages remain responsive while several
   CrewRift Prime replays advance together; replay URLs, controls, diagnostics,
-  and rendering behavior are unchanged.
+  and rendering behavior are unchanged. Sprite v1 decoding and composition come
+  from Bitworld's shared worker-safe renderer (`sprite_renderer.js` from the
+  pinned Bitworld package) instead of a local copy.
 
 ---
 

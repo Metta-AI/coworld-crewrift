@@ -124,7 +124,7 @@ try {
       viewport: document.documentElement.dataset.replayViewport,
       mainThreadCanvasContext,
       windowCore: typeof window.createCrewriftCore,
-      windowRenderer: typeof window.CrewriftReplayRenderer
+      windowRenderer: typeof window.BitworldSpriteRenderer
     };
   });
 
