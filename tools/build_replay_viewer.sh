@@ -64,17 +64,40 @@ done
   --clang.linkerexe:"${emcc_bin}" \
   --nimcache:"${output_dir}/nimcache" \
   --out:"${output_dir}/crewrift_core.js" \
-  --passL:"-s MODULARIZE=1 -s EXPORT_NAME=createCrewriftCore -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web -s EXPORTED_FUNCTIONS=['_cr_load_replay','_cr_advance','_cr_input','_cr_frame_ptr','_cr_frame_len','_cr_frame_clear','_cr_tick','_cr_max_tick','_cr_playing','_cr_error_ptr','_malloc','_free'] -s EXPORTED_RUNTIME_METHODS=['UTF8ToString','HEAPU8'] --preload-file ${repo_dir}/data@data --preload-file ${repo_dir}/data@client/data" \
+  --passL:"-s MODULARIZE=1 -s EXPORT_NAME=createCrewriftCore -s ALLOW_MEMORY_GROWTH=1 -s ENVIRONMENT=web,worker -s EXPORTED_FUNCTIONS=['_cr_load_replay','_cr_advance','_cr_input','_cr_frame_ptr','_cr_frame_len','_cr_frame_clear','_cr_tick','_cr_max_tick','_cr_playing','_cr_error_ptr','_malloc','_free'] -s EXPORTED_RUNTIME_METHODS=['UTF8ToString','HEAPU8'] --preload-file ${repo_dir}/data@data --preload-file ${repo_dir}/data@client/data" \
   "${nim_paths[@]}" \
   "${repo_dir}/replay_viewer/crewrift_replay_wasm.nim"
 
 cp "${bitworld_dir}/client/snappyjs.min.js" "${output_dir}/snappyjs.min.js"
+cp "${bitworld_dir}/client/sprite_renderer.js" "${output_dir}/sprite_renderer.js"
 cp "${repo_dir}/replay_viewer/static_replay_adapter.js" "${output_dir}/static_replay_adapter.js"
+cp "${repo_dir}/replay_viewer/static_replay_worker.js" "${output_dir}/static_replay_worker.js"
 
-sed '/<script src="snappyjs.min.js"><\/script>/i\
-<script src="crewrift_core.js"><\/script>\
-<script src="static_replay_adapter.js"><\/script>' \
+sed '/<script src="snappyjs.min.js"><\/script>/,/<\/body>/c\
+<script src="static_replay_adapter.js"><\/script>\
+</body>' \
   "${bitworld_dir}/client/global_client.html" > "${output_dir}/index.html"
+
+for asset in \
+  index.html \
+  static_replay_adapter.js \
+  sprite_renderer.js \
+  static_replay_worker.js \
+  snappyjs.min.js \
+  crewrift_core.js \
+  crewrift_core.wasm \
+  crewrift_core.data
+do
+  test -s "${output_dir}/${asset}"
+done
+grep -q 'static_replay_worker.js' "${output_dir}/static_replay_adapter.js"
+grep -q 'sprite_renderer.js' "${output_dir}/static_replay_worker.js"
+grep -q 'BitworldSpriteRenderer' "${output_dir}/sprite_renderer.js"
+grep -q 'static_replay_adapter.js' "${output_dir}/index.html"
+if grep -q 'worker environment detected but not enabled' "${output_dir}/crewrift_core.js"; then
+  echo "Emscripten replay runtime does not support Worker execution." >&2
+  exit 1
+fi
 
 rm -rf "${output_dir}/nimcache"
 echo "Static Crewrift replay viewer: ${output_dir}"

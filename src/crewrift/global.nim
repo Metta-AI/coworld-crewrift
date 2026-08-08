@@ -472,6 +472,8 @@ proc applyGlobalViewerMessage*(
       discard
     of SpriteClientDebugSpriteMessage:
       discard
+    of SpriteClientSpritesOffMessage:
+      discard
 
 proc applyPlayerViewerMessage*(
   state: var PlayerViewerState,
@@ -492,7 +494,7 @@ proc applyPlayerViewerMessage*(
       pressedMask = pressedMask or (item.mask and not inputMask)
       inputMask = item.mask
     of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage,
-        SpriteClientReadyMessage:
+        SpriteClientReadyMessage, SpriteClientSpritesOffMessage:
       discard
 
 proc isSolid(sprite: Sprite, x, y: int, flipH: bool): bool =
