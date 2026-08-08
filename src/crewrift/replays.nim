@@ -215,24 +215,42 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
     let leave = replay.data.leaves[replay.leaveIndex]
     if int(leave.player) < 0 or int(leave.player) >= sim.players.len:
       raise newException(ReplayError, "Replay player leave is invalid")
-    sim.removePlayerAt(int(leave.player))
-    if int(leave.player) < replay.masks.len:
-      replay.masks.delete(int(leave.player))
-    if int(leave.player) < replay.pressedMasks.len:
-      replay.pressedMasks.delete(int(leave.player))
-    if int(leave.player) < replay.lastAppliedMasks.len:
-      replay.lastAppliedMasks.delete(int(leave.player))
-    if int(leave.player) < replay.debugSprites.len:
-      replay.debugSprites.delete(int(leave.player))
+    let playerIndex = int(leave.player)
+    if sim.players[playerIndex].connected and
+        sim.canGraceDisconnect(playerIndex):
+      sim.markPlayerDisconnected(playerIndex)
+    else:
+      sim.removePlayerAt(playerIndex)
+      if playerIndex < replay.masks.len:
+        replay.masks.delete(playerIndex)
+      if playerIndex < replay.pressedMasks.len:
+        replay.pressedMasks.delete(playerIndex)
+      if playerIndex < replay.lastAppliedMasks.len:
+        replay.lastAppliedMasks.delete(playerIndex)
+      if playerIndex < replay.debugSprites.len:
+        replay.debugSprites.delete(playerIndex)
     inc replay.leaveIndex
 
   while replay.joinIndex < replay.data.joins.len and
       replay.data.joins[replay.joinIndex].time <= time:
     let join = replay.data.joins[replay.joinIndex]
-    if int(join.player) != sim.players.len:
+    let playerIndex = int(join.player)
+    if playerIndex < sim.players.len:
+      let reconnectIndex = sim.reconnectPlayerIndex(
+        join.name,
+        join.token,
+        join.slot
+      )
+      if reconnectIndex != playerIndex:
+        raise newException(ReplayError, "Replay player reconnect is invalid")
+      sim.markPlayerConnected(playerIndex)
+      replay.ensureReplayPlayer(playerIndex)
+      inc replay.joinIndex
+      continue
+    if playerIndex != sim.players.len:
       raise newException(ReplayError, "Replay player join order is invalid")
     discard sim.addPlayer(join.name, join.slot, join.token, trusted = true)
-    replay.ensureReplayPlayer(int(join.player))
+    replay.ensureReplayPlayer(playerIndex)
     inc replay.joinIndex
 
   while replay.inputIndex < replay.data.inputs.len and

@@ -179,3 +179,63 @@ suite "notsus replay":
     replay.stepReplay(sim)
     check replay.debugSprites.len == 1
     check replay.debugSprites[0].len == 0
+
+  test "disconnect grace and reconnect events preserve replay hashes":
+    var config = defaultGameConfig()
+    config.minPlayers = 1
+    config.imposterCount = 0
+    config.seed = 42
+    config.startWaitTicks = 0
+    config.disconnectTimeoutTicks = 3
+    config.tasksPerPlayer = 1
+    let configJson = config.configJson()
+
+    var live = initCrewriftForTest(config)
+    discard live.addPlayer("player1", 0, "token", trusted = true)
+    var inputs = newSeq[InputState](1)
+    live.step(inputs, inputs)
+    let firstHash = live.gameHash()
+    live.markPlayerDisconnected(0)
+    live.step(inputs, inputs)
+    let disconnectedHash = live.gameHash()
+    live.markPlayerConnected(0)
+    live.step(inputs, inputs)
+    let reconnectedHash = live.gameHash()
+
+    var replay = initReplayPlayer(ReplayData(
+      gameName: GameName,
+      gameVersion: GameVersion,
+      configJson: configJson,
+      joins: @[
+        ReplayJoin(
+          time: 0'u32,
+          player: 0'u8,
+          name: "player1",
+          slot: 0,
+          token: "token"
+        ),
+        ReplayJoin(
+          time: tickTime(2),
+          player: 0'u8,
+          name: "player1",
+          slot: 0,
+          token: "token"
+        )
+      ],
+      leaves: @[ReplayLeave(time: tickTime(1), player: 0'u8)],
+      hashes: @[
+        ReplayHash(tick: 1'u32, hash: firstHash),
+        ReplayHash(tick: 2'u32, hash: disconnectedHash),
+        ReplayHash(tick: 3'u32, hash: reconnectedHash)
+      ]
+    ))
+    var sim = initReplaySim(replay.data)
+    replay.mismatchQuit = true
+
+    while replay.playing:
+      replay.stepReplay(sim)
+
+    check sim.players.len == 1
+    check sim.players[0].connected
+    check sim.players[0].disconnectTick == -1
+    check not replay.hashValidationFailed
