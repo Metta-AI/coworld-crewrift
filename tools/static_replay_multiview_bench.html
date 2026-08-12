@@ -1,0 +1,131 @@
+<!doctype html>
+<!--
+  Serve the repository root after building the replay viewer, then open:
+  /tools/static_replay_multiview_bench.html?bundle=/build/static-replay-viewer&viewers=4&warmup=2000&duration=5000
+
+  Measurement starts after every iframe reports data-replay-loaded. It measures
+  incremental parent-page responsiveness after warmup, not startup time.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crewrift static replay multiview benchmark</title>
+<style>
+html,body{margin:0;min-height:100%;background:#111;color:#eee}
+#viewers{display:grid;grid-template-columns:repeat(2,1fr);gap:2px}
+iframe{width:100%;height:340px;border:0}
+#result{position:fixed;inset:auto 0 0;margin:0;padding:8px;background:#000d}
+</style>
+</head>
+<body>
+<main id="viewers"></main>
+<pre id="result">waiting</pre>
+<script>
+(function(){
+  "use strict";
+
+  const params=new URLSearchParams(location.search);
+  const bundle=params.get("bundle")||"/build/static-replay-viewer";
+  const replay=params.get("replay")||"/tests/replays/notsus.bitreplay";
+  const viewerCount=Math.max(1,Math.min(8,Number(params.get("viewers"))||4));
+  const warmupMs=Math.max(0,Number(params.get("warmup"))||2000);
+  const durationMs=Math.max(1000,Number(params.get("duration"))||5000);
+  const result=document.getElementById("result");
+  const viewers=document.getElementById("viewers");
+  const frames=[];
+
+  for(let index=0;index<viewerCount;index++){
+    const frame=document.createElement("iframe");
+    frame.src=bundle.replace(/\/$/,"")+"/?replay="+encodeURIComponent(replay);
+    viewers.appendChild(frame);
+    frames.push(frame);
+  }
+
+  function percentile(sorted,quantile){
+    if(!sorted.length)return 0;
+    return sorted[Math.min(sorted.length-1,Math.floor(sorted.length*quantile))];
+  }
+
+  function viewerStates(){
+    return frames.map(frame=>{
+      try{
+        const dataset=frame.contentDocument.documentElement.dataset;
+        return {
+          loaded:dataset.replayLoaded==="true",
+          worker:dataset.replayWorker==="true",
+          workerId:dataset.replayWorkerId||null,
+          tick:Number(dataset.replayTick)||0
+        };
+      }catch(ignored){
+        return {loaded:false,worker:false,workerId:null,tick:0};
+      }
+    });
+  }
+
+  function waitForViewers(deadline){
+    const states=viewerStates();
+    const loaded=states.filter(state=>state.loaded).length;
+    result.textContent="loading "+loaded+"/"+viewerCount;
+    if(loaded===viewerCount){
+      setTimeout(()=>measure(states.map(state=>state.tick)),warmupMs);
+      return;
+    }
+    if(performance.now()>=deadline){
+      complete({error:"viewer load timeout",loaded,states});
+      return;
+    }
+    setTimeout(()=>waitForViewers(deadline),100);
+  }
+
+  function complete(summary){
+    result.textContent=JSON.stringify(summary);
+    result.dataset.complete="true";
+    document.title="COMPLETE";
+    console.log("STATIC_REPLAY_BENCH "+JSON.stringify(summary));
+  }
+
+  function measure(startTicks){
+    const started=performance.now();
+    let previous=started;
+    const gaps=[];
+
+    function sample(now){
+      gaps.push(now-previous);
+      previous=now;
+      if(now-started<durationMs){
+        requestAnimationFrame(sample);
+        return;
+      }
+      gaps.shift();
+      const sorted=gaps.slice().sort((a,b)=>a-b);
+      const elapsed=now-started;
+      const states=viewerStates();
+      const workerIds=states.map(state=>state.workerId).filter(Boolean);
+      complete({
+        viewers:viewerCount,
+        viewport:"1280x900",
+        warmup_ms:warmupMs,
+        elapsed_ms:Number(elapsed.toFixed(1)),
+        raf_samples:gaps.length,
+        raf_fps:Number((gaps.length*1000/elapsed).toFixed(1)),
+        p50_gap_ms:Number(percentile(sorted,.50).toFixed(1)),
+        p95_gap_ms:Number(percentile(sorted,.95).toFixed(1)),
+        max_gap_ms:Number((sorted[sorted.length-1]||0).toFixed(1)),
+        gaps_over_50ms:gaps.filter(gap=>gap>50).length,
+        worker_markers:states.filter(state=>state.worker).length,
+        worker_ids:workerIds,
+        independent_workers:workerIds.length===viewerCount&&new Set(workerIds).size===viewerCount,
+        start_ticks:startTicks,
+        end_ticks:states.map(state=>state.tick),
+        advancing_viewers:states.filter((state,index)=>state.tick>startTicks[index]).length
+      });
+    }
+    requestAnimationFrame(sample);
+  }
+
+  waitForViewers(performance.now()+60000);
+})();
+</script>
+</body>
+</html>
