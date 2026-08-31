@@ -62,7 +62,7 @@ jobs:
       - uses: treeform/setup-nim-action@v6
 
       - name: Install Nim dependencies
-        run: nimby sync nimby.lock -g
+        run: nimby create && nimby sync nimby.lock -g
 
       - uses: emscripten-core/setup-emsdk@v16
         with:
