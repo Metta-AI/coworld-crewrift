@@ -14,9 +14,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - run: node --test tests/test_replay_artifact_url.mjs
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev libevdev-dev
       - uses: treeform/setup-nim-action@v6
-      - run: nimby sync nimby.lock -g
+      - run: nimby create && nimby sync nimby.lock -g
       - run: nim check src/crewrift.nim
       - run: nim r tests/tests.nim

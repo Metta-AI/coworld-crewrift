@@ -1,15 +1,17 @@
+import { createRequire } from "node:module";
+
 const playwrightModule = process.env.PLAYWRIGHT_MODULE || "playwright";
 const { chromium } = await import(playwrightModule);
+const { replayArtifactUrl } = createRequire(import.meta.url)(
+  "../replay_viewer/static_replay_adapter.js"
+);
 
 const viewerUrl = process.argv[2];
 if (!viewerUrl) {
   throw new Error("Usage: node tests/smoke_static_replay_viewer.mjs <viewer-url>");
 }
 
-const requestedUrl = new URL(viewerUrl);
-const replayUrl = requestedUrl.searchParams.get("replay") ||
-  requestedUrl.searchParams.get("replay_url") ||
-  requestedUrl.searchParams.get("uri");
+const replayUrl = replayArtifactUrl(viewerUrl);
 if (!replayUrl) throw new Error("The smoke URL must include a replay parameter");
 
 const browser = await chromium.launch({ headless: true });

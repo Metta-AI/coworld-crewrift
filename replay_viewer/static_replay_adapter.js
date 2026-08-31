@@ -1,6 +1,28 @@
 (function () {
   "use strict";
 
+  function replayArtifactUrl(href) {
+    const url = new URL(String(href), "https://replay.invalid/");
+    if (url.hash.startsWith("#replay=")) {
+      const raw = url.hash.slice("#replay=".length);
+      if (raw) {
+        try {
+          return decodeURIComponent(raw);
+        } catch (ignored) {
+          return raw;
+        }
+      }
+    }
+    return url.searchParams.get("replay") ||
+      url.searchParams.get("replay_url") ||
+      url.searchParams.get("uri");
+  }
+
+  if (typeof module === "object" && module.exports) {
+    module.exports = { replayArtifactUrl };
+    return;
+  }
+
   const canvas = document.getElementById("c");
   const statusNode = document.getElementById("status");
   const debugPanel = document.getElementById("debugPanel");
@@ -283,8 +305,7 @@
       showFailure(new Error("This browser does not support Dedicated Workers"));
       return;
     }
-    const params = new URL(location.href).searchParams;
-    const replayUrl = params.get("replay") || params.get("replay_url") || params.get("uri");
+    const replayUrl = replayArtifactUrl(location.href);
     const size = viewport();
     try {
       worker = new Worker(workerUrl, { name: "crewrift-static-replay" });
