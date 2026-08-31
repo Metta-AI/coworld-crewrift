@@ -32,10 +32,12 @@ the `nimby.lock` dependencies. It refuses to build if the installed Bitworld
 commit does not match the lock file. `index.html` is the entrypoint inferred by
 Coworld; no bundle-internal files or ABI are part of the platform contract.
 
-At runtime, pass the browser-readable replay URL as `?replay=<url>`. The aliases
-`replay_url` and `uri` are also accepted. With no URL the page offers a local
-file picker and supports drag-and-drop. An embedding host may alternatively
-post `{type: "coworld-replay", bytes: ArrayBuffer}` to the viewer window.
+At runtime, the viewer reads the replay artifact URL from the hash first
+(`#replay=<url>`). The host already mints `index.html?v=2#replay=<url>`. If the
+hash is absent, query parameters `replay`, then `replay_url`, then `uri` are
+accepted. With no URL the page offers a local file picker and supports
+drag-and-drop. An embedding host may alternatively post
+`{type: "coworld-replay", bytes: ArrayBuffer}` to the viewer window.
 
 Serve the bundle over HTTP (WASM cannot be tested reliably from `file://`):
 
@@ -46,7 +48,14 @@ python3 -m http.server --directory build/static-replay-viewer 8000
 Then open, for example:
 
 ```text
-http://127.0.0.1:8000/?replay=/notsus.bitreplay
+http://127.0.0.1:8000/index.html?v=2#replay=/notsus.bitreplay
+```
+
+Query form `?replay=/notsus.bitreplay` still works. The hash-first parser is
+`replayArtifactUrl` in `replay_viewer/static_replay_adapter.js`; cover it with:
+
+```sh
+node --test tests/test_replay_artifact_url.mjs
 ```
 
 The browser smoke is `tests/smoke_static_replay_viewer.mjs`. Run it with a
@@ -54,7 +63,7 @@ Playwright installation and a URL that serves both the bundle and a replay:
 
 ```sh
 node tests/smoke_static_replay_viewer.mjs \
-  'http://127.0.0.1:8000/?replay=/notsus.bitreplay'
+  'http://127.0.0.1:8000/index.html?v=2#replay=/notsus.bitreplay'
 ```
 
 The four-view foreground responsiveness benchmark uses the same emitted
