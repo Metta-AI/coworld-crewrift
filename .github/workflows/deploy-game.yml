@@ -16,9 +16,9 @@
 #                        ~/.softmax/credentials.yaml, NOT from this env var, so the
 #                        workflow seeds it headlessly via `softmax set-token`.
 #
-# The Coworld CLI is installed from the public package repo so deploys use the
-# current registry/version allocator and project-owned replay-viewer build
-# contract without waiting for a PyPI/package release.
+# Pin the public Coworld CLI release so deploy behavior cannot change underneath
+# this workflow. Bump this deliberately when adopting a newer build or upload
+# contract.
 name: "Deploy Crewrift Game"
 
 on:
@@ -40,13 +40,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  COWORLD_CLI: "coworld[auth] @ git+https://github.com/Metta-AI/coworld.git@main"
+  COWORLD_CLI: "coworld[auth]==0.1.44"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: SOFTMAX_OBSERVATORY
-    timeout-minutes: 45
+    # Hosted smoke and full certification each have a 30-minute budget after
+    # the image/viewer build, so the job timeout must cover both waits.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -114,38 +116,12 @@ jobs:
             --version "${{ steps.ver.outputs.version }}" \
             --output tmp/crewrift/dist/coworld_manifest.json
 
-      - name: Upload hydrated Coworld manifest
+      - name: Upload and certify hydrated Coworld manifest
         if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
         run: |
           uvx --from "$COWORLD_CLI" coworld --elevated upload-coworld \
             tmp/crewrift/dist/coworld_manifest.json \
             --wait-hosted-smoke \
-            --hosted-smoke-timeout-seconds 1800
-
-      - name: Verify canonical upload
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_upload != 'true' }}
-        run: |
-          set -euo pipefail
-          COWORLD_ID="$({ uvx --from "$COWORLD_CLI" coworld --elevated list --json --limit 500; } \
-            | jq -r --arg version "${{ steps.ver.outputs.version }}" \
-              '.[] | select(.name == "crewrift" and .version == $version) | .id')"
-          if [ -z "$COWORLD_ID" ]; then
-            echo "::error::Uploaded crewrift:${{ steps.ver.outputs.version }} not found"
-            exit 1
-          fi
-          for attempt in $(seq 1 90); do
-            STATUS="$(uvx --from "$COWORLD_CLI" coworld --elevated status "$COWORLD_ID" --json)"
-            STATE="$(jq -r '.certification.state // "pending"' <<<"$STATUS")"
-            if [ "$STATE" = "certified" ]; then
-              echo "crewrift:${{ steps.ver.outputs.version }} is canonical and certified ($COWORLD_ID)"
-              exit 0
-            fi
-            if [ "$STATE" = "failed" ]; then
-              jq '.certification' <<<"$STATUS"
-              exit 1
-            fi
-            echo "Certification state: $STATE (attempt $attempt/90)"
-            sleep 20
-          done
-          echo "::error::Timed out waiting for complete hosted certification of $COWORLD_ID"
-          exit 1
+            --hosted-smoke-timeout-seconds 1800 \
+            --wait-certification \
+            --certification-timeout-seconds 1800
