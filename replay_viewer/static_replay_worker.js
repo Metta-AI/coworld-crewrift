@@ -44,6 +44,10 @@ function reportFailure(error) {
   });
 }
 
+function postPhase(phase, extra) {
+  postMessage({ type: "phase", phase, workerId, ...extra });
+}
+
 function postState(type) {
   postMessage({
     type,
@@ -96,6 +100,7 @@ async function loadReplayBytes(bytes) {
       (pointer, length) => core._cr_load_replay(pointer, length)
     );
     if (!accepted) throw new Error(coreError() || "Unknown Crewrift replay error");
+    postPhase("replay_parsed");
     loaded = true;
     emitFrame();
     postState("loaded");
@@ -106,9 +111,16 @@ async function loadReplayBytes(bytes) {
 }
 
 async function loadReplayUrl(replayUrl) {
+  postPhase("replay_fetch_start");
   const response = await fetch(replayUrl, { credentials: "omit", mode: "cors" });
   if (!response.ok) throw new Error("Replay fetch failed (HTTP " + response.status + ")");
-  await loadReplayBytes(await response.arrayBuffer());
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  // Sniff gzip / zlib by content; the core inflates in WASM.
+  const compressed = (bytes[0] === 0x1f && bytes[1] === 0x8b) ||
+    (bytes.length >= 2 && (bytes[0] & 0x0f) === 8 &&
+      (bytes[0] >> 4) <= 7 && (((bytes[0] << 8) | bytes[1]) % 31) === 0);
+  postPhase("replay_fetch_end", { bytes: bytes.byteLength, compressed });
+  await loadReplayBytes(bytes);
 }
 
 async function initialize(message) {
