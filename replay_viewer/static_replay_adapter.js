@@ -23,6 +23,13 @@
     return;
   }
 
+  // Readiness protocol for the embedding Observatory page (STATIC_REPLAY_VIEWERS.md).
+  function tellHost(message) {
+    if (window.parent === window) return;
+    window.parent.postMessage({ src: "coworld-replay", ...message }, "*");
+  }
+  tellHost({ type: "loading" });
+
   const canvas = document.getElementById("c");
   const statusNode = document.getElementById("status");
   const debugPanel = document.getElementById("debugPanel");
@@ -57,6 +64,7 @@
     failed = true;
     console.error(error);
     status("Replay failed: " + (error.message || String(error)));
+    tellHost({ type: "error", message: error.message || String(error) });
     stopWorker();
   }
 
@@ -122,6 +130,14 @@
       if (message.type === "ready") {
         document.documentElement.dataset.replayWorker = "true";
         document.documentElement.dataset.replayWorkerId = message.workerId;
+        tellHost({ type: "phase", phase: "bundle_ready" });
+      } else if (message.type === "phase") {
+        const phase = { type: "phase", phase: message.phase };
+        if ("bytes" in message) {
+          phase.bytes = message.bytes;
+          phase.compressed = message.compressed;
+        }
+        tellHost(phase);
       } else if (message.type === "status") {
         status(message.text || "");
       } else if (message.type === "loaded") {
@@ -134,6 +150,7 @@
           fileInput = null;
         }
         if (!clockFrame) clockFrame = requestAnimationFrame(clock);
+        requestAnimationFrame(() => tellHost({ type: "ready" }));
       } else if (message.type === "clock") {
         clockInFlight = false;
         setReplayState(message);
