@@ -115,8 +115,10 @@ async function loadReplayUrl(replayUrl) {
   const response = await fetch(replayUrl, { credentials: "omit", mode: "cors" });
   if (!response.ok) throw new Error("Replay fetch failed (HTTP " + response.status + ")");
   const bytes = new Uint8Array(await response.arrayBuffer());
-  // Sniff gzip (1f 8b) / zlib (78) by content; the core inflates in WASM.
-  const compressed = (bytes[0] === 0x1f && bytes[1] === 0x8b) || bytes[0] === 0x78;
+  // Sniff gzip / zlib by content; the core inflates in WASM.
+  const compressed = (bytes[0] === 0x1f && bytes[1] === 0x8b) ||
+    (bytes.length >= 2 && (bytes[0] & 0x0f) === 8 &&
+      (bytes[0] >> 4) <= 7 && (((bytes[0] << 8) | bytes[1]) % 31) === 0);
   postPhase("replay_fetch_end", { bytes: bytes.byteLength, compressed });
   await loadReplayBytes(bytes);
 }

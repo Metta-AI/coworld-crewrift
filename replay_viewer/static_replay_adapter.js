@@ -150,7 +150,9 @@
           fileInput = null;
         }
         if (!clockFrame) clockFrame = requestAnimationFrame(clock);
-        requestAnimationFrame(() => tellHost({ type: "ready" }));
+        // The worker posts `loaded` after drawing the first frame. Yield once
+        // without relying on animation frames in a lazy offscreen iframe.
+        setTimeout(() => tellHost({ type: "ready" }), 0);
       } else if (message.type === "clock") {
         clockInFlight = false;
         setReplayState(message);
