@@ -109,27 +109,31 @@ def schedule_entries(
         num_entries=len(primary_entries),
         num_agents=num_agents,
     )
-    return CommissionerScheduleEpisodes(
-        episodes=[
+    episodes: list[CommissionerEpisodeRequest] = []
+    for job_index in range(num_episodes):
+        entries, filler_positions = episode_entries(
+            job_index,
+            primary_entries=primary_entries,
+            filler_entries=filler_entries,
+            num_agents=num_agents,
+            config=config,
+        )
+        tags = {"pool_id": str(pool.id)}
+        if filler_positions:
+            # The Observatory (scoring, rankings, and the matchup-fairness grid) reads this
+            # tag to exclude filler ("zombie") seats, so a topped-up game never counts a
+            # filler policy as a real entrant. Comma-separated seat positions.
+            tags["filler_seats"] = ",".join(str(position) for position in sorted(filler_positions))
+        episodes.append(
             CommissionerEpisodeRequest(
                 request_id=str(job_index),
                 variant_id=variant_id,
                 game_config=game_config,
-                policy_version_ids=[
-                    entry.policy_version_id
-                    for entry in episode_entries(
-                        job_index,
-                        primary_entries=primary_entries,
-                        filler_entries=filler_entries,
-                        num_agents=num_agents,
-                        config=config,
-                    )
-                ],
-                tags={"pool_id": str(pool.id)},
+                policy_version_ids=[entry.policy_version_id for entry in entries],
+                tags=tags,
             )
-            for job_index in range(num_episodes)
-        ]
-    )
+        )
+    return CommissionerScheduleEpisodes(episodes=episodes)
 
 
 def episode_entries(
@@ -139,7 +143,15 @@ def episode_entries(
     filler_entries: list[PolicyPoolEntry],
     num_agents: int,
     config: RulesetStrategyCommissionerConfig,
-) -> list[PolicyPoolEntry]:
+) -> tuple[list[PolicyPoolEntry], set[int]]:
+    """Return the seats for an episode and the positions that are non-scoring fillers.
+
+    A filler position is any seat the platform added only to top up a closed-roster
+    game when there weren't enough real entrants -- entries pulled from other divisions
+    (`fill_from_divisions`) or duplicated entrants (`duplicate_after_fill`). They are
+    excluded from scoring/rankings and the matchup-fairness grid, so the backend reads
+    the `filler_seats` tag and the UI renders them as filler, never as a competing player.
+    """
     if len(primary_entries) >= num_agents:
         if config.seating == "baseline_window":
             indices = _build_entry_indices(
@@ -157,9 +169,11 @@ def episode_entries(
                 num_entries=len(primary_entries),
                 num_agents=num_agents,
             )
-        return [primary_entries[index] for index in indices]
+        return [primary_entries[index] for index in indices], set()
 
     seats = list(primary_entries)
+    # Every seat beyond the real primary entrants is a filler topping up the game.
+    first_filler_position = len(seats)
     if config.insufficient_players.strategy == "strict":
         raise ValueError(f"not enough primary entries to fill {num_agents} seats")
     if config.insufficient_players.strategy == "fill_from_divisions":
@@ -168,7 +182,9 @@ def episode_entries(
         seats.extend(cycled(seats or primary_entries, num_agents - len(seats), offset=job_index))
     if len(seats) < num_agents:
         raise ValueError(f"not enough entries to fill {num_agents} seats")
-    return seats[:num_agents]
+    seats = seats[:num_agents]
+    filler_positions = set(range(first_filler_position, len(seats)))
+    return seats, filler_positions
 
 
 def cycled(entries: list[PolicyPoolEntry], count: int, *, offset: int = 0) -> list[PolicyPoolEntry]:

@@ -40,6 +40,11 @@ The current Coworld commissioner protocol only sends memberships from the active
 can fill from other divisions in the same league when matching memberships are included in `round_start`. Filling from
 another league or tournament requires the platform to include those memberships in `round_start`.
 
+When a round is underfilled, top-up seats (cross-division fillers or duplicated entrants) are tagged on the scheduled
+episode as `filler_seats` — a comma-separated list of the filler seat positions. The Softmax Observatory reads this tag
+to exclude those "zombie" seats from scoring, rankings, and the matchup-fairness grid, so a topped-up game never counts
+a filler policy as a real entrant. A full roster emits no `filler_seats` tag.
+
 `policy_membership_events` entries are evaluated in order after a round completes. The first matching transition is
 applied, and the emitted `policy_membership_event` includes evidence with the selected transition id, declared criteria,
 observed values, and target metadata. Put these entries on the division or on a stage to make policy membership events
