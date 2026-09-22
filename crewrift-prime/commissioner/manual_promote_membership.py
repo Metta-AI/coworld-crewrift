@@ -22,23 +22,22 @@ CAVEATS (read before running)
 - This BYPASSES the three-skill qualification gate. Only use it to manually
   promote a policy you have independently decided should compete (e.g. when the
   pipeline is stuck and you accept the policy without the gate).
-- It writes to the production Observatory DB. It must run in an environment with
-  ``STATS_DB_URI`` set to the Observatory database (the app_backend settings).
-  Run it from the metta ``app_backend`` venv so imports resolve.
+- It writes to the production Observatory DB. It must run in the Metta workspace
+  with ``STATS_DB_URI`` set to the Observatory database.
 - It demotes the player's current champion in the same league (one champion per
   player per league).
 
 USAGE
 -----
-    cd <metta>/app_backend
-    # STATS_DB_URI must point at the Observatory DB (same env app_backend uses)
-    uv run python <path>/manual_promote_membership.py \
+    cd <metta>
+    # STATS_DB_URI must point at the Observatory DB.
+    nix develop -c uv run python <path>/manual_promote_membership.py \
         --membership-id lpm_2ba9e7c2-d1a2-407f-9910-e73b611d1441 \
         --champion \
         --reason "Manual promotion: pipeline stalled; interview gate disabled (0.4.15+)"
 
     # dry run (no write):
-    uv run python ... --membership-id lpm_... --dry-run
+    nix develop -c uv run python ... --membership-id lpm_... --dry-run
 
 Find the membership id with:
     coworld memberships --league <league_id> --json   # the lpm_... for your policy
@@ -52,17 +51,17 @@ from uuid import UUID
 
 from sqlmodel import select
 
-from metta.app_backend.database import db_session
-from metta.app_backend.v2.models import (
+from observatory_competitions.v2.policy_membership_events import (
+    PolicyMembershipEventChange,
+    apply_policy_membership_event,
+)
+from observatory_core.v2.models import (
     DIVISION_TYPE_COMPETITION,
     Division,
     LeaguePolicyMembership,
     PolicyMembershipStatus,
 )
-from metta.app_backend.v2.policy_membership_events import (
-    PolicyMembershipEventChange,
-    apply_policy_membership_event,
-)
+from observatory_database import db_session
 
 
 def _parse_membership_id(raw: str) -> str:
