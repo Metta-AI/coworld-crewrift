@@ -64,7 +64,10 @@ jobs:
       - uses: treeform/setup-nim-action@v6
 
       - name: Install Nim dependencies
-        run: nimby create && nimby sync nimby.lock -g
+        run: |
+          cd ..
+          nimby create
+          nimby sync "$GITHUB_WORKSPACE/nimby.lock"
 
       - uses: emscripten-core/setup-emsdk@v16
         with:
