@@ -46,6 +46,7 @@ def test_meeting_decision_trace_keeps_provider_evidence_with_validated_choice() 
     event = sink.events[0]
     assert event.name == "domain.meeting_llm_decision" and event.tick == 42
     assert event.data["decision"]["vote_target"] == "red"
+    assert event.data["provider_decision"]["vote_target"] == "red"
     assert event.data["inference_mode"] == "typed_choice"
     assert event.data["provider_request"] == result.raw_request
     assert event.data["provider_response"] == result.raw_response

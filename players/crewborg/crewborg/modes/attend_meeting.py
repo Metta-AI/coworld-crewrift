@@ -319,6 +319,7 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
                 "latency_ms": round(result.latency_ms, 2),
                 "usage": result.usage,
                 "decision": decision.model_dump(mode="json"),
+                "provider_decision": result.decision.model_dump(mode="json"),
                 "inference_mode": result.inference_mode,
                 "provider_request": result.raw_request,
                 "provider_response": result.raw_response,

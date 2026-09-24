@@ -85,6 +85,7 @@ suite "expand replay event trace":
     check timeline.traceRows[0]["player"].getInt() == -1
     check timeline.traceRows[0]["value"]["schema_version"].getStr() ==
       "crewrift-events/v1"
+    check timeline.traceRows[0]["value"]["config"].hasKey("seed")
 
   test "player manifest uses assigned roles":
     let timeline = expandReplayTimeline(manifestReplayData(), snapshotEvery = 1)

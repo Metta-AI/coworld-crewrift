@@ -445,6 +445,24 @@ The mode emits a rich set of `meeting_*` events and counters; see
 | `meeting_tentative_vote` / `meeting_vote_selected` / `meeting_chat_selected` | The staged vote, committed vote, and emitted chat. |
 | `meeting_llm.latency_ms` (histogram) | Per-call latency by model and trigger. |
 
+Export a completed private game with the `expand_replay` binary built from the
+recording game's source revision:
+
+```bash
+python -m crewborg.tools.export_complete_episode \
+  --replay replay.json --expander /path/to/expand_replay \
+  --trace telemetry.jsonl --results results.json \
+  --episode-id ereq_... --seat 0 --source-revision <player-commit-sha> \
+  --game-version <coworld-version> --output complete-episode.jsonl
+```
+
+The exporter requires a hash-verified terminal replay, its seed, matching
+per-seat results, and a retained provider request/response for every model
+decision. It labels only chat and votes confirmed by the replay. Tentative votes
+are labeled when the same target is later cast. A vote target filled by the
+deterministic fallback remains unselected. Other calls remain unselected.
+The output is mode 0600 and includes native chat messages or typed Jev choices.
+
 ---
 
 ## 12. Invariants to preserve

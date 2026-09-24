@@ -188,9 +188,9 @@ class JevMeetingClient:
             raise ValueError("Jev returned a probability outside [0, 1]")
         if abs(sum(answer.probabilities.values()) - 1) > len(criteria) * 0.005 + 1e-6:
             raise ValueError("Jev probabilities do not sum to one")
-        choice = max(criteria, key=answer.probabilities.__getitem__)
-        if answer.probabilities[answer.choice] == answer.probabilities[choice]:
-            choice = answer.choice
+        if max(answer.probabilities.values()) > answer.probabilities[answer.choice] + 0.01 + 1e-6:
+            raise ValueError("Jev choice is not a most probable vote target")
+        choice = answer.choice
         usage = payload.usage.model_dump(exclude_none=True)
         if "cost" in usage:
             usage["cost_usd"] = usage.pop("cost")

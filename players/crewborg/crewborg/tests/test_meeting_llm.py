@@ -138,7 +138,7 @@ def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.Monk
                     "answers": {
                         "vote": {
                             "type": "choice",
-                            "choice": "skip",
+                            "choice": "red",
                             "confidence": 0.8,
                             "probabilities": {"red": 0.7, "skip": 0.3},
                         }
@@ -196,6 +196,20 @@ def test_jev_meeting_rejects_incomplete_probability_map(monkeypatch: pytest.Monk
     client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
     with pytest.raises(ValueError, match="wrong vote target set"):
         client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="meeting_start")
+
+
+def test_jev_meeting_rejects_choice_that_disagrees_with_probabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        del request, timeout
+        return BytesIO(
+            b'{"answers":{"vote":{"type":"choice","choice":"skip","confidence":0.8,'
+            b'"probabilities":{"red":0.8,"skip":0.2}}},"usage":{"input_tokens":100}}'
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
+    with pytest.raises(ValueError, match="not a most probable vote target"):
+        client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="deadline")
 
 
 def test_factory_construction_failure_disables_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:

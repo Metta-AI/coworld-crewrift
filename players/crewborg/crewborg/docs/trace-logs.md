@@ -195,7 +195,7 @@ diagnostic:
 When the LLM meeting layer is enabled, `modes/attend_meeting.py` also emits
 `domain.meeting_context_serialized` (`trigger` + the full serialized dossier —
 **large**), `domain.meeting_llm_decision` (`trigger`, `model`, `latency_ms`,
-`usage`, `decision`), `domain.meeting_llm_debug` (raw request/response),
+`usage`, `decision`, inference mode, provider request/response),
 `domain.meeting_tentative_vote`, and `domain.meeting_llm_fallback` (`reason` +
 detail) on each fallback to the deterministic path. Both paths emit
 `domain.meeting_chat_selected` (`text`, `reason`) and `domain.meeting_vote_selected`
