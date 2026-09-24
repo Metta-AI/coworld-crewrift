@@ -149,7 +149,7 @@ def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.Monk
         )
 
     monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
-    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={}, trace_raw=True)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
     context = {
         "self": {"role": "crewmate", "color": "blue"},
         "meeting": {"id": 42},
@@ -164,6 +164,8 @@ def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.Monk
     assert early.decision.vote_target == late.decision.vote_target == "red"
     assert early.usage == {"cost_usd": 0.00002}
     assert early.raw_request == sent[0]["body"]
+    assert early.inference_mode == "typed_choice"
+    assert early.raw_response is not None and '"answers"' in early.raw_response
     assert sent[0]["url"] == "http://sidecar/v1/systemone"
     assert sent[0]["body"]["questions"]["vote"]["criteria"] == {"red": "Vote out red", "skip": "Skip the vote"}
 
@@ -232,6 +234,9 @@ def test_client_uses_call_json_and_role_prompt_from_context(tmp_path) -> None:
     assert calls[0]["model"] == "fake-haiku"
     assert "IMPOSTER ONLY" in calls[0]["system"]
     assert "CREW ONLY" not in calls[0]["system"]
+    assert result.inference_mode == "native_language"
+    assert result.raw_request == {key: value for key, value in calls[0].items() if key != "client"}
+    assert result.raw_response == '{"schema_version":1,"action":"wait"}'
 
 
 def test_prompt_loader_uses_files_and_missing_file_fallback(tmp_path) -> None:

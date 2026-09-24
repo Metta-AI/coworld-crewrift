@@ -7,6 +7,7 @@ from crewborg.modes import AccuseMode, AttendMeetingMode, ReportBodyMode
 from crewborg.perception.entities import VoteCandidate, VotingState
 from crewborg.strategy.meeting import MeetingDecision, MeetingLLMResult
 from crewborg.types import ActionState, Belief, BodyEntry, ChatEvent, PlayerEvent, PlayerRecord
+from players.player_sdk.trace import EventEmitter, ListTraceSink
 
 
 class _FakeMeetingClient:
@@ -22,9 +23,32 @@ class _FakeMeetingClient:
         self.calls.append((trigger, context))
         return MeetingLLMResult(
             decision=self.decisions.pop(0),
+            inference_mode="native_language",
             model="fake-haiku",
             latency_ms=1.5,
         )
+
+
+def test_meeting_decision_trace_keeps_provider_evidence_with_validated_choice() -> None:
+    sink = ListTraceSink()
+    mode = AttendMeetingMode(llm_client=_FakeMeetingClient([]))
+    mode.emit = EventEmitter(trace_sink=sink, tick=42)
+    decision = MeetingDecision(action="submit_vote", vote_target="red", reason="observed vote")
+    result = MeetingLLMResult(
+        decision=decision, inference_mode="typed_choice", model="jev-latest", latency_ms=123,
+        raw_request={"questions": {"vote": {"criteria": {"red": "Vote out red"}}}},
+        raw_response='{"answers":{"vote":{"choice":"red"}}}',
+    )
+
+    mode._trace_decision("deadline", decision, result)
+
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event.name == "domain.meeting_llm_decision" and event.tick == 42
+    assert event.data["decision"]["vote_target"] == "red"
+    assert event.data["inference_mode"] == "typed_choice"
+    assert event.data["provider_request"] == result.raw_request
+    assert event.data["provider_response"] == result.raw_response
 
 
 def _meeting_belief(*, tick: int = 0, start_tick: int = 0) -> Belief:

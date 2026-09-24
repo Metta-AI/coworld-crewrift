@@ -416,7 +416,7 @@ All meeting LLM knobs are env-driven and read in `build_meeting_llm_client_from_
 | `CREWBORG_LLM_MAX_TOKENS` | 512 | Generation cap. |
 | `CREWBORG_LLM_TIMEOUT_SECONDS` | 3.0 | Per-call wall-clock budget; also feeds the latest-safe-start math. |
 | `CREWBORG_LLM_PROMPT_DIR` | `memory/` | Override directory for role prompt files. |
-| `CREWBORG_LLM_TRACE_RAW` | off | Include raw request/response in the result for `meeting_llm_debug`. |
+| `CREWBORG_LLM_TRACE_RAW` | on | Retain provider request/response in the private `meeting_llm_decision` event; set `0` to disable. |
 | `CREWBORG_TRACE` | — | `debug` also turns on raw tracing. |
 | `CREWBORG_CHAT_NLP` | on | Kill switch for spaCy chat parsing (deterministic imposter bandwagon). |
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic backend (the non-Bedrock path). |
@@ -439,8 +439,7 @@ The mode emits a rich set of `meeting_*` events and counters; see
 | Event | Meaning |
 | --- | --- |
 | `meeting_context_serialized` | The full context shipped to the LLM (trigger + context). |
-| `meeting_llm_decision` | The validated LLM decision (trigger, model, latency, usage). |
-| `meeting_llm_debug` | Raw request/response, only with raw tracing on. |
+| `meeting_llm_decision` | The validated LLM decision, inference mode, provider request/response, trigger, model, latency, and usage. |
 | `meeting_llm_fallback` | Why the LLM path yielded — disabled, call failed, invalid decision, duplicate/cooldown chat. |
 | `meeting_decision` | The deterministic decision: role, path, target, real-vs-fabricated, heat (imposter), NLP state. |
 | `meeting_tentative_vote` / `meeting_vote_selected` / `meeting_chat_selected` | The staged vote, committed vote, and emitted chat. |

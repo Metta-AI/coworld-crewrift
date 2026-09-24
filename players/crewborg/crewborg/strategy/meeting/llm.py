@@ -6,7 +6,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, NamedTuple, Protocol
+from typing import Any, Callable, Literal, NamedTuple, Protocol
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict
@@ -24,7 +24,7 @@ class MeetingLLMConfig:
     use_bedrock: bool = False
     max_tokens: int = 512
     timeout_seconds: float = 3.0
-    trace_raw: bool = False
+    trace_raw: bool = True
     prompt_dir: str | None = None
 
 
@@ -34,6 +34,7 @@ class MeetingLLMResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: MeetingDecision
+    inference_mode: Literal["typed_choice", "native_language"]
     model: str
     latency_ms: float
     usage: dict[str, Any] | None = None
@@ -113,20 +114,21 @@ class AnthropicMeetingClient:
             },
         }
         user_content = json.dumps(request, sort_keys=True, separators=(",", ":"))
-        call = self._call_json(
-            self._client,
-            model=self.config.model,
-            system=system_prompt_for_context(context, prompt_dir=self.config.prompt_dir),
-            user=user_content,
-            max_tokens=self.config.max_tokens,
-        )
+        provider_request = {
+            "model": self.config.model,
+            "system": system_prompt_for_context(context, prompt_dir=self.config.prompt_dir),
+            "user": user_content,
+            "max_tokens": self.config.max_tokens,
+        }
+        call = self._call_json(self._client, **provider_request)
         decision = MeetingDecision.model_validate_json(self._extract_json_object(call.text))
         return MeetingLLMResult(
             decision=decision,
+            inference_mode="native_language",
             model=call.model,
             latency_ms=call.latency_ms,
             usage=call.usage,
-            raw_request=request if self.config.trace_raw else None,
+            raw_request=provider_request if self.config.trace_raw else None,
             raw_response=call.text if self.config.trace_raw else None,
         )
 
@@ -144,7 +146,7 @@ class JevMeetingClient:
         headers: dict[str, str],
         model: str = JEV_MEETING_MODEL,
         timeout_seconds: float = 3.0,
-        trace_raw: bool = False,
+        trace_raw: bool = True,
     ) -> None:
         self.endpoint = endpoint
         self.headers = headers
@@ -199,6 +201,7 @@ class JevMeetingClient:
                 reason="Jev meeting vote",
                 confidence=answer.confidence,
             ),
+            inference_mode="typed_choice",
             model=self.model,
             latency_ms=(time.monotonic() - started) * 1000,
             usage=usage,
@@ -242,7 +245,7 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
             headers=headers,
             model=env.get("CREWBORG_LLM_MODEL", default_model),
             timeout_seconds=_env_float(env, "CREWBORG_LLM_TIMEOUT_SECONDS", 3.0),
-            trace_raw=env.get("CREWBORG_LLM_TRACE_RAW", "").strip().lower() in {"1", "true", "yes", "on"},
+            trace_raw=env.get("CREWBORG_LLM_TRACE_RAW", "1").strip().lower() in {"1", "true", "yes", "on"},
         )
     try:
         helpers = _load_sdk_helpers()
@@ -254,7 +257,7 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
         use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
         if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledMeetingClient("no LLM backend configured")
-        trace_raw = env.get("CREWBORG_LLM_TRACE_RAW", "").strip().lower() in {"1", "true", "yes", "on"}
+        trace_raw = env.get("CREWBORG_LLM_TRACE_RAW", "1").strip().lower() in {"1", "true", "yes", "on"}
         trace_raw = trace_raw or env.get("CREWBORG_TRACE", "").strip().lower() == "debug"
         timeout_seconds = _env_float(env, "CREWBORG_LLM_TIMEOUT_SECONDS", 3.0)
         config = MeetingLLMConfig(
