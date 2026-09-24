@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from io import BytesIO
 import json
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -13,8 +12,7 @@ from crewborg.strategy.meeting import llm as meeting_llm
 from crewborg.strategy.meeting.prompts import system_prompt_for_context
 
 
-@dataclass(frozen=True)
-class _Call:
+class _Call(NamedTuple):
     text: str
     usage: dict[str, Any] | None = None
     latency_ms: float = 12.5

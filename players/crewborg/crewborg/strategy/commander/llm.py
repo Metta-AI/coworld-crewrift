@@ -19,7 +19,6 @@ class CommanderLLMConfig:
     model: str = DEFAULT_COMMANDER_MODEL
     use_bedrock: bool = False
     max_tokens: int = 512
-    temperature: float = 0.2
     timeout_seconds: float = 3.0
     trace_raw: bool = False
     prompt_dir: str | None = None
@@ -102,7 +101,6 @@ class AnthropicCommanderClient:
             system=system_prompt_for_role(context.get("self", {}).get("role"), prompt_dir=self.config.prompt_dir),
             user=user_content,
             max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
         )
         priorities = json.loads(self._extract_json_object(call.text))
         return CommanderLLMResult(
@@ -143,7 +141,6 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
             ),
             use_bedrock=use_bedrock,
             max_tokens=_env_int(env, "CREWBORG_LLM_MAX_TOKENS", 512),
-            temperature=_env_float(env, "CREWBORG_LLM_TEMPERATURE", 0.2),
             timeout_seconds=timeout_seconds,
             trace_raw=trace_raw,
             prompt_dir=env.get(PROMPT_DIR_ENV) or None,

@@ -258,7 +258,6 @@ transport tuning never do.
 | `CREWBORG_LLM_MODEL` | Haiku-class | override the model id. |
 | `CREWBORG_LLM_TIMEOUT_SECONDS` | `3.0` | per-call timeout (meetings are time-boxed). |
 | `CREWBORG_LLM_MAX_TOKENS` | `512` | LLM max output tokens. |
-| `CREWBORG_LLM_TEMPERATURE` | `0.2` | LLM temperature. |
 | `CREWBORG_LLM_PROMPT_DIR` | bundled | override the prompt directory. |
 | `CREWBORG_LLM_TRACE_RAW` | off | `1` traces raw LLM payloads (also on under `CREWBORG_TRACE=debug`). |
 

@@ -264,8 +264,7 @@ sidecar path. The meeting LLM applies the same fix (see [`./meetings.md`](./meet
 SDK's default direct/Bedrock models and an optional explicit override from `CREWBORG_LLM_MODEL`
 — a small, fast Claude (Haiku-class) model, since the commander runs every few seconds and only
 emits a tiny JSON object. (`DEFAULT_COMMANDER_MODEL` in `llm.py` is the config dataclass default
-and is superseded by the resolved value.) Calls use `temperature` 0.2 and `max_tokens` 512 by
-default.
+and is superseded by the resolved value.) Calls use `max_tokens` 512 by default.
 
 ## 9. Forced-priority override (`CREWBORG_COMMANDER_FORCE`)
 
@@ -311,7 +310,6 @@ Events:
 | `CREWBORG_LLM_PROMPT_DIR` | override the role-doctrine prompt dir (default: the `memory/` sibling dir) |
 | `CREWBORG_LLM_TIMEOUT_SECONDS` | per-call timeout (default 3.0) |
 | `CREWBORG_LLM_MAX_TOKENS` | per-call max tokens (default 512) |
-| `CREWBORG_LLM_TEMPERATURE` | per-call temperature (default 0.2) |
 | `CREWBORG_LLM_TRACE_RAW` | include raw request/response in `commander_call` traces (also implied by `CREWBORG_TRACE=debug`) |
 | `CREWBORG_TRACE_GROUPS=commander` / `CREWBORG_TRACE=debug` | surface `domain.commander_*` traces |
 | `CREWBORG_COMMANDER_FORCE='{…}'` | force a fixed priority, bypassing the LLM (§9) |
