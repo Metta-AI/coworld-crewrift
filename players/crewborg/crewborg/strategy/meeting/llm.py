@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple, Protocol
+from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, ConfigDict
 
@@ -13,6 +15,7 @@ from crewborg.strategy.meeting.prompts import PROMPT_DIR_ENV, system_prompt_for_
 from crewborg.strategy.meeting.schema import VOTE_SKIP, MeetingDecision
 
 DEFAULT_MEETING_MODEL = "claude-haiku-4-5-20251001"
+JEV_MEETING_MODEL = "typesafe/jev-1.13"
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,22 @@ class MeetingLLMResult(BaseModel):
     usage: dict[str, Any] | None = None
     raw_request: dict[str, Any] | None = None
     raw_response: str | None = None
+
+
+class JevAnswer(BaseModel):
+    type: str
+    choice: str
+    confidence: float
+    probabilities: dict[str, float]
+
+
+class JevUsage(BaseModel):
+    cost: float
+
+
+class JevResponse(BaseModel):
+    answers: dict[str, JevAnswer]
+    usage: JevUsage
 
 
 class MeetingLLMClient(Protocol):
@@ -112,10 +131,109 @@ class AnthropicMeetingClient:
         )
 
 
+class JevMeetingClient:
+    """Rank legal meeting votes with Jev; Crewborg keeps movement and vote execution."""
+
+    enabled = True
+    disabled_reason = None
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        headers: dict[str, str],
+        model: str = JEV_MEETING_MODEL,
+        timeout_seconds: float = 3.0,
+        trace_raw: bool = False,
+    ) -> None:
+        self.endpoint = endpoint
+        self.headers = headers
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.trace_raw = trace_raw
+
+    def decide(self, context: dict[str, Any], *, trigger: str) -> MeetingLLMResult:
+        targets = context["constraints"]["valid_vote_targets"]
+        criteria = {target: "Skip the vote" if target == VOTE_SKIP else f"Vote out {target}" for target in targets}
+        request = {
+            "model": self.model,
+            "state": context,
+            "questions": {
+                "vote": {
+                    "type": "choice",
+                    "instructions": (
+                        "Choose the legal vote that maximizes your own team's chance to win. "
+                        "Use your private role and teammate information, public discussion, and observed evidence. "
+                        "As crew, avoid ejecting a teammate without evidence. As an imposter, protect your teammates."
+                    ),
+                    "criteria": criteria,
+                }
+            },
+        }
+        started = time.monotonic()
+        http_request = Request(
+            f"{self.endpoint}/v1/systemone",
+            data=json.dumps(request).encode(),
+            headers={**self.headers, "Content-Type": "application/json"},
+        )
+        with urlopen(http_request, timeout=self.timeout_seconds) as response:
+            raw_response = response.read()
+        payload = JevResponse.model_validate_json(raw_response)
+        answer = payload.answers["vote"]
+        if answer.type != "choice" or answer.choice not in criteria or set(answer.probabilities) != set(criteria):
+            raise ValueError("Jev returned the wrong vote target set")
+        if not 0 <= answer.confidence <= 1 or any(not 0 <= value <= 1 for value in answer.probabilities.values()):
+            raise ValueError("Jev returned a probability outside [0, 1]")
+        if abs(sum(answer.probabilities.values()) - 1) > len(criteria) * 0.005 + 1e-6:
+            raise ValueError("Jev probabilities do not sum to one")
+        choice = max(criteria, key=answer.probabilities.__getitem__)
+        if answer.probabilities[answer.choice] == answer.probabilities[choice]:
+            choice = answer.choice
+        return MeetingLLMResult(
+            decision=MeetingDecision(
+                action="submit_vote" if trigger == "deadline" else "set_tentative_vote",
+                vote_target=choice,
+                reason="Jev meeting vote",
+                confidence=answer.confidence,
+            ),
+            model=self.model,
+            latency_ms=(time.monotonic() - started) * 1000,
+            usage={"cost_usd": payload.usage.cost},
+            raw_request=request if self.trace_raw else None,
+            raw_response=raw_response.decode() if self.trace_raw else None,
+        )
+
+
 def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> MeetingLLMClient:
     env = env or os.environ
     if env.get("CREWBORG_LLM_MEETINGS", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return DisabledMeetingClient("CREWBORG_LLM_MEETINGS is not enabled")
+    if env.get("CREWBORG_MEETING_BACKEND") == "jev":
+        sidecar = env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+        capture = env.get("METTA_CAPTURE_URL")
+        if sidecar:
+            endpoint = sidecar.rstrip("/")
+            headers = {}
+        elif capture:
+            if not env.get("METTA_CAPTURE_KEY"):
+                return DisabledMeetingClient("METTA_CAPTURE_KEY is required for Jev capture")
+            endpoint = capture.rstrip("/")
+            headers = {
+                "Authorization": f"Bearer {env['METTA_CAPTURE_KEY']}",
+                "X-Metta-Trajectory-Id": "crewrift-jev-meeting",
+            }
+        else:
+            if not env.get("OPENROUTER_API_KEY"):
+                return DisabledMeetingClient("no Jev backend configured")
+            endpoint = "https://openrouter.ai/api"
+            headers = {"Authorization": f"Bearer {env['OPENROUTER_API_KEY']}"}
+        return JevMeetingClient(
+            endpoint=endpoint,
+            headers=headers,
+            model=env.get("CREWBORG_LLM_MODEL", JEV_MEETING_MODEL),
+            timeout_seconds=_env_float(env, "CREWBORG_LLM_TIMEOUT_SECONDS", 3.0),
+            trace_raw=env.get("CREWBORG_LLM_TRACE_RAW", "").strip().lower() in {"1", "true", "yes", "on"},
+        )
     try:
         helpers = _load_sdk_helpers()
         # Sidecar mode strips USE_BEDROCK from the player container and injects

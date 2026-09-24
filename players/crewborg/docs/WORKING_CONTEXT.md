@@ -25,6 +25,8 @@ This is *not* a log or archive: finished work lives in git history / the
 
 ## ▶ Open threads (2026-07-01)
 
+September 24 Jev pilot: a local branch adds a Jev System One meeting-vote client and reads the vote timer from the game info screen. The previous 240-tick assumption did not match source manifest variants (Classic 7,200; Prime 1,200; vote drill 600). Focused tests pass; a real model call, container smoke, and role-split Experience Request remain outstanding. No policy has been uploaded or submitted.
+
 1. **Crew vote rate is evidence-limited, not gate-limited.** Crew votes only at fitted P≥0.9
    (`CREWBORG_WEIGHTS_VOTE_P`, `strategy/suspicion.py`); live posteriors cross it in only ~23% of
    meetings (median max-posterior at meeting ≈ 0.67) since the game's 0.4.28/29 update. Precision is

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
+import json
 from typing import Any
 
 import pytest
@@ -86,6 +88,83 @@ def test_factory_selects_bedrock_backend(monkeypatch: pytest.MonkeyPatch) -> Non
     assert client.config.model == "bedrock-default"
     assert client.config.use_bedrock is True
     assert selected == [{"use_bedrock": True, "timeout": 3.0}]
+
+
+def test_factory_selects_jev_sidecar_without_player_slot() -> None:
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {
+            "CREWBORG_LLM_MEETINGS": "1",
+            "CREWBORG_MEETING_BACKEND": "jev",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9000/",
+        }
+    )
+
+    assert isinstance(client, meeting_llm.JevMeetingClient)
+    assert client.endpoint == "http://127.0.0.1:9000"
+    assert client.headers == {}
+
+
+def test_factory_disables_jev_when_no_backend_is_configured() -> None:
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {"CREWBORG_LLM_MEETINGS": "1", "CREWBORG_MEETING_BACKEND": "jev"}
+    )
+
+    assert not client.enabled
+    assert client.disabled_reason == "no Jev backend configured"
+
+
+def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[dict[str, Any]] = []
+
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        sent.append({"url": request.full_url, "body": json.loads(request.data), "timeout": timeout})
+        return BytesIO(
+            json.dumps(
+                {
+                    "answers": {
+                        "vote": {
+                            "type": "choice",
+                            "choice": "skip",
+                            "confidence": 0.8,
+                            "probabilities": {"red": 0.7, "skip": 0.3},
+                        }
+                    },
+                    "usage": {"cost": 0.00002},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={}, trace_raw=True)
+    context = {
+        "self": {"role": "crewmate", "color": "blue"},
+        "meeting": {"id": 42},
+        "constraints": {"valid_vote_targets": ["red", "skip"]},
+    }
+
+    early = client.decide(context, trigger="meeting_start")
+    late = client.decide(context, trigger="deadline")
+
+    assert early.decision.action == "set_tentative_vote"
+    assert late.decision.action == "submit_vote"
+    assert early.decision.vote_target == late.decision.vote_target == "red"
+    assert early.usage == {"cost_usd": 0.00002}
+    assert early.raw_request == sent[0]["body"]
+    assert sent[0]["url"] == "http://sidecar/v1/systemone"
+    assert sent[0]["body"]["questions"]["vote"]["criteria"] == {"red": "Vote out red", "skip": "Skip the vote"}
+
+
+def test_jev_meeting_rejects_incomplete_probability_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        del request, timeout
+        return BytesIO(
+            b'{"answers":{"vote":{"type":"choice","choice":"red","confidence":0.8,"probabilities":{"red":1.0}}},"usage":{"cost":0.00002}}'
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
+    with pytest.raises(ValueError, match="wrong vote target set"):
+        client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="meeting_start")
 
 
 def test_factory_construction_failure_disables_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -286,7 +286,7 @@ the caller falls back. The result carries the decision plus call metadata
 One pre-digested, side-effect-free projection of belief per LLM tick. It spells out, so the
 model reasons over already-computed signals rather than re-deriving them:
 
-- `meeting` — id, tick, age, estimated remaining ticks (`VOTE_TIMER_TICKS = 240`).
+- `meeting` — id, tick, age, and estimated remaining ticks. The player reads `VOTE TIMER <ticks>T` from the game's Game Info screen; the source manifest uses 7,200 ticks for Classic, 1,200 for Prime, and 600 for its voting drill.
 - `self` — our color, role, and teammate colors.
 - `constraints` — the action menu, `valid_vote_targets` (§3), `CHAT_MAX_CHARS`, printable-ASCII
   requirement, and chat-cooldown readiness (`CHAT_COOLDOWN_TICKS = 100`).
@@ -411,6 +411,7 @@ All meeting LLM knobs are env-driven and read in `build_meeting_llm_client_from_
 | Env var | Default | Effect |
 | --- | --- | --- |
 | `CREWBORG_LLM_MEETINGS` | off | Master opt-in for the LLM path. `1`/`true`/`yes`/`on` enables it. |
+| `CREWBORG_MEETING_BACKEND` | Anthropic | Set to `jev` to rank legal meeting votes with Jev System One. Jev sets a tentative vote on early triggers and submits at the deadline; it does not generate chat. |
 | `CREWBORG_LLM_MODEL` | SDK-resolved | Explicit model id override (else Bedrock/direct id per backend). |
 | `CREWBORG_LLM_MAX_TOKENS` | 512 | Generation cap. |
 | `CREWBORG_LLM_TEMPERATURE` | 0.2 | Low, for steadier meeting behavior. |
@@ -422,6 +423,8 @@ All meeting LLM knobs are env-driven and read in `build_meeting_llm_client_from_
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic backend (the non-Bedrock path). |
 | `USE_BEDROCK` / `CLAUDE_CODE_USE_BEDROCK` | — | Bedrock backend (set by `--use-bedrock` at upload). |
 | `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` | — | Sidecar Bedrock signal injected by the hosted runner. |
+| `OPENROUTER_API_KEY` | — | Direct Jev calls in local episodes when no sidecar or capture proxy is present. |
+| `METTA_CAPTURE_URL` / `METTA_CAPTURE_KEY` | — | Optional local Jev trace capture proxy. |
 
 The default Bedrock model id resolves through the SDK; the dataclass fallback default is
 `claude-haiku-4-5-20251001`.
