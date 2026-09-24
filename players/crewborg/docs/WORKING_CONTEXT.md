@@ -25,15 +25,14 @@ This is *not* a log or archive: finished work lives in git history / the
 
 ## ▶ Open threads (2026-07-01)
 
-September 24 Jev pilot: a local branch adds a Jev System One meeting-vote client and reads the vote timer from the game info screen. The previous 240-tick assumption did not match source manifest variants (Classic 7,200; Prime 1,200; vote drill 600). Focused tests pass; a real model call, container smoke, and role-split Experience Request remain outstanding. No policy has been uploaded or submitted.
+September 24 Jev pilot: draft PR #175 adds a Jev System One meeting-vote client and reads the vote timer from the Game Info screen. The old 240-tick assumption did not match Classic (7,200), Prime (1,200), or the vote drill (600). The local `linux/amd64` image completed a vote-drill episode: six Jev calls cost $0.001403976, two votes were applied, and the crew seat had zero vote timeouts. A same-seed Notsus seat timed out twice. This is a single-episode liveness check, not a gameplay comparison. `startWaitTicks=0` suppresses Game Info in the current game version, so the timer cannot be read in that variant; the live Classic and Prime configurations show it. Role-split hosted Experience Requests remain outstanding. No policy has been uploaded or submitted.
 
 1. **Crew vote rate is evidence-limited, not gate-limited.** Crew votes only at fitted P≥0.9
    (`CREWBORG_WEIGHTS_VOTE_P`, `strategy/suspicion.py`); live posteriors cross it in only ~23% of
    meetings (median max-posterior at meeting ≈ 0.67) since the game's 0.4.28/29 update. Precision is
    the best in the field (67% vote-hit-imposter) but volume is ~1/3 of top rivals. The lever is
    warming evidence accumulation, not lowering the threshold (0.8 is the only defensible sweep value).
-2. **`VOTE_TIMER_TICKS = 240` is stale** (`strategy/meeting/context.py`) — the live game uses 1200;
-   crewborg stops listening ~16% into the meeting. Align before meeting-coordination work.
+2. **Meeting timing** — PR #175 reads the game's `VOTE TIMER` value when Game Info is shown. The `startWaitTicks=0` variant suppresses Game Info and still needs a source-of-truth timing path.
 3. **Slot-4 role-limbo**: a crew seat at slot 4 can miss the CREWMATE reveal text entirely →
    `self_role=None` forever → frozen, 0 task attempts (~15% of crew games). Needs a bounded
    fallback-to-crew escape in `types.py` (keep the positive latch as primary).
