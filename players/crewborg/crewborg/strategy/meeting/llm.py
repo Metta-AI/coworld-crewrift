@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal, NamedTuple, Protocol
 from urllib.request import Request, urlopen
 
+from anthropic import Anthropic
 from pydantic import BaseModel, ConfigDict
 
 from crewborg.strategy.meeting.prompts import PROMPT_DIR_ENV, system_prompt_for_context
@@ -249,11 +250,8 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
         )
     try:
         helpers = _load_sdk_helpers()
-        # Sidecar mode strips USE_BEDROCK from the player container and injects
-        # AWS_ENDPOINT_URL_BEDROCK_RUNTIME instead, so the SDK's bedrock_enabled() (which only
-        # checks USE_BEDROCK/CLAUDE_CODE_USE_BEDROCK) reports no backend in-pod. Gate on what we
-        # actually receive: treat the sidecar endpoint as a Bedrock signal. See
-        # docs/reference/coworld-platform.md.
+        # Sidecar mode strips USE_BEDROCK and injects its endpoint instead.
+        # It serves Anthropic Messages; AnthropicBedrock sends InvokeModel requests.
         use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
         if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledMeetingClient("no LLM backend configured")
@@ -273,7 +271,12 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
             trace_raw=trace_raw,
             prompt_dir=env.get(PROMPT_DIR_ENV) or None,
         )
-        client = helpers.select_client(use_bedrock=use_bedrock, timeout=timeout_seconds)
+        sidecar = env.get(BEDROCK_SIDECAR_ENDPOINT_ENV)
+        client = (
+            Anthropic(base_url=sidecar, api_key="sidecar", timeout=timeout_seconds)
+            if sidecar
+            else helpers.select_client(use_bedrock=use_bedrock, timeout=timeout_seconds)
+        )
         return AnthropicMeetingClient(
             config,
             client=client,

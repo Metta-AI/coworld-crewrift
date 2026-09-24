@@ -88,6 +88,24 @@ def test_factory_selects_bedrock_backend(monkeypatch: pytest.MonkeyPatch) -> Non
     assert selected == [{"use_bedrock": True, "timeout": 3.0}]
 
 
+def test_factory_uses_messages_api_for_hosted_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected: list[dict[str, Any]] = []
+    monkeypatch.setattr(meeting_llm, "_load_sdk_helpers", lambda: _helpers(use_bedrock=False, selected=selected))
+
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {
+            "CREWBORG_LLM_MEETINGS": "1",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9100",
+            "CREWBORG_LLM_MODEL": "anthropic/claude-haiku-4.5",
+        }
+    )
+
+    assert isinstance(client, meeting_llm.AnthropicMeetingClient)
+    assert str(client._client.base_url) == "http://127.0.0.1:9100"
+    assert client.config.model == "anthropic/claude-haiku-4.5"
+    assert selected == []
+
+
 def test_factory_selects_jev_sidecar_without_player_slot() -> None:
     client = meeting_llm.build_meeting_llm_client_from_env(
         {

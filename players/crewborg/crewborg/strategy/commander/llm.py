@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple, Protocol
 
+from anthropic import Anthropic
 from pydantic import BaseModel, ConfigDict
 
 from crewborg.strategy.commander.prompts import PROMPT_DIR_ENV, system_prompt_for_role
@@ -121,11 +122,8 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
         helpers = _load_sdk_helpers()
         # Sidecar mode (BEDROCK_SIDECAR_ENABLED) strips USE_BEDROCK / direct AWS identity
         # from the player container and instead injects the loopback Bedrock proxy endpoint
-        # AWS_ENDPOINT_URL_BEDROCK_RUNTIME (+ dummy creds). The SDK's bedrock_enabled() only
-        # checks USE_BEDROCK / CLAUDE_CODE_USE_BEDROCK, so it wrongly reports no backend in-pod.
-        # Gate on what we actually receive: treat the sidecar endpoint as a Bedrock signal, so
-        # select_client(use_bedrock=True) reaches the SDK's sidecar-routing path. See
-        # docs/reference/coworld-platform.md (platform/SDK fix tracked there).
+        # AWS_ENDPOINT_URL_BEDROCK_RUNTIME (+ dummy creds). Gate on that endpoint and
+        # call its Anthropic Messages route; AnthropicBedrock sends InvokeModel requests.
         use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
         if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledCommanderClient("no LLM backend configured")
@@ -145,7 +143,12 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
             trace_raw=trace_raw,
             prompt_dir=env.get(PROMPT_DIR_ENV) or None,
         )
-        client = helpers.select_client(use_bedrock=use_bedrock, timeout=timeout_seconds)
+        sidecar = env.get(BEDROCK_SIDECAR_ENDPOINT_ENV)
+        client = (
+            Anthropic(base_url=sidecar, api_key="sidecar", timeout=timeout_seconds)
+            if sidecar
+            else helpers.select_client(use_bedrock=use_bedrock, timeout=timeout_seconds)
+        )
         return AnthropicCommanderClient(
             config,
             client=client,
