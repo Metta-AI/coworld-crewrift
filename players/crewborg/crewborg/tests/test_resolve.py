@@ -93,6 +93,16 @@ def test_progress_counter_and_voting_resolved() -> None:
     assert (dot.target, dot.voter) == (3, 2)
 
 
+def test_game_info_vote_timer_resolves() -> None:
+    scene = SceneState()
+    scene.apply(
+        w.define_sprite(930, 8, 8, "VOTE TIMER 7200T")
+        + w.define_object(9003, 1, 1, 9, 0, 930)
+    )
+
+    assert resolve_scene(scene, tick=1).vote_timer_ticks == 7200
+
+
 def test_skip_vote_dots_decode_as_skip_not_a_player_target() -> None:
     scene = SceneState()
     scene.apply(

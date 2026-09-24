@@ -1,0 +1,39 @@
+name: Crewborg player
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - ".github/workflows/crewborg-player.yml"
+      - "players/crewborg/**"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/crewborg-player.yml"
+      - "players/crewborg/**"
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install 'players[bedrock] @ https://github.com/Metta-AI/coworld-tools/archive/main.tar.gz#subdirectory=players' pytest
+      - name: Test meeting client and vote timing
+        env:
+          PYTHONPATH: players/crewborg
+        run: >-
+          python -m pytest -q
+          players/crewborg/crewborg/tests/test_meeting_llm.py
+          players/crewborg/crewborg/tests/test_meeting_modes.py
+          players/crewborg/crewborg/tests/test_meeting_context.py
+          players/crewborg/crewborg/tests/test_resolve.py
+          players/crewborg/crewborg/tests/test_belief.py
+          players/crewborg/crewborg/tests/test_imposter_meeting.py
+      - name: Build Jev-capable player image
+        run: docker build -f players/crewborg/crewborg/coworld/Dockerfile -t crewborg-jev:ci players/crewborg
+      - name: Import Jev entrypoint from player image
+        run: docker run --rm crewborg-jev:ci python -c 'from crewborg.strategy.meeting.llm import JevMeetingClient; print(JevMeetingClient.__name__)'

@@ -9,15 +9,14 @@
 #
 # crewborg is the `crewborg` package and imports only `players.player_sdk`
 # from the shared SDK. We install that SDK from the public Metta-AI/coworld-tools
-# monorepo (pinned via PLAYERS_SDK_REF — pass a fixed ref for a reproducible build;
-# `main` is only a fallback) and put the package on PYTHONPATH. We install NO lab
+# monorepo (pinned via PLAYERS_SDK_REF) and put the package on PYTHONPATH. We install NO lab
 # tooling, and bake NO behavior/experiment env (e.g. CREWBORG_BE_DUMB) — those are
 # set at upload time so the image stays behavior-neutral and reproducible.
 
 # Platform is set by the build invocation (buildx --platform=linux/amd64), not here.
 FROM python:3.12-slim
 
-ARG PLAYERS_SDK_REF=main
+ARG PLAYERS_SDK_REF=3c61631e9806d5a93f04c72c47c859e18cac84b4
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

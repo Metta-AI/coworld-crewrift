@@ -18,7 +18,7 @@ from crewborg.types import Belief, ChatEvent, PlayerRecord
 
 
 def _belief() -> Belief:
-    belief = Belief(phase="Voting", phase_start_tick=10, last_tick=34, total_player_count=3)
+    belief = Belief(phase="Voting", phase_start_tick=10, last_tick=34, total_player_count=3, vote_timer_ticks=240)
     belief.voting = VotingState(
         timer_present=True,
         self_marker_color="blue",

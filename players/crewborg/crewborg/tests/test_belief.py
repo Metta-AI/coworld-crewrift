@@ -34,6 +34,13 @@ def test_self_color_learned_from_the_voting_marker() -> None:
     assert belief.self_color == "green"
 
 
+def test_vote_timer_latched_from_game_info() -> None:
+    belief = Belief()
+    _fold(belief, 1, vote_timer_ticks=7200)
+    _fold(belief, 2)
+    assert belief.vote_timer_ticks == 7200
+
+
 def test_phase_transitions_role_reveal_into_playing() -> None:
     belief = Belief()
 

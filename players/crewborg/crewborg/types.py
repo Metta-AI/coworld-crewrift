@@ -367,6 +367,7 @@ class Belief(BaseModel):
     # Phase machine (design §5 phase).
     phase: Phase = "unknown"
     phase_start_tick: int = 0
+    vote_timer_ticks: int = 1200
     # Gameplay-commander priorities. ``None`` is the disabled-path default.
     commander: CommanderPriorities | None = None
     # Transient commander danger events produced outside a Mode emitter and drained
@@ -676,6 +677,8 @@ def update_belief(belief: Belief, percept: Percept) -> None:
         _record_death(belief, resolved.ejected_color, percept.tick, "ejection")
 
     phase = derive_phase(resolved, belief.phase)
+    if resolved.vote_timer_ticks is not None:
+        belief.vote_timer_ticks = resolved.vote_timer_ticks
     if phase != belief.phase:
         if phase == "Voting":
             # A meeting clears the previous transcript and — matching the server,

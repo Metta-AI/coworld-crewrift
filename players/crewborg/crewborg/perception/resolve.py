@@ -65,6 +65,7 @@ from crewborg.perception.entities import (
 # not needed: the verb already distinguishes the call kind.
 MEETING_CALL_TEXT = re.compile(r"^([A-Za-z]+(?: [A-Za-z]+)?) (reported|pressed|called)$")
 MEETING_CALL_KINDS = {"reported": "body", "pressed": "button", "called": "unknown"}
+VOTE_TIMER_CONFIG_TEXT = re.compile(r"^VOTE TIMER ([1-9][0-9]*)T$")
 
 # A chat speaker icon is matched to the text line whose screen-y is nearest, within
 # this tolerance (px). The icon is vertically centered on its (possibly multi-line)
@@ -106,6 +107,7 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
     phase_texts: set[str] = set()
     meeting_caller_color: str | None = None
     meeting_call_kind: str | None = None
+    vote_timer_ticks: int | None = None
     cursor = skip_cursor = timer = False
     cursor_xy: tuple[int, int] | None = None
     self_marker_color: str | None = None
@@ -182,6 +184,9 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
         elif label in PHASE_TEXTS:
             phase_texts.add(label)
         else:
+            vote_timer = VOTE_TIMER_CONFIG_TEXT.match(label)
+            if vote_timer is not None:
+                vote_timer_ticks = int(vote_timer.group(1))
             call = MEETING_CALL_TEXT.match(label)
             if call is not None:
                 meeting_caller_color = call.group(1).lower()
@@ -275,6 +280,7 @@ def resolve_scene(scene: SceneState, tick: int) -> ResolvedScene:
             candidates=candidates,
             cursor_slot=cursor_slot,
         ),
+        vote_timer_ticks=vote_timer_ticks,
         phase_texts=frozenset(phase_texts),
         meeting_caller_color=meeting_caller_color,
         meeting_call_kind=meeting_call_kind,

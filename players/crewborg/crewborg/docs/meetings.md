@@ -286,7 +286,7 @@ the caller falls back. The result carries the decision plus call metadata
 One pre-digested, side-effect-free projection of belief per LLM tick. It spells out, so the
 model reasons over already-computed signals rather than re-deriving them:
 
-- `meeting` — id, tick, age, estimated remaining ticks (`VOTE_TIMER_TICKS = 240`).
+- `meeting` — id, tick, age, and estimated remaining ticks. The player reads `VOTE TIMER <ticks>T` from the game's Game Info screen; the source manifest uses 7,200 ticks for Classic, 1,200 for Prime, and 600 for its voting drill.
 - `self` — our color, role, and teammate colors.
 - `constraints` — the action menu, `valid_vote_targets` (§3), `CHAT_MAX_CHARS`, printable-ASCII
   requirement, and chat-cooldown readiness (`CHAT_COOLDOWN_TICKS = 100`).
@@ -411,17 +411,20 @@ All meeting LLM knobs are env-driven and read in `build_meeting_llm_client_from_
 | Env var | Default | Effect |
 | --- | --- | --- |
 | `CREWBORG_LLM_MEETINGS` | off | Master opt-in for the LLM path. `1`/`true`/`yes`/`on` enables it. |
+| `CREWBORG_MEETING_BACKEND` | Anthropic | Set to `jev` to rank legal meeting votes with Jev System One. Jev sets a tentative vote on early triggers and submits at the deadline; it does not generate chat. |
 | `CREWBORG_LLM_MODEL` | SDK-resolved | Explicit model id override (else Bedrock/direct id per backend). |
 | `CREWBORG_LLM_MAX_TOKENS` | 512 | Generation cap. |
-| `CREWBORG_LLM_TEMPERATURE` | 0.2 | Low, for steadier meeting behavior. |
 | `CREWBORG_LLM_TIMEOUT_SECONDS` | 3.0 | Per-call wall-clock budget; also feeds the latest-safe-start math. |
 | `CREWBORG_LLM_PROMPT_DIR` | `memory/` | Override directory for role prompt files. |
-| `CREWBORG_LLM_TRACE_RAW` | off | Include raw request/response in the result for `meeting_llm_debug`. |
+| `CREWBORG_LLM_TRACE_RAW` | on | Retain provider request/response in the private `meeting_llm_decision` event; set `0` to disable. |
 | `CREWBORG_TRACE` | — | `debug` also turns on raw tracing. |
 | `CREWBORG_CHAT_NLP` | on | Kill switch for spaCy chat parsing (deterministic imposter bandwagon). |
 | `ANTHROPIC_API_KEY` | — | Direct Anthropic backend (the non-Bedrock path). |
 | `USE_BEDROCK` / `CLAUDE_CODE_USE_BEDROCK` | — | Bedrock backend (set by `--use-bedrock` at upload). |
 | `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` | — | Sidecar Bedrock signal injected by the hosted runner. |
+| `OPENROUTER_API_KEY` | — | Direct Jev calls in local episodes when no sidecar or capture proxy is present. |
+| `TYPESAFE_API_KEY` / `TYPESAFE_BASE_URL` | — / `https://api.typesafe.ai` | Direct TypeSafe Jev calls when no sidecar or capture proxy is present. Uses `jev-latest` unless the model is overridden. |
+| `METTA_CAPTURE_URL` / `METTA_CAPTURE_KEY` | — | Optional local Jev trace capture proxy. |
 
 The default Bedrock model id resolves through the SDK; the dataclass fallback default is
 `claude-haiku-4-5-20251001`.
@@ -436,12 +439,29 @@ The mode emits a rich set of `meeting_*` events and counters; see
 | Event | Meaning |
 | --- | --- |
 | `meeting_context_serialized` | The full context shipped to the LLM (trigger + context). |
-| `meeting_llm_decision` | The validated LLM decision (trigger, model, latency, usage). |
-| `meeting_llm_debug` | Raw request/response, only with raw tracing on. |
+| `meeting_llm_decision` | The validated LLM decision, inference mode, provider request/response, trigger, model, latency, and usage. |
 | `meeting_llm_fallback` | Why the LLM path yielded — disabled, call failed, invalid decision, duplicate/cooldown chat. |
 | `meeting_decision` | The deterministic decision: role, path, target, real-vs-fabricated, heat (imposter), NLP state. |
 | `meeting_tentative_vote` / `meeting_vote_selected` / `meeting_chat_selected` | The staged vote, committed vote, and emitted chat. |
 | `meeting_llm.latency_ms` (histogram) | Per-call latency by model and trigger. |
+
+Export a completed private game with the `expand_replay` binary built from the
+recording game's source revision:
+
+```bash
+python -m crewborg.tools.export_complete_episode \
+  --replay replay.json --expander /path/to/expand_replay \
+  --trace telemetry.jsonl --results results.json \
+  --episode-id ereq_... --seat 0 --source-revision <player-commit-sha> \
+  --game-version <coworld-version> --output complete-episode.jsonl
+```
+
+The exporter requires a hash-verified terminal replay, its seed, matching
+per-seat results, and a retained provider request/response for every model
+decision. It labels only chat and votes confirmed by the replay. Tentative votes
+are labeled when the same target is later cast. A vote target filled by the
+deterministic fallback remains unselected. Other calls remain unselected.
+The output is mode 0600 and includes native chat messages or typed Jev choices.
 
 ---
 

@@ -7,6 +7,7 @@ from crewborg.modes import AccuseMode, AttendMeetingMode, ReportBodyMode
 from crewborg.perception.entities import VoteCandidate, VotingState
 from crewborg.strategy.meeting import MeetingDecision, MeetingLLMResult
 from crewborg.types import ActionState, Belief, BodyEntry, ChatEvent, PlayerEvent, PlayerRecord
+from players.player_sdk.trace import EventEmitter, ListTraceSink
 
 
 class _FakeMeetingClient:
@@ -22,13 +23,37 @@ class _FakeMeetingClient:
         self.calls.append((trigger, context))
         return MeetingLLMResult(
             decision=self.decisions.pop(0),
+            inference_mode="native_language",
             model="fake-haiku",
             latency_ms=1.5,
         )
 
 
+def test_meeting_decision_trace_keeps_provider_evidence_with_validated_choice() -> None:
+    sink = ListTraceSink()
+    mode = AttendMeetingMode(llm_client=_FakeMeetingClient([]))
+    mode.emit = EventEmitter(trace_sink=sink, tick=42)
+    decision = MeetingDecision(action="submit_vote", vote_target="red", reason="observed vote")
+    result = MeetingLLMResult(
+        decision=decision, inference_mode="typed_choice", model="jev-latest", latency_ms=123,
+        raw_request={"questions": {"vote": {"criteria": {"red": "Vote out red"}}}},
+        raw_response='{"answers":{"vote":{"choice":"red"}}}',
+    )
+
+    mode._trace_decision("deadline", decision, result)
+
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event.name == "domain.meeting_llm_decision" and event.tick == 42
+    assert event.data["decision"]["vote_target"] == "red"
+    assert event.data["provider_decision"]["vote_target"] == "red"
+    assert event.data["inference_mode"] == "typed_choice"
+    assert event.data["provider_request"] == result.raw_request
+    assert event.data["provider_response"] == result.raw_response
+
+
 def _meeting_belief(*, tick: int = 0, start_tick: int = 0) -> Belief:
-    belief = Belief(phase="Voting", phase_start_tick=start_tick, last_tick=tick, total_player_count=2)
+    belief = Belief(phase="Voting", phase_start_tick=start_tick, last_tick=tick, total_player_count=2, vote_timer_ticks=240)
     belief.voting = VotingState(
         timer_present=True,
         self_marker_color="blue",
@@ -128,6 +153,29 @@ def test_attend_meeting_llm_tentative_vote_auto_submits_near_deadline() -> None:
     vote = mode.decide(_meeting_belief(tick=193), ActionState())
     assert vote.kind == "vote"
     assert vote.target_color == "red"
+
+
+def test_prime_meeting_waits_for_late_chat_before_deadline() -> None:
+    client = _FakeMeetingClient(
+        [
+            MeetingDecision(action="set_tentative_vote", vote_target="red"),
+            MeetingDecision(action="set_tentative_vote", vote_target="skip"),
+        ]
+    )
+    mode = AttendMeetingMode(llm_client=client)
+    opening = _meeting_belief(tick=0)
+    opening.vote_timer_ticks = 1200
+    assert mode.decide(opening, ActionState()).kind == "idle"
+
+    later = _meeting_belief(tick=600)
+    later.vote_timer_ticks = 1200
+    later.chat_log = [ChatEvent(tick=580, speaker_color="red", text="new evidence")]
+    assert mode.decide(later, ActionState()).kind == "idle"
+    assert [trigger for trigger, _ in client.calls] == ["meeting_start", "new_chat"]
+
+    deadline = _meeting_belief(tick=1153)
+    deadline.vote_timer_ticks = 1200
+    assert mode.decide(deadline, ActionState()).kind == "vote"
 
 
 def test_attend_meeting_llm_can_submit_vote_early() -> None:

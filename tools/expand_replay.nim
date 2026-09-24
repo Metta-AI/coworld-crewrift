@@ -315,6 +315,7 @@ proc episodeMetadataRow(sim: SimServer, snapshotEvery: int): JsonNode =
   value["snapshot_every_ticks"] = %snapshotEvery
   value["hash_checking"] = %true
   value["config"] = %*{
+    "seed": sim.config.seed,
     "speed": sim.config.speed,
     "max_ticks": sim.config.maxTicks,
     "kill_range": sim.config.killRange,

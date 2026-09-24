@@ -151,6 +151,7 @@ class ResolvedScene(BaseModel):
     crew_tasks_remaining: int | None = None
 
     voting: VotingState = Field(default_factory=VotingState)
+    vote_timer_ticks: int | None = None
     phase_texts: frozenset[str] = frozenset()
     # The MeetingCall interstitial (game 4b9297d): "<Color> reported|pressed|called"
     # text names the meeting caller in the player view. ``kind`` is "body" (a

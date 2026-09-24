@@ -19,7 +19,6 @@ from crewborg.strategy.meeting import (
 from crewborg.strategy.meeting.accusation import build_accusation, fabricate_accusation
 from crewborg.strategy.meeting.context import (
     CHAT_COOLDOWN_TICKS,
-    VOTE_TIMER_TICKS,
 )
 from crewborg.strategy.meeting.imposter import (
     bandwagon_target,
@@ -34,7 +33,7 @@ from players.player_sdk import EmptyModeParams, Mode
 LLM_MIN_CALL_INTERVAL_TICKS = 12
 DEADLINE_LLM_REMAINING_TICKS = 96
 AUTO_SUBMIT_REMAINING_TICKS = 48
-MEETING_TICKS_PER_SECOND = VOTE_TIMER_TICKS // 10
+MEETING_TICKS_PER_SECOND = 24
 LLM_TIMEOUT_MARGIN_TICKS = LLM_MIN_CALL_INTERVAL_TICKS
 DEFAULT_LLM_TIMEOUT_SECONDS = 3.0
 
@@ -320,13 +319,12 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
                 "latency_ms": round(result.latency_ms, 2),
                 "usage": result.usage,
                 "decision": decision.model_dump(mode="json"),
+                "provider_decision": result.decision.model_dump(mode="json"),
+                "inference_mode": result.inference_mode,
+                "provider_request": result.raw_request,
+                "provider_response": result.raw_response,
             },
         )
-        if result.raw_request is not None or result.raw_response is not None:
-            self.emit.event(
-                "meeting_llm_debug",
-                {"request": result.raw_request, "response": result.raw_response},
-            )
 
     # --- decision application --------------------------------------------
 
@@ -430,7 +428,7 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return self._last_chat_tick is None or belief.last_tick - self._last_chat_tick >= CHAT_COOLDOWN_TICKS
 
     def _remaining_ticks(self, belief: Belief) -> int:
-        return max(0, VOTE_TIMER_TICKS - max(0, belief.last_tick - belief.phase_start_tick))
+        return max(0, belief.vote_timer_ticks - max(0, belief.last_tick - belief.phase_start_tick))
 
     def _should_auto_submit(self, belief: Belief) -> bool:
         return not self._vote_submitted and self._remaining_ticks(belief) <= AUTO_SUBMIT_REMAINING_TICKS

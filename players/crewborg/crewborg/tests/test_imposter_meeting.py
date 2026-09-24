@@ -181,7 +181,7 @@ def test_meeting_decision_trace_captures_the_bandwagon_and_its_heat() -> None:
 
 def test_imposter_skips_at_the_deadline_when_no_crewmate_takes_heat() -> None:
     mode = AttendMeetingMode()
-    belief = Belief(phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0)
+    belief = Belief(phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0, vote_timer_ticks=240)
     belief.voting = _voting()
 
     assert mode.decide(belief, ActionState()).kind == "idle"  # early: wait
@@ -250,7 +250,7 @@ def test_imposter_parity_pushes_instead_of_skipping_one_removal_short() -> None:
 
 def test_imposter_without_a_known_teammate_still_skips_a_flat_endgame() -> None:
     mode = AttendMeetingMode()
-    belief = Belief(phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0)
+    belief = Belief(phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0, vote_timer_ticks=240)
     belief.suspicion = {"red": 0.3, "blue": 0.3, "yellow": 0.3}
     belief.voting = _parity_voting(teammate="green")  # green present but not known as ours
 

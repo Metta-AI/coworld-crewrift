@@ -25,6 +25,7 @@ def test_sidecar_endpoint_alone_passes_the_backend_gate():
         {"CREWBORG_LLM_COMMANDER": "1", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://localhost:4000"}
     )
     assert client.disabled_reason != "no LLM backend configured"
+    assert str(client._client.base_url) == "http://localhost:4000"
 
 
 def test_no_signals_still_reports_no_backend():

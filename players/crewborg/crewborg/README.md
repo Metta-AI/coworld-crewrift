@@ -146,6 +146,8 @@ fabricated safe cues, in the *identical* chat format a crewmate uses (so it isn'
   top of the deterministic path behind circuit breakers. With the flags off, play is
   byte-identical and no model is contacted. The deterministic path must always cast a legal
   action — the LLM is never on the correctness path.
+  `CREWBORG_MEETING_BACKEND=jev` selects Jev System One for legal meeting votes while leaving chat
+  generation out of the pilot. The player reads the vote duration from the game's Game Info screen.
 - **Crewborg owns its transport.** The SDK's JSON bridge doesn't fit a binary game, so
   `coworld/policy_player.py` is crewborg's own websocket bridge: connect to
   `COWORLD_PLAYER_WS_URL`, decode Sprite-v1 → `SceneState`, drive the runtime, retry the
@@ -256,7 +258,6 @@ transport tuning never do.
 | `CREWBORG_LLM_MODEL` | Haiku-class | override the model id. |
 | `CREWBORG_LLM_TIMEOUT_SECONDS` | `3.0` | per-call timeout (meetings are time-boxed). |
 | `CREWBORG_LLM_MAX_TOKENS` | `512` | LLM max output tokens. |
-| `CREWBORG_LLM_TEMPERATURE` | `0.2` | LLM temperature. |
 | `CREWBORG_LLM_PROMPT_DIR` | bundled | override the prompt directory. |
 | `CREWBORG_LLM_TRACE_RAW` | off | `1` traces raw LLM payloads (also on under `CREWBORG_TRACE=debug`). |
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from io import BytesIO
+import json
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -11,8 +12,7 @@ from crewborg.strategy.meeting import llm as meeting_llm
 from crewborg.strategy.meeting.prompts import system_prompt_for_context
 
 
-@dataclass(frozen=True)
-class _Call:
+class _Call(NamedTuple):
     text: str
     usage: dict[str, Any] | None = None
     latency_ms: float = 12.5
@@ -88,6 +88,148 @@ def test_factory_selects_bedrock_backend(monkeypatch: pytest.MonkeyPatch) -> Non
     assert selected == [{"use_bedrock": True, "timeout": 3.0}]
 
 
+def test_factory_uses_messages_api_for_hosted_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected: list[dict[str, Any]] = []
+    monkeypatch.setattr(meeting_llm, "_load_sdk_helpers", lambda: _helpers(use_bedrock=False, selected=selected))
+
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {
+            "CREWBORG_LLM_MEETINGS": "1",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9100",
+            "CREWBORG_LLM_MODEL": "anthropic/claude-haiku-4.5",
+        }
+    )
+
+    assert isinstance(client, meeting_llm.AnthropicMeetingClient)
+    assert str(client._client.base_url) == "http://127.0.0.1:9100"
+    assert client.config.model == "anthropic/claude-haiku-4.5"
+    assert selected == []
+
+
+def test_factory_selects_jev_sidecar_without_player_slot() -> None:
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {
+            "CREWBORG_LLM_MEETINGS": "1",
+            "CREWBORG_MEETING_BACKEND": "jev",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "http://127.0.0.1:9000/",
+        }
+    )
+
+    assert isinstance(client, meeting_llm.JevMeetingClient)
+    assert client.endpoint == "http://127.0.0.1:9000"
+    assert client.headers == {}
+
+
+def test_factory_disables_jev_when_no_backend_is_configured() -> None:
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {"CREWBORG_LLM_MEETINGS": "1", "CREWBORG_MEETING_BACKEND": "jev"}
+    )
+
+    assert not client.enabled
+    assert client.disabled_reason == "no Jev backend configured"
+
+
+def test_factory_selects_direct_typesafe_jev() -> None:
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {
+            "CREWBORG_LLM_MEETINGS": "1",
+            "CREWBORG_MEETING_BACKEND": "jev",
+            "TYPESAFE_API_KEY": "private-test-key",
+            "TYPESAFE_BASE_URL": "https://example.test/",
+        }
+    )
+
+    assert isinstance(client, meeting_llm.JevMeetingClient)
+    assert client.endpoint == "https://example.test"
+    assert client.model == "jev-latest"
+    assert client.headers == {"Authorization": "Bearer private-test-key"}
+
+
+def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[dict[str, Any]] = []
+
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        sent.append({"url": request.full_url, "body": json.loads(request.data), "timeout": timeout})
+        return BytesIO(
+            json.dumps(
+                {
+                    "answers": {
+                        "vote": {
+                            "type": "choice",
+                            "choice": "red",
+                            "confidence": 0.8,
+                            "probabilities": {"red": 0.7, "skip": 0.3},
+                        }
+                    },
+                    "usage": {"cost": 0.00002},
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
+    context = {
+        "self": {"role": "crewmate", "color": "blue"},
+        "meeting": {"id": 42},
+        "constraints": {"valid_vote_targets": ["red", "skip"]},
+    }
+
+    early = client.decide(context, trigger="meeting_start")
+    late = client.decide(context, trigger="deadline")
+
+    assert early.decision.action == "set_tentative_vote"
+    assert late.decision.action == "submit_vote"
+    assert early.decision.vote_target == late.decision.vote_target == "red"
+    assert early.usage == {"cost_usd": 0.00002}
+    assert early.raw_request == sent[0]["body"]
+    assert early.inference_mode == "typed_choice"
+    assert early.raw_response is not None and '"answers"' in early.raw_response
+    assert sent[0]["url"] == "http://sidecar/v1/systemone"
+    assert sent[0]["body"]["questions"]["vote"]["criteria"] == {"red": "Vote out red", "skip": "Skip the vote"}
+
+
+def test_jev_meeting_accepts_typesafe_usage_without_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        del request, timeout
+        return BytesIO(
+            b'{"answers":{"vote":{"type":"choice","choice":"skip","confidence":0.8,"probabilities":{"red":0.2,"skip":0.8}}},"usage":{"input_tokens":100,"output_tokens":10}}'
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="https://api.typesafe.ai", headers={"Authorization": "Bearer key"})
+    result = client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="deadline")
+
+    assert result.decision.vote_target == "skip"
+    assert result.usage == {"input_tokens": 100, "output_tokens": 10}
+
+
+def test_jev_meeting_rejects_incomplete_probability_map(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        del request, timeout
+        return BytesIO(
+            b'{"answers":{"vote":{"type":"choice","choice":"red","confidence":0.8,"probabilities":{"red":1.0}}},"usage":{"cost":0.00002}}'
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
+    with pytest.raises(ValueError, match="wrong vote target set"):
+        client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="meeting_start")
+
+
+def test_jev_meeting_rejects_choice_that_disagrees_with_probabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        del request, timeout
+        return BytesIO(
+            b'{"answers":{"vote":{"type":"choice","choice":"skip","confidence":0.8,'
+            b'"probabilities":{"red":0.8,"skip":0.2}}},"usage":{"input_tokens":100}}'
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="http://sidecar", headers={})
+    with pytest.raises(ValueError, match="not a most probable vote target"):
+        client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="deadline")
+
+
 def test_factory_construction_failure_disables_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail() -> meeting_llm._SDKHelpers:
         raise RuntimeError("sdk unavailable")
@@ -124,6 +266,9 @@ def test_client_uses_call_json_and_role_prompt_from_context(tmp_path) -> None:
     assert calls[0]["model"] == "fake-haiku"
     assert "IMPOSTER ONLY" in calls[0]["system"]
     assert "CREW ONLY" not in calls[0]["system"]
+    assert result.inference_mode == "native_language"
+    assert result.raw_request == {key: value for key, value in calls[0].items() if key != "client"}
+    assert result.raw_response == '{"schema_version":1,"action":"wait"}'
 
 
 def test_prompt_loader_uses_files_and_missing_file_fallback(tmp_path) -> None:
