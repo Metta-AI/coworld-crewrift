@@ -49,7 +49,9 @@ class JevAnswer(BaseModel):
 
 
 class JevUsage(BaseModel):
-    cost: float
+    model_config = ConfigDict(extra="allow")
+
+    cost: float | None = None
 
 
 class JevResponse(BaseModel):
@@ -187,6 +189,9 @@ class JevMeetingClient:
         choice = max(criteria, key=answer.probabilities.__getitem__)
         if answer.probabilities[answer.choice] == answer.probabilities[choice]:
             choice = answer.choice
+        usage = payload.usage.model_dump(exclude_none=True)
+        if "cost" in usage:
+            usage["cost_usd"] = usage.pop("cost")
         return MeetingLLMResult(
             decision=MeetingDecision(
                 action="submit_vote" if trigger == "deadline" else "set_tentative_vote",
@@ -196,7 +201,7 @@ class JevMeetingClient:
             ),
             model=self.model,
             latency_ms=(time.monotonic() - started) * 1000,
-            usage={"cost_usd": payload.usage.cost},
+            usage=usage,
             raw_request=request if self.trace_raw else None,
             raw_response=raw_response.decode() if self.trace_raw else None,
         )
@@ -212,6 +217,7 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
         if sidecar:
             endpoint = sidecar.rstrip("/")
             headers = {}
+            default_model = JEV_MEETING_MODEL
         elif capture:
             if not env.get("METTA_CAPTURE_KEY"):
                 return DisabledMeetingClient("METTA_CAPTURE_KEY is required for Jev capture")
@@ -220,15 +226,21 @@ def build_meeting_llm_client_from_env(env: dict[str, str] | None = None) -> Meet
                 "Authorization": f"Bearer {env['METTA_CAPTURE_KEY']}",
                 "X-Metta-Trajectory-Id": "crewrift-jev-meeting",
             }
+            default_model = JEV_MEETING_MODEL
+        elif env.get("TYPESAFE_API_KEY"):
+            endpoint = env.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai").rstrip("/")
+            headers = {"Authorization": f"Bearer {env['TYPESAFE_API_KEY']}"}
+            default_model = "jev-latest"
         else:
             if not env.get("OPENROUTER_API_KEY"):
                 return DisabledMeetingClient("no Jev backend configured")
             endpoint = "https://openrouter.ai/api"
             headers = {"Authorization": f"Bearer {env['OPENROUTER_API_KEY']}"}
+            default_model = JEV_MEETING_MODEL
         return JevMeetingClient(
             endpoint=endpoint,
             headers=headers,
-            model=env.get("CREWBORG_LLM_MODEL", JEV_MEETING_MODEL),
+            model=env.get("CREWBORG_LLM_MODEL", default_model),
             timeout_seconds=_env_float(env, "CREWBORG_LLM_TIMEOUT_SECONDS", 3.0),
             trace_raw=env.get("CREWBORG_LLM_TRACE_RAW", "").strip().lower() in {"1", "true", "yes", "on"},
         )

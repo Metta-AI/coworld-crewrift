@@ -111,6 +111,22 @@ def test_factory_disables_jev_when_no_backend_is_configured() -> None:
     assert client.disabled_reason == "no Jev backend configured"
 
 
+def test_factory_selects_direct_typesafe_jev() -> None:
+    client = meeting_llm.build_meeting_llm_client_from_env(
+        {
+            "CREWBORG_LLM_MEETINGS": "1",
+            "CREWBORG_MEETING_BACKEND": "jev",
+            "TYPESAFE_API_KEY": "private-test-key",
+            "TYPESAFE_BASE_URL": "https://example.test/",
+        }
+    )
+
+    assert isinstance(client, meeting_llm.JevMeetingClient)
+    assert client.endpoint == "https://example.test"
+    assert client.model == "jev-latest"
+    assert client.headers == {"Authorization": "Bearer private-test-key"}
+
+
 def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[dict[str, Any]] = []
 
@@ -150,6 +166,21 @@ def test_jev_meeting_ranks_legal_votes_and_reports_cost(monkeypatch: pytest.Monk
     assert early.raw_request == sent[0]["body"]
     assert sent[0]["url"] == "http://sidecar/v1/systemone"
     assert sent[0]["body"]["questions"]["vote"]["criteria"] == {"red": "Vote out red", "skip": "Skip the vote"}
+
+
+def test_jev_meeting_accepts_typesafe_usage_without_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(request: Any, *, timeout: float) -> BytesIO:
+        del request, timeout
+        return BytesIO(
+            b'{"answers":{"vote":{"type":"choice","choice":"skip","confidence":0.8,"probabilities":{"red":0.2,"skip":0.8}}},"usage":{"input_tokens":100,"output_tokens":10}}'
+        )
+
+    monkeypatch.setattr(meeting_llm, "urlopen", urlopen)
+    client = meeting_llm.JevMeetingClient(endpoint="https://api.typesafe.ai", headers={"Authorization": "Bearer key"})
+    result = client.decide({"constraints": {"valid_vote_targets": ["red", "skip"]}}, trigger="deadline")
+
+    assert result.decision.vote_target == "skip"
+    assert result.usage == {"input_tokens": 100, "output_tokens": 10}
 
 
 def test_jev_meeting_rejects_incomplete_probability_map(monkeypatch: pytest.MonkeyPatch) -> None:

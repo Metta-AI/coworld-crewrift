@@ -423,6 +423,7 @@ All meeting LLM knobs are env-driven and read in `build_meeting_llm_client_from_
 | `USE_BEDROCK` / `CLAUDE_CODE_USE_BEDROCK` | — | Bedrock backend (set by `--use-bedrock` at upload). |
 | `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` | — | Sidecar Bedrock signal injected by the hosted runner. |
 | `OPENROUTER_API_KEY` | — | Direct Jev calls in local episodes when no sidecar or capture proxy is present. |
+| `TYPESAFE_API_KEY` / `TYPESAFE_BASE_URL` | — / `https://api.typesafe.ai` | Direct TypeSafe Jev calls when no sidecar or capture proxy is present. Uses `jev-latest` unless the model is overridden. |
 | `METTA_CAPTURE_URL` / `METTA_CAPTURE_KEY` | — | Optional local Jev trace capture proxy. |
 
 The default Bedrock model id resolves through the SDK; the dataclass fallback default is
