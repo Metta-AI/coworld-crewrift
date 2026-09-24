@@ -54,7 +54,7 @@ def test_export_joins_typed_vote_and_native_chat_to_one_replay_effect_each(
                     "system": "Speak plainly",
                     "user": '{"meeting":1}',
                 },
-                "provider_response": '{"action":"send_chat","chat_text":"Hi crew"}',
+                "provider_response": '{"action":"send_chat","chat_text":"—Hi crew"}',
                 "decision": {
                     "action": "send_chat",
                     "chat_text": "Hi crew",
@@ -62,7 +62,7 @@ def test_export_joins_typed_vote_and_native_chat_to_one_replay_effect_each(
                 },
                 "provider_decision": {
                     "action": "send_chat",
-                    "chat_text": "Hi crew",
+                    "chat_text": "—Hi crew",
                     "vote_target": None,
                 },
             },
@@ -154,6 +154,23 @@ def test_export_joins_typed_vote_and_native_chat_to_one_replay_effect_each(
         "chat",
         "vote_cast",
     ]
+
+    trace[0]["data"]["provider_decision"]["chat_text"] = "Different chat"
+    trace_path.write_text("".join(json.dumps(row) + "\n" for row in trace))
+    wrong_chat = export_complete_episode.export_episode(
+        replay=replay_path,
+        expander=tmp_path / "expander",
+        trace=trace_path,
+        results=results_path,
+        output=tmp_path / "wrong-chat.jsonl",
+        episode_id="ereq-wrong-chat",
+        seat=0,
+        source_revision="a" * 40,
+        game_version="0.1.67",
+    )
+    assert [row["action_status"] for row in wrong_chat["decisions"]] == ["rejected", "accepted"]
+    trace[0]["data"]["provider_decision"]["chat_text"] = "—Hi crew"
+    trace_path.write_text("".join(json.dumps(row) + "\n" for row in trace))
 
     rows[4]["value"] = {"target_slot": 0}
     mismatch = export_complete_episode.export_episode(

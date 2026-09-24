@@ -12,6 +12,8 @@ from bisect import bisect_right
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
+from crewborg.strategy.meeting.schema import sanitize_chat
+
 
 def export_episode(
     *,
@@ -182,7 +184,7 @@ def export_episode(
                 not selections
                 or not relevant
                 or relevant[-1][1]["data"]["decision"]["chat_text"] != text
-                or relevant[-1][1]["data"]["provider_decision"]["chat_text"] != text
+                or sanitize_chat(relevant[-1][1]["data"]["provider_decision"]["chat_text"]) != text
             ):
                 continue
             index, _ = relevant[-1]
