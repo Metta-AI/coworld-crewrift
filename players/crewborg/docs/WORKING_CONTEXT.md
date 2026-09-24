@@ -27,6 +27,8 @@ This is *not* a log or archive: finished work lives in git history / the
 
 September 24 Jev pilot: draft PR #175 adds a Jev System One meeting-vote client and reads the vote timer from the Game Info screen. The old 240-tick assumption did not match Classic (7,200), Prime (1,200), or the vote drill (600). The local `linux/amd64` image completed role-aware crew and imposter episodes. Crew made six Jev calls for $0.001350216 and cast two skip votes; imposter made four calls for $0.000998004 and cast votes for blue and skip. Both seats had zero vote timeouts. These are liveness checks, not gameplay comparisons. `startWaitTicks=0` suppresses Game Info in the current game version, so the timer cannot be read in that variant; the live Classic and Prime configurations show it. Hosted Experience Requests remain outstanding. No policy has been uploaded or submitted.
 
+September 24 replay follow-up: three source-built local games produced hash-checked replays and twelve typed Jev meeting choices. The exporter joined four choices to applied votes and left eight unselected. Metta imported two accepted training labels and two seed-separated validation labels; a one-step 8,192-token adapter lowered completion loss on both heldout CrewRift decisions. This is an offline data-path check. Observatory-hosted sidecar execution and a matched gameplay comparison remain open.
+
 1. **Crew vote rate is evidence-limited, not gate-limited.** Crew votes only at fitted P≥0.9
    (`CREWBORG_WEIGHTS_VOTE_P`, `strategy/suspicion.py`); live posteriors cross it in only ~23% of
    meetings (median max-posterior at meeting ≈ 0.67) since the game's 0.4.28/29 update. Precision is
