@@ -29,6 +29,8 @@ September 24 Jev pilot: draft PR #175 adds a Jev System One meeting-vote client 
 
 September 24 replay follow-up: three source-built local games produced hash-checked replays and twelve typed Jev meeting choices. The exporter joined four choices to applied votes and left eight unselected. Metta imported two accepted training labels and two seed-separated validation labels; a one-step 8,192-token adapter lowered completion loss on both heldout CrewRift decisions. This is an offline data-path check. Observatory-hosted sidecar execution and a matched gameplay comparison remain open.
 
+September 24 hosted sidecar follow-up: a CrewRift Prime Experience Request (`xreq_92c82a31-6d5d-4cdc-a7ad-3d06a6b551ad`) completed with three Jev `typed_choice` decisions and no model fallback. A first language trial (`xreq_6436d4ca-1563-4217-92d4-ee7a75b9fb0e`) exposed an `InvokeModel` routing error. The corrected Messages client completed `xreq_4dd03a6a-bc1d-42bf-8838-c204fd93c77e` with 17 `native_language` decisions, 16 sent chats, and two cast votes. Two late calls hit the trial's $0.125 per-seat spend ceiling and fell back. The hosted proof uses a lean trial image without optional spaCy chat parsing; the production Dockerfile build and matched gameplay comparison remain open.
+
 1. **Crew vote rate is evidence-limited, not gate-limited.** Crew votes only at fitted P≥0.9
    (`CREWBORG_WEIGHTS_VOTE_P`, `strategy/suspicion.py`); live posteriors cross it in only ~23% of
    meetings (median max-posterior at meeting ≈ 0.67) since the game's 0.4.28/29 update. Precision is
