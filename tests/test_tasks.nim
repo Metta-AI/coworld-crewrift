@@ -133,6 +133,29 @@ suite "task assignment":
       check assignment.taskIds.hasUniqueTasks()
       check assignment.routeCost > 0
 
+  test "shadow imposter task list uses assignment details":
+    var config = defaultGameConfig()
+    config.tasksPerPlayer = 8
+
+    let sim = initCrewriftForTest(config)
+    var rng = initRand(9901)
+    let assignments = taskAssignments.assignTaskDetails(
+      sim.taskRects(),
+      sim.walkMask,
+      MapWidth,
+      MapHeight,
+      sim.gameMap.home.x,
+      sim.gameMap.home.y,
+      1,
+      config.tasksPerPlayer,
+      rng
+    )
+
+    check assignments.len == 1
+    check assignments[0].taskIds.len == config.tasksPerPlayer
+    check assignments[0].taskIds.hasUniqueTasks()
+    check assignments[0].routeCost > 0
+
   test "production task routes reroll without duplicates":
     let sim = initCrewriftForTest(defaultGameConfig())
     for seed in 0 ..< 10:

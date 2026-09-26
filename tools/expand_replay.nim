@@ -846,16 +846,36 @@ proc printVotes(
         )
       votes[i] = v
 
+proc sameChatMessage(a, b: ChatMessage): bool =
+  ## Returns true when two visible chat rows are the same row.
+  a.slotId == b.slotId and a.color == b.color and a.text == b.text
+
+proc chatWindowOverlap(
+  previous,
+  current: openArray[ChatMessage]
+): int =
+  ## Returns the largest suffix to prefix overlap between chat windows.
+  result = min(previous.len, current.len)
+  while result > 0:
+    let start = previous.len - result
+    var matches = true
+    for i in 0 ..< result:
+      if not previous[start + i].sameChatMessage(current[i]):
+        matches = false
+        break
+    if matches:
+      return
+    dec result
+
 proc printChats(
   sim: SimServer,
   tick: int,
   events: var seq[ReplayEvent],
-  chatCount: var int
+  chatWindow: var seq[ChatMessage]
 ) =
-  ## Adds visible voting chat since the previous tick.
-  if sim.chatMessages.len < chatCount:
-    chatCount = 0
-  for i in chatCount ..< sim.chatMessages.len:
+  ## Adds newly visible voting chat since the previous tick.
+  let overlap = chatWindow.chatWindowOverlap(sim.chatMessages)
+  for i in overlap ..< sim.chatMessages.len:
     let chat = sim.chatMessages[i]
     for playerIndex, p in sim.players:
       if p.joinOrder == chat.slotId:
@@ -870,7 +890,7 @@ proc printChats(
           task: -1,
           phase: sim.phase
         )
-  chatCount = sim.chatMessages.len
+  chatWindow = sim.chatMessages
 
 proc scoreAmount(amount: int): string =
   ## Returns a readable score amount.
@@ -1147,7 +1167,7 @@ proc expandReplayTimeline*(
       rewards: seq[int]
       printedBodies: seq[string]
       done: seq[seq[bool]]
-      chatCount = 0
+      chatWindow: seq[ChatMessage]
       phase = sim.phase
       manifestedPlayers: seq[bool]
       visibilityIntervals: seq[VisibilityInterval]
@@ -1213,7 +1233,7 @@ proc expandReplayTimeline*(
       sim.printPlayerChanges(tick, result.events, alive, tasks, rooms, bodyVictims)
       sim.printTaskCompletions(tick, result.events, done)
       sim.printVotes(tick, result.events, votes)
-      sim.printChats(tick, result.events, chatCount)
+      sim.printChats(tick, result.events, chatWindow)
       sim.printScoreChanges(tick, result.events, rewards)
       if contextRows:
         sim.addPlayerManifestRows(tick, result.traceRows, manifestedPlayers)
