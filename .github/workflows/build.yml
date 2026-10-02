@@ -21,3 +21,31 @@ jobs:
       - run: nimby create && nimby sync nimby.lock -g
       - run: nim check src/crewrift.nim
       - run: nim r tests/tests.nim
+      - name: Native notsus transport regression
+        run: nim r tests/test_notsus_native_llm.nim
+
+  language-players:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: Metta-AI/coworld-tools
+          path: .shared-tools
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install anthropic pydantic numpy cramjam pytest pytest-asyncio websockets httpx
+      - name: Meeting and commander native routing
+        env:
+          PYTHONPATH: players/crewborg:.shared-tools/players
+        run: >-
+          python -m pytest players/crewborg/crewborg/tests/test_native_llm.py
+          players/crewborg/crewborg/tests/test_meeting_llm.py
+          players/crewborg/crewborg/tests/test_meeting_bedrock_gate.py
+          players/crewborg/crewborg/tests/test_commander* -q
+      - name: Self-contained meeting player
+        env:
+          PYTHONPATH: players/crewborg-aaln
+        run: python -m pytest players/crewborg-aaln/players/crewrift/crewborg/tests/test_meeting_modes.py -q

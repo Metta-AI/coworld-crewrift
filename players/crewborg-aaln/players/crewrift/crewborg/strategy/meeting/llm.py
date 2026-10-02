@@ -32,6 +32,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_BEDROCK = "bedrock"
 PROVIDER_OPENROUTER = "openrouter"
+PROVIDER_SIDECAR = "sidecar"
 
 
 @dataclass(frozen=True)
@@ -115,7 +116,13 @@ class AnthropicMeetingClient:
     def _anthropic_client(self) -> Any:
         if self._client is not None:
             return self._client
-        if self.config.use_bedrock:
+        if self.config.provider == PROVIDER_SIDECAR:
+            from anthropic import Anthropic
+            self._client = Anthropic(
+                base_url=self.config.base_url, api_key="sidecar",
+                timeout=self.config.timeout_seconds, max_retries=0,
+            )
+        elif self.config.use_bedrock:
             # AnthropicBedrock authenticates through the standard AWS environment
             # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN and
             # AWS_REGION), the same way the direct client reads ANTHROPIC_API_KEY.
@@ -149,7 +156,7 @@ class AnthropicMeetingClient:
         response = self._anthropic_client().messages.create(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
+            extra_body={"temperature": self.config.temperature},
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
@@ -284,6 +291,8 @@ def _resolve_provider(env: Mapping[str, str]) -> str:
     and the default is the direct Anthropic API.
     """
 
+    if env.get("COWORLD_LLM_ENDPOINT", "").strip():
+        return PROVIDER_SIDECAR
     explicit = env.get("CREWBORG_LLM_PROVIDER", "").strip().lower()
     if explicit in {PROVIDER_ANTHROPIC, PROVIDER_BEDROCK, PROVIDER_OPENROUTER}:
         return explicit
@@ -295,6 +304,8 @@ def _resolve_provider(env: Mapping[str, str]) -> str:
 
 
 def _resolve_api_key(env: Mapping[str, str], provider: str) -> str | None:
+    if provider == PROVIDER_SIDECAR:
+        return "sidecar"
     if provider == PROVIDER_OPENROUTER:
         return env.get("OPENROUTER_API_KEY") or None
     if provider == PROVIDER_ANTHROPIC:
@@ -303,8 +314,10 @@ def _resolve_api_key(env: Mapping[str, str], provider: str) -> str | None:
 
 
 def _resolve_base_url(env: Mapping[str, str], provider: str) -> str | None:
+    if provider == PROVIDER_SIDECAR:
+        return env["COWORLD_LLM_ENDPOINT"].rstrip("/")
     if provider == PROVIDER_BEDROCK:
-        return env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") or None
+        return env.get("ANTHROPIC_BEDROCK_BASE_URL") or None
     if provider == PROVIDER_OPENROUTER:
         return env.get("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL
     return None
@@ -315,13 +328,12 @@ def _bedrock_enabled(env: Mapping[str, str]) -> bool:
         _truthy_value(env.get("CREWBORG_USE_BEDROCK", ""))
         or _truthy_value(env.get("USE_BEDROCK", ""))
         or _truthy_value(env.get("CLAUDE_CODE_USE_BEDROCK", ""))
-        # Coworld's hosted sidecar exposes its endpoint after stripping the
-        # upload-time USE_BEDROCK marker.
-        or bool(env.get("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "").strip())
     )
 
 
 def _resolve_model(env: Mapping[str, str], provider: str) -> str:
+    if provider == PROVIDER_SIDECAR:
+        return env.get("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
     explicit = env.get("CREWBORG_LLM_MODEL")
     if explicit:
         return explicit

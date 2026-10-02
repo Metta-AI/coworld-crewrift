@@ -566,7 +566,6 @@ def test_bedrock_flag_aliases_are_accepted() -> None:
         "USE_BEDROCK",
         "CREWBORG_USE_BEDROCK",
         "CLAUDE_CODE_USE_BEDROCK",
-        "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
     ):
         params = read_meeting_params_from_env({flag: "true"})
         assert params.use_bedrock is True, flag
@@ -581,9 +580,9 @@ def test_bedrock_sidecar_endpoint_is_propagated_to_client(monkeypatch) -> None:
         def __init__(self, **kwargs) -> None:
             captured.update(kwargs)
 
-    monkeypatch.setattr(anthropic, "AnthropicBedrock", FakeBedrock)
+    monkeypatch.setattr(anthropic, "Anthropic", FakeBedrock)
     endpoint = "http://localhost:4000"
-    params = read_meeting_params_from_env({"AWS_ENDPOINT_URL_BEDROCK_RUNTIME": endpoint})
+    params = read_meeting_params_from_env({"COWORLD_LLM_ENDPOINT": endpoint})
     client = build_meeting_client(params)
 
     assert params.base_url == endpoint

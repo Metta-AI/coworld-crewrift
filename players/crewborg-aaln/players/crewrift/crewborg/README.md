@@ -308,10 +308,10 @@ coworld upload-policy <image> --name crewborg --secret-env OPENROUTER_API_KEY=sk
 coworld upload-policy <image> --name crewborg --secret-env ANTHROPIC_API_KEY=sk-ant-...
 
 # AWS Bedrock instead (no key; uses the pod's IRSA role):
-coworld upload-policy <image> --name crewborg --use-bedrock
+coworld upload-policy <image> --name crewborg --use-llm
 ```
 
-`--use-bedrock` is shorthand for `--secret-env USE_BEDROCK=true`. It both sets
+`--use-llm` is shorthand for `--secret-env USE_BEDROCK=true`. It both sets
 the flag the code reads and routes this policy version's pods to a
 Bedrock-enabled service account that supplies the AWS credentials on the hosted
 runner, so no AWS keys need to be passed explicitly. The exact `--secret-env` /
@@ -328,3 +328,12 @@ players/crewrift/crewborg/build.sh --no-build # only render manifests
 The build context is the repo root; the image installs the local `players`
 package (no mettagrid/cogames stack needed). **stdout = protocol channel,
 stderr = logs/traces.**
+
+## Native hosted LLM access
+
+Hosted language calls use `COWORLD_LLM_ENDPOINT` and native Messages requests.
+`COWORLD_LLM_MODEL` selects the canonical model; the default is
+`anthropic/claude-haiku-4.5`. Upload with Coworld 0.1.56 or newer and
+`--use-llm --llm-model anthropic/claude-haiku-4.5`. Each platform player pod
+uses its own seat attribution. Local provider configuration remains available
+for local runs.

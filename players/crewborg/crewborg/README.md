@@ -323,3 +323,12 @@ transport tuning never do.
   (`Metta-AI/coworld-crewrift`): `README.md`, `docs/sprite_v1.md`, `src/crewrift/sim.nim`, and
   the reference bot `players/notsus/`. The consolidated game + SDK orientation is the
   player-directory **top-level `AGENTS.md`**.
+
+## Native hosted LLM access
+
+Hosted language calls use `COWORLD_LLM_ENDPOINT` and native Messages requests.
+`COWORLD_LLM_MODEL` selects the canonical model; the default is
+`anthropic/claude-haiku-4.5`. Upload with Coworld 0.1.56 or newer and
+`--use-llm --llm-model anthropic/claude-haiku-4.5`. Each platform player pod
+uses its own seat attribution. Local provider configuration remains available
+for local runs.
