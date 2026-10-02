@@ -12,7 +12,7 @@ with `--help`; the CLI ships ahead of the metta checkout. Auth: `softmax login`
   the SDK is installed from the public `Metta-AI/coworld-tools` repo (see `crewborg/coworld/Dockerfile`).
 - A running **Docker daemon** is required for both build and upload.
 
-## upload — `coworld upload-policy <IMAGE> --name/-n NAME [--run TOK]... [--secret-env K=V]... [--tag K=V]... [--use-bedrock] [--bedrock-model ID] [--server]`
+## upload — `coworld upload-policy <IMAGE> --name/-n NAME [--run TOK]... [--secret-env K=V]... [--tag K=V]... [--use-llm] [--llm-model ID] [--server]`
 
 - `<IMAGE>` (positional, required) = a **local** docker image tag (not a registry URI). The client
   `docker image save`s it, hashes it, and pushes to a Softmax-managed ECR via raw OCI calls (a
@@ -25,8 +25,8 @@ with `--help`; the CLI ships ahead of the metta checkout. Auth: `softmax login`
 - **`--secret-env K=V`** (repeatable) = environment variables for policy execution, stored in AWS
   Secrets Manager. This is how crewborg's **LLM toggles** are injected (below).
 - **`--tag K=V`** (repeatable) = private bookkeeping tags (e.g. `--tag purpose=llm-test`); not behavior.
-- **`--use-bedrock`** = sets `USE_BEDROCK=true` in the policy environment. **`--bedrock-model ID`** =
-  sets `BEDROCK_MODEL` (requires `--use-bedrock`).
+- **`--use-llm`** = enables the native LLM sidecar in the policy environment. **`--llm-model ID`** =
+  selects `COWORLD_LLM_MODEL` (requires `--use-llm`).
 - Routes: `POST /v2/container_images/upload` (+ `/complete`) for the image, then
   **`POST /stats/policies/docker-img/complete`** `{name, container_image_id, run?, policy_secret_env?}`.
   Returns `PolicyVersionResponse {id (pv UUID), name, version, pools, submit_error}`. The CLI prints
@@ -38,8 +38,8 @@ with `--help`; the CLI ships ahead of the metta checkout. Auth: `softmax login`
 
 crewborg's LLM layers are **opt-in (off by default)**. Enable them at upload with:
 
-- `--use-bedrock` (+ optional `--bedrock-model`) — backend access. In a hosted pod crewborg gates on
-  the sidecar's injected `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, not on `USE_BEDROCK` — see the Bedrock
+- `--use-llm` (+ optional `--llm-model`) — backend access. In a hosted pod crewborg gates on
+  the sidecar's injected `COWORLD_LLM_ENDPOINT`, not on `USE_BEDROCK` — see the Bedrock
   section of [`coworld-platform.md`](../../../docs/reference/coworld-platform.md#bedrock--in-pod-llm).
 - `--secret-env CREWBORG_LLM_MEETINGS=1` and/or `--secret-env CREWBORG_LLM_COMMANDER=1` — crewborg's
   own toggles (both default off). Tuning vars (`CREWBORG_LLM_MODEL`, `CREWBORG_LLM_MAX_TOKENS`,

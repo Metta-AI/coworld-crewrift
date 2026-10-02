@@ -160,7 +160,7 @@ def test_runtime_with_commander_trace_group_reports_backend_env_seen(monkeypatch
     monkeypatch.delenv("USE_BEDROCK", raising=False)
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "false")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", raising=False)
+    monkeypatch.delenv("COWORLD_LLM_ENDPOINT", raising=False)
     monkeypatch.setenv("CREWBORG_TRACE_GROUPS", "commander")
     trace = ListTraceSink()
     runtime = build_runtime(trace_sink=trace)
@@ -185,7 +185,7 @@ def test_runtime_with_commander_trace_group_reports_backend_env_seen(monkeypatch
             "USE_BEDROCK": False,
             "CLAUDE_CODE_USE_BEDROCK": False,
             "ANTHROPIC_API_KEY": False,
-            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": False,
+            "COWORLD_LLM_ENDPOINT": False,
         },
     }
 

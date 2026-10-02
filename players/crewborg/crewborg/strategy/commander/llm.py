@@ -121,15 +121,9 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
         return DisabledCommanderClient("CREWBORG_LLM_COMMANDER is not enabled")
     try:
         helpers = _load_sdk_helpers()
-        # Sidecar mode (BEDROCK_SIDECAR_ENABLED) strips USE_BEDROCK / direct AWS identity
-        # from the player container and instead injects the loopback Bedrock proxy endpoint
-        # AWS_ENDPOINT_URL_BEDROCK_RUNTIME (+ dummy creds). The SDK's bedrock_enabled() only
-        # checks USE_BEDROCK / CLAUDE_CODE_USE_BEDROCK, so it wrongly reports no backend in-pod.
-        # Gate on what we actually receive: treat the sidecar endpoint as a Bedrock signal, so
-        # select_client(use_bedrock=True) reaches the SDK's sidecar-routing path. See
-        # docs/reference/coworld-platform.md (platform/SDK fix tracked there).
-        use_bedrock = helpers.bedrock_enabled(env) or _sidecar_bedrock(env)
-        if not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
+        native = _sidecar_llm(env)
+        use_bedrock = helpers.bedrock_enabled(env) and not native
+        if not native and not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
             return DisabledCommanderClient("no LLM backend configured")
         trace_raw = _truthy(env.get("CREWBORG_LLM_TRACE_RAW", ""))
         trace_raw = trace_raw or env.get("CREWBORG_TRACE", "").strip().lower() == "debug"
@@ -139,7 +133,8 @@ def build_commander_client_from_env(env: dict[str, str] | None = None) -> Comman
                 use_bedrock=use_bedrock,
                 direct_model=helpers.default_direct_model,
                 bedrock_model=helpers.default_bedrock_model,
-                explicit=env.get("CREWBORG_LLM_MODEL"),
+                explicit=(env.get("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
+                          if native else env.get("CREWBORG_LLM_MODEL")),
             ),
             use_bedrock=use_bedrock,
             max_tokens=_env_int(env, "CREWBORG_LLM_MAX_TOKENS", 512),
@@ -215,13 +210,13 @@ def _env_float(env: dict[str, str], name: str, default: float) -> float:
 
 #: The loopback Bedrock proxy endpoint the runner injects in sidecar mode (it strips
 #: USE_BEDROCK). Its presence means Bedrock IS available via the sidecar.
-BEDROCK_SIDECAR_ENDPOINT_ENV = "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
+LLM_SIDECAR_ENDPOINT_ENV = "COWORLD_LLM_ENDPOINT"
 
 
-def _sidecar_bedrock(env: dict[str, str]) -> bool:
-    """Whether the Bedrock sidecar endpoint is present (the in-pod Bedrock signal)."""
+def _sidecar_llm(env: dict[str, str]) -> bool:
+    """Whether the native Coworld LLM endpoint is present."""
 
-    return bool(env.get(BEDROCK_SIDECAR_ENDPOINT_ENV, "").strip())
+    return bool(env.get(LLM_SIDECAR_ENDPOINT_ENV, "").strip())
 
 
 def _truthy(value: str) -> bool:

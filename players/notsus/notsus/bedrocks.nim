@@ -6,8 +6,8 @@ import
 const
   BedrockVersion = "bedrock-2023-05-31"
   BedrockTransport = "invoke-model-sigv4"
-  SidecarTransport = "invoke-model-sidecar"
-  SidecarEndpointEnv = "AWS_ENDPOINT_URL_BEDROCK_RUNTIME"
+  SidecarTransport = "native-messages-sidecar"
+  SidecarEndpointEnv = "COWORLD_LLM_ENDPOINT"
   DefaultRegion = "us-east-1"
   DefaultModel = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
   DefaultPlayerName = "notsus"
@@ -82,7 +82,9 @@ proc region(): string =
     result = DefaultRegion
 
 proc model(): string =
-  ## Returns the configured Bedrock model ID for requests.
+  ## Returns the native hosted model, or the local AWS model.
+  if getEnv(SidecarEndpointEnv).strip().len > 0:
+    return getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
   result = bedrockModel.strip()
   if result.len == 0:
     result = getEnv("BEDROCK_CLAUDE_MODEL_ID").strip()
@@ -169,7 +171,7 @@ proc bedrockUrl(): string =
   ## Returns the Bedrock Runtime InvokeModel URL.
   let endpoint = endpointBase()
   if endpoint.len > 0:
-    return endpoint.joinUrl(bedrockPath())
+    return endpoint.joinUrl("/v1/messages")
   "https://" & bedrockHost() & bedrockPath()
 
 proc runtimeText*(): string =
@@ -270,7 +272,10 @@ proc conversationBody(
       item["content"] = %message.content
       chat.add item
   var root = newJObject()
-  root["anthropic_version"] = %BedrockVersion
+  if hasSidecarEndpoint():
+    root["model"] = %model()
+  else:
+    root["anthropic_version"] = %BedrockVersion
   root["max_tokens"] = %BedrockMaxTokens
   root["temperature"] = %BedrockTemperature
   if systemText.len > 0:
@@ -542,7 +547,8 @@ proc buildBedrockRequest(
     if hasSidecarEndpoint():
       @[
         ("Content-Type", "application/json"),
-        ("Accept", "application/json")
+        ("Accept", "application/json"),
+        ("anthropic-version", "2023-06-01")
       ]
     else:
       let credentials = resolveCredentials()

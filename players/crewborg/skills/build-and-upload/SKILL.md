@@ -45,12 +45,12 @@ crewborg plays **fully deterministically by default**; its LLM layers are **opt-
 ```bash
 uv run coworld upload-policy crewborg:dev --name crewborg \
   --run python --run -m --run crewborg.coworld.policy_player \
-  --use-bedrock [--bedrock-model <model-id>] \
+  --use-llm [--llm-model <model-id>] \
   --secret-env CREWBORG_LLM_MEETINGS=1 [--secret-env CREWBORG_LLM_COMMANDER=1]
 ```
 
-- **`--use-bedrock`** sets `USE_BEDROCK=true`; in a hosted episode crewborg routes through the per-pod
-  sidecar (it gates on the injected `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, not on `USE_BEDROCK`). See
+- **`--use-llm`** enables the native LLM sidecar; in a hosted episode crewborg routes through the per-pod
+  sidecar (it gates on the injected `COWORLD_LLM_ENDPOINT`, not on `USE_BEDROCK`). See
   the [Bedrock section](../../docs/reference/coworld-platform.md#bedrock--in-pod-llm).
 - crewborg's own toggles are **env vars**, injected with **`--secret-env`**: `CREWBORG_LLM_MEETINGS=1`
   (meeting chat/votes), `CREWBORG_LLM_COMMANDER=1` (gameplay commander) — both **off** by default.
