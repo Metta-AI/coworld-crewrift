@@ -48,13 +48,13 @@ vendored copies. It is guidance only, not a change to runtime output defaults.
 
 Codex and Claude sessions, histories, prompts, traces, trajectories, recovery
 exports, indexes and databases are archival research data, never disposable QA
-output, regardless of their location. Protection includes these absolute paths
-and patterns on this workspace host:
+output, regardless of their location. Protection includes these home-relative
+paths and patterns on every host:
 
-- `/home/relh/.codex/sessions/` and `/home/relh/.codex/*.sqlite*`
-- `/home/relh/.local/share/codex-accounts/*/sessions/` and account history,
+- `~/.codex/sessions/` and `~/.codex/*.sqlite*`
+- `~/.local/share/codex-accounts/*/sessions/` and account history,
   session indexes, trace databases and recovery exports beneath that tree
-- `/home/relh/.claude/`, including `projects/`, `history.jsonl` and any
+- `~/.claude/`, including `projects/`, `history.jsonl` and any
   session, prompt, trace, recovery, index or database archives
 - Equivalent archives in custom `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, other
   account homes or other locations
