@@ -28,6 +28,8 @@ jobs:
           python3 tests/test_notsus_native_cancel.py /tmp/notsus-native-cancel /tmp/notsus-native-probe
           nim c --threads:on -d:release -d:botHeadless -d:useMalloc --opt:speed --stackTrace:on --out:/tmp/notsus-cli players/notsus/notsus.nim
           python3 tests/test_notsus_scripted_startup.py /tmp/notsus-startup-fixture /tmp/notsus-cli
+          nim c --out:/tmp/notsus-run-tool players/notsus/tools/run.nim
+          python3 tests/test_notsus_native_upload.py /tmp/notsus-upload-fixture /tmp/notsus-run-tool
 
   language-players:
     runs-on: ubuntu-latest

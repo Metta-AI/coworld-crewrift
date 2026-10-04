@@ -15,7 +15,7 @@ const
   UploadAttempts = 12
   UploadRetryMs = 30_000
   UploadRetrySeconds = UploadRetryMs div 1_000
-  DefaultBedrockModel = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  DefaultLlmModel = "anthropic/claude-haiku-4.5"
   DefaultUploadName = "notsus"
   BaselinePolicyLabel = "notsus:v1"
   LogMissingPrefix = "missing:"
@@ -73,10 +73,7 @@ Options:
       --upload-name NAME     Policy name for current-checkout uploads.
                              Default: notsus, which uploads as notsus:vN.
       --image-tag TAG        Docker image tag for current-checkout uploads.
-      --bedrock-key-file PATH
-                             Ignored legacy option. Uploads use --use-bedrock.
-      --bedrock-model MODEL  Bedrock model for uploaded current bot.
-      --aws-region REGION   Ignored legacy option. The runner sets region.
+      --llm-model MODEL      Native sidecar model for uploaded current bot.
       --coworld ID           Direct Coworld target. Defaults to the league.
       --eight-player          Kept for compatibility. This is the default.
       --league ID            League target instead of direct Coworld.
@@ -157,7 +154,7 @@ type
     uploadCurrentIndex: int
     uploadName: string
     imageTag: string
-    bedrockModel: string
+    llmModel: string
     leagueId: string
     coworldId: string
     coworldDir: string
@@ -280,10 +277,7 @@ proc defaultConfig(): ToolConfig =
   ToolConfig(
     games: DefaultGames,
     outDir: centralRunsDir(),
-    bedrockModel: getEnv(
-      "BEDROCK_CLAUDE_MODEL_ID",
-      getEnv("BEDROCK_MODEL", DefaultBedrockModel)
-    ),
+    llmModel: getEnv("COWORLD_LLM_MODEL", DefaultLlmModel),
     uploadCurrentIndex: -1,
     uploadName: DefaultUploadName,
     focusIndex: -1,
@@ -782,12 +776,8 @@ proc readConfig(): ToolConfig =
         result.uploadName = optionValue(params, i, name, pair.value)
       of "image-tag":
         result.imageTag = optionValue(params, i, name, pair.value)
-      of "bedrock-key-file":
-        discard optionValue(params, i, name, pair.value)
-      of "bedrock-model":
-        result.bedrockModel = optionValue(params, i, name, pair.value)
-      of "aws-region":
-        discard optionValue(params, i, name, pair.value)
+      of "llm-model":
+        result.llmModel = optionValue(params, i, name, pair.value)
       of "out-dir":
         result.outDir = optionValue(params, i, name, pair.value)
       of "coworld":
@@ -1377,13 +1367,13 @@ proc uploadCurrentPolicy(config: ToolConfig): BotRef =
       policyName,
       "--run",
       "/bin/notsus",
-      "--use-bedrock",
-      "--bedrock-model",
-      config.bedrockModel,
+      "--use-llm",
+      "--llm-model",
+      config.llmModel,
       "--tag",
       "source=players/notsus/tools/run.nim",
       "--tag",
-      "bedrock=use-bedrock",
+      "transport=native_messages",
       "--tag",
       "player=" & policyName,
       "--tag",
