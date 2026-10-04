@@ -14,12 +14,15 @@ from pydantic import Field, JsonValue
 
 from players.crewrift.crewborg.native import (
     ControllerInstallation,
-    NativeGeneration,
     NativeModel,
     NativeRequest,
     NativeSession,
+    PolicyGeneration,
+    PolicyProfile,
+    ScriptedProfile,
     decision_json,
 )
+from players.crewrift.crewborg.scripted import scripted_generation
 from players.crewrift.crewborg.strategy.meeting.prompts import build_system_prompt
 from players.crewrift.crewborg.strategy.meeting.schema import VOTE_SKIP, MeetingDecision
 from players.crewrift.crewborg.types import Intent
@@ -39,14 +42,18 @@ class MeetingParams(ModeParams):
 
 class MeetingLLMResult(NativeModel):
     decision: MeetingDecision
-    generation: NativeGeneration
+    generation: PolicyGeneration
 
     @property
-    def model(self) -> str:
+    def policy_identity(self) -> str:
+        if self.generation.origin == "teacher":
+            return "scripted/" + self.generation.teacher_authority_sha256
         return self.generation.request.model
 
     @property
     def latency_ms(self) -> int:
+        if self.generation.origin == "teacher":
+            return self.generation.duration_ms
         assert self.generation.latency_ms is not None
         return self.generation.latency_ms
 
@@ -60,7 +67,7 @@ class MeetingLLMClient(Protocol):
 
     def decide(
         self, context: dict, *, trigger: str
-    ) -> asyncio.Task[MeetingLLMResult]: ...
+    ) -> asyncio.Future[MeetingLLMResult]: ...
 
     def cancel(self, cleanup_deadline: float) -> None: ...
 
@@ -80,7 +87,9 @@ class DisabledMeetingClient:
     disabled_reason: str | None = "disabled"
     enabled: bool = False
 
-    def decide(self, context: dict, *, trigger: str) -> asyncio.Task[MeetingLLMResult]:
+    def decide(
+        self, context: dict, *, trigger: str
+    ) -> asyncio.Future[MeetingLLMResult]:
         raise RuntimeError(self.disabled_reason)
 
     def cancel(self, cleanup_deadline: float) -> None:
@@ -97,6 +106,31 @@ class DisabledMeetingClient:
         tick: int,
     ) -> None:
         raise RuntimeError("Disabled meeting policy cannot install model decisions")
+
+
+def render_meeting_messages(context: dict, *, trigger: str) -> list[dict[str, str]]:
+    prompt: dict[str, JsonValue] = {
+        "trigger": trigger,
+        "context": context,
+        "response_schema": {
+            "schema_version": 1,
+            "action": "send_chat | set_tentative_vote | submit_vote | wait",
+            "chat_text": "string or null",
+            "vote_target": f"player color, {VOTE_SKIP}, or null",
+            "reason": "short rationale",
+            "confidence": "0.0 to 1.0 or null",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": build_system_prompt(context["self"]["role"]),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(prompt, sort_keys=True, separators=(",", ":")),
+        },
+    ]
 
 
 class NativeMeetingClient:
@@ -134,33 +168,12 @@ class NativeMeetingClient:
     def timeout_seconds(self) -> float:
         return self.config.timeout_seconds
 
-    def decide(self, context: dict, *, trigger: str) -> asyncio.Task[MeetingLLMResult]:
-        prompt: dict[str, JsonValue] = {
-            "trigger": trigger,
-            "context": context,
-            "response_schema": {
-                "schema_version": 1,
-                "action": "send_chat | set_tentative_vote | submit_vote | wait",
-                "chat_text": "string or null",
-                "vote_target": f"player color, {VOTE_SKIP}, or null",
-                "reason": "short rationale",
-                "confidence": "0.0 to 1.0 or null",
-            },
-        }
+    def decide(
+        self, context: dict, *, trigger: str
+    ) -> asyncio.Future[MeetingLLMResult]:
         request = NativeRequest(
             model=self.config.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": build_system_prompt(context["self"]["role"]),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        prompt, sort_keys=True, separators=(",", ":")
-                    ),
-                },
-            ],
+            messages=render_meeting_messages(context, trigger=trigger),
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
@@ -184,12 +197,44 @@ class NativeMeetingClient:
         return self.session.start(prepared, finish())
 
 
-def read_meeting_params_from_env(env: Mapping[str, str] | None = None) -> MeetingParams:
+class ScriptedMeetingClient(NativeMeetingClient):
+    def __init__(
+        self, config: MeetingParams, session: NativeSession, profile: ScriptedProfile
+    ):
+        super().__init__(config, session)
+        self.profile = profile
+
+    def decide(
+        self, context: dict, *, trigger: str
+    ) -> asyncio.Future[MeetingLLMResult]:
+        generation = scripted_generation(
+            self.profile,
+            self.session,
+            "meeting",
+            render_meeting_messages(context, trigger=trigger),
+        )
+        decision = MeetingDecision.model_validate_json(
+            decision_json(generation.completion_text)
+        )
+        generation.parsed_action = decision.model_dump(mode="json")
+        self.session.record(generation)
+        result = asyncio.get_running_loop().create_future()
+        result.set_result(MeetingLLMResult(decision=decision, generation=generation))
+        return result
+
+
+def read_meeting_params_from_env(
+    env: Mapping[str, str] | None = None, *, policy_profile: PolicyProfile
+) -> MeetingParams:
     env = os.environ if env is None else env
     enabled = bool(env.get("COWORLD_LLM_ENDPOINT")) or env.get(
         "CREWBORG_LLM_MEETINGS", ""
     ).lower() in {"1", "true", "yes", "on"}
-    if enabled and not env["COWORLD_LLM_ENDPOINT"]:
+    if (
+        enabled
+        and policy_profile.origin == "native"
+        and not env["COWORLD_LLM_ENDPOINT"]
+    ):
         raise ValueError("Native meeting endpoint must be nonempty")
     return MeetingParams(
         use_llm=enabled,
@@ -207,8 +252,10 @@ def read_meeting_params_from_env(env: Mapping[str, str] | None = None) -> Meetin
 
 
 def build_meeting_client(
-    params: MeetingParams, session: NativeSession
+    params: MeetingParams, session: NativeSession, *, policy_profile: PolicyProfile
 ) -> MeetingLLMClient:
     if not params.use_llm:
         return DisabledMeetingClient("meeting LLM disabled")
+    if policy_profile.origin == "teacher":
+        return ScriptedMeetingClient(params, session, policy_profile)
     return NativeMeetingClient(params, session)

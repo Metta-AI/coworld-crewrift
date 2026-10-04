@@ -43,6 +43,7 @@ class _FakeMeetingClient:
             model="fixture/meeting", messages=[], max_tokens=1, temperature=0
         )
         generation = NativeGeneration(
+            origin="native",
             phase="meeting",
             observation_tick=context["meeting"]["tick"],
             player_slot=None,

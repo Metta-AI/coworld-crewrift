@@ -44,6 +44,7 @@ from players.crewrift.crewborg.native import (
     NativeSession,
     PlayerRegistration,
 )
+from players.crewrift.crewborg.scripted import policy_profile_from_env
 from players.crewrift.crewborg.types import Observation
 
 METRICS_ENV = "CREWBORG_METRICS"
@@ -155,7 +156,7 @@ async def run_bridge(
     artifact = PrivateArtifact(directory / "player.zip")
     registration = PlayerRegistration.from_url(engine_ws_url)
     native = NativeSession(
-        registration, directory / "native.jsonl", artifact.record_native
+        registration, directory / "native.jsonl", artifact.record_policy
     )
     recorder = SqliteEpisodeRecorder()
     recorder.set_episode_info(player_slot=registration.requested_slot)
@@ -163,6 +164,7 @@ async def run_bridge(
         trace_sink=recorder,
         metrics_sink=recorder,
         native_session=native,
+        policy_profile=policy_profile_from_env(),
         episode_recorder=recorder,
     )
     scene = SceneState()

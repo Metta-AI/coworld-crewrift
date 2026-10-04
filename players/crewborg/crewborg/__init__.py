@@ -35,7 +35,7 @@ from crewborg.modes import (
     ReportBodyMode,
     SearchMode,
 )
-from crewborg.native import NativeSession
+from crewborg.native import NativeSession, PolicyProfile
 from crewborg.strategy import (
     RuleBasedStrategy,
     update_event_log,
@@ -89,6 +89,7 @@ class CloseAwareSynchronousStrategyRunner(
 def build_runtime(
     *,
     native_session: NativeSession,
+    policy_profile: PolicyProfile,
     trace_sink: TraceSink | None = None,
     metrics_sink: MetricsSink | None = None,
     map_data: MapData | None = None,
@@ -126,7 +127,10 @@ def build_runtime(
     class SessionAttendMeetingMode(AttendMeetingMode):
         def __init__(self, params=None):
             super().__init__(
-                params, llm_client=build_meeting_llm_client_from_env(native_session)
+                params,
+                llm_client=build_meeting_llm_client_from_env(
+                    native_session, policy_profile=policy_profile
+                ),
             )
 
     registry.register(SessionAttendMeetingMode)
@@ -154,7 +158,9 @@ def build_runtime(
     commander_strategy = CommanderStrategy(
         RuleBasedStrategy(),
         CommanderWorker(
-            lambda: build_commander_client_from_env(native_session),
+            lambda: build_commander_client_from_env(
+                native_session, policy_profile=policy_profile
+            ),
             session=native_session,
             trace=commander_trace,
         ),

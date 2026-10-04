@@ -11,7 +11,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
-from typing import Literal, TypeVar
+from typing import Annotated, Literal, TypeVar
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
@@ -69,6 +69,7 @@ class ControllerInstallation(NativeModel):
 
 
 class NativeGeneration(NativeModel):
+    origin: Literal["native"]
     generation_id: UUID = Field(default_factory=uuid4)
     phase: Literal["meeting", "commander"]
     observation_tick: int = Field(ge=0)
@@ -98,6 +99,39 @@ class NativeGeneration(NativeModel):
     stop_reason: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+
+class ScriptedGeneration(NativeModel):
+    origin: Literal["teacher"]
+    generation_id: UUID = Field(default_factory=uuid4)
+    teacher_authority_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    phase: Literal["meeting", "commander"]
+    observation_tick: int = Field(ge=0)
+    player_slot: int
+    prompt: list[dict[str, str]]
+    completion_text: str
+    parsed_action: JsonValue
+    duration_ms: int = Field(ge=0)
+    controller_installations: list[ControllerInstallation] = Field(default_factory=list)
+
+
+PolicyGeneration = Annotated[
+    NativeGeneration | ScriptedGeneration, Field(discriminator="origin")
+]
+
+
+class NativeProfile(NativeModel):
+    origin: Literal["native"]
+
+
+class ScriptedProfile(NativeModel):
+    origin: Literal["teacher"]
+    teacher_authority_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+PolicyProfile = Annotated[
+    NativeProfile | ScriptedProfile, Field(discriminator="origin")
+]
 
 
 class NativeMessage(NativeModel):
@@ -148,7 +182,7 @@ class NativeSession:
         self,
         registration: PlayerRegistration,
         path: Path,
-        record_generation: Callable[[NativeGeneration], None],
+        record_generation: Callable[[PolicyGeneration], None],
     ):
         self.registration = registration
         self.record_generation = record_generation
@@ -157,11 +191,11 @@ class NativeSession:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(descriptor)
         self.tasks: dict[asyncio.Task[object], PreparedCall] = {}
-        self.generations: dict[str, NativeGeneration] = {}
+        self.generations: dict[str, PolicyGeneration] = {}
         self.shutdown_deadline: float | None = None
         self.sealed = False
 
-    def record(self, generation: NativeGeneration) -> None:
+    def record(self, generation: PolicyGeneration) -> None:
         if self.sealed:
             raise RuntimeError("Cannot mutate sealed native player evidence")
         frozen = generation.model_copy(deep=True)
@@ -226,6 +260,7 @@ class NativeSession:
             generation.response_reader_joined is not False
             and generation.transport_cleanup_joined is not False
             for generation in self.generations.values()
+            if generation.origin == "native"
         )
         self.sealed = True
         return joined
@@ -258,6 +293,7 @@ class NativeSession:
             raise RuntimeError("Previous phase generation is not joined")
         request = request.model_copy(deep=True)
         generation = NativeGeneration(
+            origin="native",
             phase=phase,
             observation_tick=observation_tick,
             player_slot=slot,

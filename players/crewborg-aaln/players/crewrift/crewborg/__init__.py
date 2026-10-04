@@ -30,7 +30,7 @@ from players.crewrift.crewborg.modes import (
     SeekCrowdMode,
     StakeoutMode,
 )
-from players.crewrift.crewborg.native import NativeSession
+from players.crewrift.crewborg.native import NativeSession, PolicyProfile
 from players.crewrift.crewborg.strategy import (
     RuleBasedStrategy,
     update_event_log,
@@ -73,6 +73,7 @@ def _positive_int_env(name: str) -> int | None:
 def build_runtime(
     *,
     native_session: NativeSession,
+    policy_profile: PolicyProfile,
     trace_sink: TraceSink | None = None,
     metrics_sink: MetricsSink | None = None,
     map_data: MapData | None = None,
@@ -112,9 +113,16 @@ def build_runtime(
 
     class SessionAttendMeetingMode(AttendMeetingMode):
         def __init__(self, params=None):
-            params = read_meeting_params_from_env() if params is None else params
+            params = (
+                read_meeting_params_from_env(policy_profile=policy_profile)
+                if params is None
+                else params
+            )
             super().__init__(
-                params, llm_client=build_meeting_client(params, native_session)
+                params,
+                llm_client=build_meeting_client(
+                    params, native_session, policy_profile=policy_profile
+                ),
             )
 
     registry.register(SessionAttendMeetingMode)

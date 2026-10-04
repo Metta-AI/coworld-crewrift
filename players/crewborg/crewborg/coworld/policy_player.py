@@ -36,6 +36,7 @@ from crewborg.coworld.private_artifact import PrivateArtifact, PrivateOutcome
 from crewborg.coworld.scene import SceneState
 from crewborg.map import walkability_matches
 from crewborg.native import NativeModel, NativeSession, PlayerRegistration
+from crewborg.scripted import policy_profile_from_env
 from crewborg.strategy.meeting import chat_nlp
 from crewborg.trace import TraceConfig
 from crewborg.types import Observation
@@ -151,7 +152,7 @@ async def run_bridge(
     artifact = PrivateArtifact(directory / "player.zip")
     registration = PlayerRegistration.from_url(engine_ws_url)
     native = NativeSession(
-        registration, directory / "native.jsonl", artifact.record_native
+        registration, directory / "native.jsonl", artifact.record_policy
     )
     outputs = TraceOutputs(
         [artifact],
@@ -163,6 +164,7 @@ async def run_bridge(
         trace_sink=outputs.trace_sink,
         metrics_sink=outputs.metrics_sink,
         native_session=native,
+        policy_profile=policy_profile_from_env(),
     )
     scene = SceneState()
     state = _BridgeState()

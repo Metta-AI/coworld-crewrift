@@ -14,6 +14,7 @@ from players.crewrift.crewborg.modes.attend_meeting import (
 from players.crewrift.crewborg.native import (
     NativeGeneration,
     NativeHttpError,
+    NativeProfile,
     NativeRequest,
 )
 from players.crewrift.crewborg.perception.entities import (
@@ -57,6 +58,7 @@ class _FakeMeetingClient:
             model="fixture/meeting", messages=[], max_tokens=1, temperature=0
         )
         generation = NativeGeneration(
+            origin="native",
             phase="meeting",
             observation_tick=context["meeting"]["tick"],
             player_slot=None,
@@ -655,7 +657,8 @@ def test_native_meeting_parameters_require_endpoint_and_preserve_platform_model_
             "COWORLD_LLM_ENDPOINT": "http://fixture",
             "COWORLD_LLM_MODEL": "checkpoint/exact",
             "COWORLD_LLM_TEMPERATURE": "0",
-        }
+        },
+        policy_profile=NativeProfile(origin="native"),
     )
     assert (
         params.use_llm
@@ -664,9 +667,12 @@ def test_native_meeting_parameters_require_endpoint_and_preserve_platform_model_
     )
     with pytest.raises(KeyError):
         read_meeting_params_from_env(
-            {"CREWBORG_LLM_MEETINGS": "1", "ANTHROPIC_API_KEY": "unused"}
+            {"CREWBORG_LLM_MEETINGS": "1", "ANTHROPIC_API_KEY": "unused"},
+            policy_profile=NativeProfile(origin="native"),
         )
-    assert not read_meeting_params_from_env({"ANTHROPIC_API_KEY": "unused"}).use_llm
+    assert not read_meeting_params_from_env(
+        {"ANTHROPIC_API_KEY": "unused"}, policy_profile=NativeProfile(origin="native")
+    ).use_llm
 
 
 def test_report_body_targets_nearest_visible_body() -> None:

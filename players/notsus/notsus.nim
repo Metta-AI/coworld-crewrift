@@ -5507,11 +5507,12 @@ proc printVotingEvidence(bot: var Bot) =
 
 proc configureVotingNative(bot: var Bot) =
   ## Native admission requires the actual engine-assigned seat first.
-  doAssert getEnv("COWORLD_LLM_ENDPOINT").len > 0,
-    "COWORLD_LLM_ENDPOINT is required for Notsus"
+  if nativeAi.policyProfile().origin == nativeAi.NativeOrigin:
+    doAssert getEnv("COWORLD_LLM_ENDPOINT").len > 0,
+      "COWORLD_LLM_ENDPOINT is required for native Notsus"
   doAssert nativeAi.seat.observed, "Native model policy lacks engine admission"
   if not bot.nativeConfigLogged:
-    bot.logEvent("notsus native transport configured")
+    bot.logEvent("notsus social policy configured")
     bot.nativeConfigLogged = true
 
 proc cleanLlmChatMessage(text: string): string =
@@ -5958,7 +5959,7 @@ proc startVotingLlm(bot: var Bot): bool =
   ]
   let tag = bot.votingLlmRequestTag()
   nativeAi.startTalkToAI(messages, tag, bot.serverTick,
-    getMonoTime() + initDuration(seconds = 5))
+    getMonoTime() + initDuration(seconds = 5), nativeAi.policyProfile())
   bot.voteLlmRequestActive = true
   bot.voteLlmRequestTag = tag
   bot.voteLlmRequestSnapshotKey = snapshotKey
@@ -6092,8 +6093,9 @@ proc refreshVotingLlmDecision(bot: var Bot, listenedTicks: int) =
   ## Refreshes social chat when the current snapshot needs one.
   when defined(italkalotLibrary):
     # Numeric controller admission has no native slot/artifact contract.
-    doAssert getEnv("COWORLD_LLM_ENDPOINT").len == 0,
-      "native_social_unsupported_numeric_abi: no assigned seat/artifact context"
+    doAssert nativeAi.policyProfile().origin == nativeAi.NativeOrigin and
+      getEnv("COWORLD_LLM_ENDPOINT").len == 0,
+      "native_social_unsupported_numeric_abi: no native/teacher assigned seat/artifact context"
     return
   bot.pollVotingLlm()
   if bot.voteLlmRequestActive:

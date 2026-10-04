@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from players.crewrift.crewborg import build_runtime
 from players.crewrift.crewborg.coworld.scene import SceneState
+from players.crewrift.crewborg.native import NativeProfile
 from players.crewrift.crewborg.tests import sprite_wire as w
 from players.crewrift.crewborg.types import Observation
 from players.player_sdk.trace import ListMetricsSink, ListTraceSink
@@ -11,7 +12,11 @@ from players.player_sdk.trace import ListMetricsSink, ListTraceSink
 
 def test_idle_runtime_holds_neutral_mask_and_tracks_ticks(native_session) -> None:
     trace = ListTraceSink()
-    runtime = build_runtime(native_session=native_session, trace_sink=trace)
+    runtime = build_runtime(
+        native_session=native_session,
+        trace_sink=trace,
+        policy_profile=NativeProfile(origin="native"),
+    )
     scene = SceneState()
 
     last = None
@@ -32,7 +37,10 @@ def test_idle_runtime_emits_canonical_trace_events(native_session) -> None:
     trace = ListTraceSink()
     metrics = ListMetricsSink()
     runtime = build_runtime(
-        native_session=native_session, trace_sink=trace, metrics_sink=metrics
+        native_session=native_session,
+        trace_sink=trace,
+        metrics_sink=metrics,
+        policy_profile=NativeProfile(origin="native"),
     )
     scene = SceneState()
     scene.apply(w.clear_objects())

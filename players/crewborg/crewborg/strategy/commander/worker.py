@@ -25,7 +25,7 @@ class CommanderWorker:
         self.session = session
         self._client_factory = client_factory
         self._client: CommanderLLMClient | None = None
-        self._pending: asyncio.Task[CommanderLLMResult] | None = None
+        self._pending: asyncio.Future[CommanderLLMResult] | None = None
         self._closed = False
         self._trace = trace
         self.snapshots: OverwriteBuffer[dict] = OverwriteBuffer()
@@ -68,7 +68,8 @@ class CommanderWorker:
                 "commander_call",
                 {
                     "outcome": "ok",
-                    "model": result.model,
+                    "policy_identity": result.policy_identity,
+                    "origin": result.generation.origin,
                     "generation_id": str(result.generation.generation_id),
                     "latency_ms": result.latency_ms,
                 },

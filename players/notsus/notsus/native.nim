@@ -4,11 +4,19 @@ import std/[atomics, base64, json, monotimes, options, os, sets, strutils,
   sysrand, tables, times, unicode]
 import bitworld/[artifact_runtime, native_http, native_stop]
 import zippy/ziparchives
+import scripted
 
 type
+  PolicyOrigin* = enum
+    NativeOrigin, TeacherOrigin
+  PolicyProfile* = object
+    case origin*: PolicyOrigin
+    of NativeOrigin: discard
+    of TeacherOrigin: teacherAuthoritySha256*: string
   ConversationMessage* = object
     role*, content*: string
   NativeAsyncResult* = object
+    origin*: PolicyOrigin
     ready*: bool
     tag*, generationId*, reply*, usage*, error*: string
     observationTick*: int
@@ -34,6 +42,14 @@ var
   journalPath: string
   outcome: JsonNode
   finalDeadline: Option[MonoTime]
+  teacherPending: Option[NativeAsyncResult]
+
+proc policyProfile*(): PolicyProfile =
+  case getEnv("NOTSUS_POLICY_ORIGIN", "native")
+  of "native": PolicyProfile(origin: NativeOrigin)
+  of "teacher": PolicyProfile(origin: TeacherOrigin,
+    teacherAuthoritySha256: scripted.teacherAuthoritySha256())
+  else: raise newException(ValueError, "Unsupported Notsus policy origin")
 
 proc privateRecord*(event: JsonNode) =
   doAssert not sealed, "Private native records are sealed"
@@ -95,15 +111,10 @@ proc runRequest(current: ptr OwnedRequest) {.thread.} =
   current.completed.store(true, moRelease)
 
 proc startTalkToAI*(messages: openArray[ConversationMessage], tag: string,
-    observationTick: int, deadline: MonoTime) =
-  doAssert not sealed and not active, "Previous native request must join before admission"
+    observationTick: int, deadline: MonoTime, profile: PolicyProfile) =
+  doAssert not sealed and finalDeadline.isNone and not active and teacherPending.isNone, "Previous policy request must join before admission"
   doAssert seat.observed, "Native request requires actual engine admission"
   doAssert not interruptionRequested(), "Native inference is stopped"
-  let endpoint = getEnv("COWORLD_LLM_ENDPOINT").strip(chars = {'/'})
-  doAssert endpoint.len > 0, "COWORLD_LLM_ENDPOINT is required"
-  let model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
-  let temperature = parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "0.2"))
-  doAssert temperature >= 0 and temperature <= 2
   var prompt = newJArray()
   var chat = newJArray()
   var system = ""
@@ -114,15 +125,36 @@ proc startTalkToAI*(messages: openArray[ConversationMessage], tag: string,
       system.add message.content
     else:
       chat.add(%*{"role": message.role, "content": message.content})
+  requestTag = tag
+  generationId = ""
+  for value in urandom(16): generationId.add(toHex(value, 2).toLowerAscii())
+  if profile.origin == TeacherOrigin:
+    doAssert seat.configured, "A teacher requires authenticated configured seat admission"
+    doAssert profile.teacherAuthoritySha256 == scripted.teacherAuthoritySha256()
+    let started = getMonoTime()
+    let action = scriptedSocialAction(prompt, observationTick)
+    let reply = $(%action)
+    generation = %*{"kind": "teacher_generation", "origin": "teacher",
+      "generation_id": generationId, "teacher_authority_sha256": profile.teacherAuthoritySha256,
+      "tag": tag, "phase": "social_controller", "parser_id": "notsus.social.parseSocialLlmResult",
+      "observation_tick": observationTick, "engine_player_index": seat.engineIndex,
+      "player_slot": seat.slot, "prompt": prompt, "completion_text": reply,
+      "parsed_action": action, "duration_ms": (getMonoTime() - started).inMilliseconds}
+    privateRecord(generation)
+    teacherPending = some(NativeAsyncResult(origin: TeacherOrigin, ready: true,
+      tag: tag, generationId: generationId, reply: reply, observationTick: observationTick))
+    return
+  let endpoint = getEnv("COWORLD_LLM_ENDPOINT").strip(chars = {'/'})
+  doAssert endpoint.len > 0, "COWORLD_LLM_ENDPOINT is required"
+  let model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
+  let temperature = parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "0.2"))
+  doAssert temperature >= 0 and temperature <= 2
   let request = %*{"model": model, "max_tokens": 512, "temperature": temperature,
     "system": system, "messages": chat}
   var headers: HttpHeaders = @[("Content-Type", "application/json"),
     ("Accept-Encoding", "identity")]
   if seat.configured: headers.add(("X-Coworld-Player-Slot", $seat.slot))
-  requestTag = tag
-  generationId = ""
-  for value in urandom(16): generationId.add(toHex(value, 2).toLowerAscii())
-  generation = %*{"kind": "native_generation", "generation_id": generationId,
+  generation = %*{"kind": "native_generation", "origin": "native", "generation_id": generationId,
     "tag": tag, "purpose": "learner", "inference_mode": "text_action",
     "phase": "social_controller", "parser_id": "notsus.social.parseSocialLlmResult",
     "observation_tick": observationTick, "engine_player_index": seat.engineIndex,
@@ -150,6 +182,10 @@ proc startTalkToAI*(messages: openArray[ConversationMessage], tag: string,
   createThread(worker, runRequest, job)
 
 proc pollTalkToAI*(): NativeAsyncResult =
+  if teacherPending.isSome:
+    result = teacherPending.get()
+    teacherPending = none(NativeAsyncResult)
+    return
   if not active or not job.completed.load(moAcquire): return
   joinThread(worker)
   var receivedBytes = newString(job.responseLen)
@@ -160,6 +196,7 @@ proc pollTalkToAI*(): NativeAsyncResult =
   deallocShared(job)
   job = nil
   active = false
+  result.origin = NativeOrigin
   result.ready = true
   result.tag = requestTag
   result.generationId = generationId
@@ -246,6 +283,9 @@ proc pollTalkToAI*(): NativeAsyncResult =
   privateRecord(generation)
 
 proc cancelTalkToAI*(deadline: MonoTime): bool =
+  if teacherPending.isSome:
+    privateRecord(%*{"kind": "teacher_decision_cancelled", "generation_id": teacherPending.get().generationId})
+    teacherPending = none(NativeAsyncResult)
   let phaseCleanup = active and finalDeadline.isNone
   if phaseCleanup:
     # Bind before telemetry: a writer failure cannot reset this owned cleanup budget.

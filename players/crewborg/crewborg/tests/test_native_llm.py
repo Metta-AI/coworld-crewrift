@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from crewborg.native import NativeProfile
 from crewborg.strategy.commander.llm import build_commander_client_from_env
 from crewborg.strategy.meeting.llm import build_meeting_llm_client_from_env
 
@@ -68,8 +69,12 @@ async def test_native_sidecar_drives_meeting_and_commander(monkeypatch, native_s
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    meeting = build_meeting_llm_client_from_env(native_session)
-    commander = build_commander_client_from_env(native_session)
+    meeting = build_meeting_llm_client_from_env(
+        native_session, policy_profile=NativeProfile(origin="native")
+    )
+    commander = build_commander_client_from_env(
+        native_session, policy_profile=NativeProfile(origin="native")
+    )
     try:
         task = meeting.decide(
             {"self": {"role": "crewmate"}, "meeting": {"tick": 12}},

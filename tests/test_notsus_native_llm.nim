@@ -10,7 +10,7 @@ let deadline = getMonoTime() + initDuration(seconds = 5)
 let firstTag = if mode in ["phase_cancel", "SIGTERM", "SIGINT"]: "first" else: "fixture"
 nativeAi.startTalkToAI(@[nativeAi.ConversationMessage(role: "system", content: "Owned native fixture"),
   nativeAi.ConversationMessage(role: "user", content: "No policy or strength qualification")],
-  firstTag, 1, deadline)
+  firstTag, 1, deadline, PolicyProfile(origin: NativeOrigin))
 var response: NativeAsyncResult
 if mode in ["phase_cancel", "SIGTERM", "SIGINT"]:
   while not fileExists(paramStr(1).parentDir() / "request-started") and getMonoTime() < deadline: sleep(1)
@@ -18,7 +18,7 @@ if mode in ["phase_cancel", "SIGTERM", "SIGINT"]:
   if mode == "phase_cancel":
     doAssert nativeAi.cancelTalkToAI(getMonoTime() + initDuration(seconds = 2))
     nativeAi.startTalkToAI(@[ConversationMessage(role: "user", content: "Later ordinary phase")],
-      "second", 2, getMonoTime() + initDuration(seconds = 5))
+      "second", 2, getMonoTime() + initDuration(seconds = 5), PolicyProfile(origin: NativeOrigin))
     while not response.ready:
       response = nativeAi.pollTalkToAI()
       sleep(1)

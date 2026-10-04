@@ -15,9 +15,9 @@ import httpx
 from pydantic import JsonValue
 
 from players.crewrift.crewborg.native import (
-    NativeGeneration,
     NativeModel,
     NativeSession,
+    PolicyGeneration,
 )
 
 MAX_ARTIFACT_BYTES = 200 * 1024 * 1024
@@ -61,10 +61,12 @@ class PrivateArtifact:
         if self.path.stat().st_size > MAX_ARTIFACT_BYTES:
             raise ValueError("Compressed private artifact exceeds the supported limit")
 
-    def record_native(self, generation: NativeGeneration) -> None:
+    def record_policy(self, generation: PolicyGeneration) -> None:
         self.write_record(
             {
-                "kind": "native_generation",
+                "kind": "native_generation"
+                if generation.origin == "native"
+                else "teacher_generation",
                 "generation": generation.model_dump(mode="json"),
             }
         )

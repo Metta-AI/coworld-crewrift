@@ -13,12 +13,15 @@ from typing import Protocol
 from pydantic import Field, JsonValue
 
 from crewborg.native import (
-    NativeGeneration,
     NativeModel,
     NativeRequest,
     NativeSession,
+    PolicyGeneration,
+    PolicyProfile,
+    ScriptedProfile,
     decision_json,
 )
+from crewborg.scripted import scripted_generation
 from crewborg.strategy.commander.prompts import PROMPT_DIR_ENV, system_prompt_for_role
 
 DEFAULT_COMMANDER_MODEL = "anthropic/claude-haiku-4.5"
@@ -34,14 +37,18 @@ class CommanderLLMConfig(NativeModel):
 
 class CommanderLLMResult(NativeModel):
     priorities: dict[str, JsonValue]
-    generation: NativeGeneration
+    generation: PolicyGeneration
 
     @property
-    def model(self) -> str:
+    def policy_identity(self) -> str:
+        if self.generation.origin == "teacher":
+            return "scripted/" + self.generation.teacher_authority_sha256
         return self.generation.request.model
 
     @property
     def latency_ms(self) -> int:
+        if self.generation.origin == "teacher":
+            return self.generation.duration_ms
         assert self.generation.latency_ms is not None
         return self.generation.latency_ms
 
@@ -53,7 +60,7 @@ class CommanderLLMClient(Protocol):
     @property
     def disabled_reason(self) -> str | None: ...
 
-    def decide(self, context: dict) -> asyncio.Task[CommanderLLMResult]: ...
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]: ...
 
 
 @dataclass(frozen=True)
@@ -61,8 +68,41 @@ class DisabledCommanderClient:
     disabled_reason: str | None = "disabled"
     enabled: bool = False
 
-    def decide(self, context: dict) -> asyncio.Task[CommanderLLMResult]:
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]:
         raise RuntimeError(self.disabled_reason)
+
+
+def render_commander_messages(
+    context: dict, *, prompt_dir: str | None
+) -> list[dict[str, str]]:
+    prompt = {
+        "context": context,
+        "response_schema": {
+            "schema_version": 1,
+            "target_room": "legal room name or null",
+            "target_task": "integer task index or null",
+            "posture": "stick | isolate | neutral",
+            "hunt_room": "legal room name or null",
+            "target_player": "legal player color or null",
+            "avoid_room": "legal room name or null",
+            "allow_witnessed_kill": "boolean, DANGER",
+            "skip_evade": "boolean, DANGER",
+            "danger_reason": "required string when any DANGER field is true; otherwise null",
+            "reason": "short rationale",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": system_prompt_for_role(
+                context["self"]["role"], prompt_dir=prompt_dir
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(prompt, sort_keys=True, separators=(",", ":")),
+        },
+    ]
 
 
 class NativeCommanderClient:
@@ -73,39 +113,12 @@ class NativeCommanderClient:
         self.config = config
         self.session = session
 
-    def decide(self, context: dict) -> asyncio.Task[CommanderLLMResult]:
-        prompt = {
-            "context": context,
-            "response_schema": {
-                "schema_version": 1,
-                "target_room": "legal room name or null",
-                "target_task": "integer task index or null",
-                "posture": "stick | isolate | neutral",
-                "hunt_room": "legal room name or null",
-                "target_player": "legal player color or null",
-                "avoid_room": "legal room name or null",
-                "allow_witnessed_kill": "boolean, DANGER",
-                "skip_evade": "boolean, DANGER",
-                "danger_reason": "required string when any DANGER field is true; otherwise null",
-                "reason": "short rationale",
-            },
-        }
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]:
         request = NativeRequest(
             model=self.config.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt_for_role(
-                        context["self"]["role"], prompt_dir=self.config.prompt_dir
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        prompt, sort_keys=True, separators=(",", ":")
-                    ),
-                },
-            ],
+            messages=render_commander_messages(
+                context, prompt_dir=self.config.prompt_dir
+            ),
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
@@ -127,6 +140,33 @@ class NativeCommanderClient:
         return self.session.start(prepared, finish())
 
 
+class ScriptedCommanderClient(NativeCommanderClient):
+    def __init__(
+        self,
+        config: CommanderLLMConfig,
+        session: NativeSession,
+        profile: ScriptedProfile,
+    ):
+        super().__init__(config, session)
+        self.profile = profile
+
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]:
+        generation = scripted_generation(
+            self.profile,
+            self.session,
+            "commander",
+            render_commander_messages(context, prompt_dir=self.config.prompt_dir),
+        )
+        priorities = json.loads(decision_json(generation.completion_text))
+        generation.parsed_action = priorities
+        self.session.record(generation)
+        result = asyncio.get_running_loop().create_future()
+        result.set_result(
+            CommanderLLMResult(priorities=priorities, generation=generation)
+        )
+        return result
+
+
 def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -137,12 +177,15 @@ def commander_feature_enabled(env: Mapping[str, str] | None = None) -> bool:
 
 
 def build_commander_client_from_env(
-    session: NativeSession, env: Mapping[str, str] | None = None
+    session: NativeSession,
+    env: Mapping[str, str] | None = None,
+    *,
+    policy_profile: PolicyProfile,
 ) -> CommanderLLMClient:
     env = os.environ if env is None else env
     if not commander_feature_enabled(env):
         return DisabledCommanderClient("CREWBORG_LLM_COMMANDER is not enabled")
-    if not env["COWORLD_LLM_ENDPOINT"]:
+    if policy_profile.origin == "native" and not env["COWORLD_LLM_ENDPOINT"]:
         raise ValueError("Native commander endpoint must be nonempty")
     config = CommanderLLMConfig(
         model=env.get(
@@ -157,4 +200,6 @@ def build_commander_client_from_env(
         timeout_seconds=float(env.get("CREWBORG_LLM_TIMEOUT_SECONDS", "3")),
         prompt_dir=env.get(PROMPT_DIR_ENV),
     )
+    if policy_profile.origin == "teacher":
+        return ScriptedCommanderClient(config, session, policy_profile)
     return NativeCommanderClient(config, session)

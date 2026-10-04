@@ -9,7 +9,7 @@ from players.player_sdk.types import BeliefSnapshot, ModeDirective, SharedMemory
 
 from crewborg import build_runtime
 from crewborg.coworld.scene import SceneState
-from crewborg.native import NativeGeneration, NativeRequest
+from crewborg.native import NativeGeneration, NativeProfile, NativeRequest
 from crewborg.strategy.commander.llm import CommanderLLMResult
 from crewborg.strategy.commander.strategy import (
     CommanderStrategy,
@@ -93,6 +93,7 @@ def test_commander_strategy_sanitizes_and_returns_latest_worker_priorities(
         model="fixture/commander", messages=[], max_tokens=1, temperature=0
     )
     generation = NativeGeneration(
+        origin="native",
         phase="commander",
         observation_tick=12,
         player_slot=None,
@@ -186,7 +187,11 @@ def test_runtime_with_commander_off_leaves_belief_unset_and_no_inference_trace(
     monkeypatch.delenv("CREWBORG_LLM_COMMANDER", raising=False)
     monkeypatch.setenv("CREWBORG_TRACE_GROUPS", "commander")
     trace = ListTraceSink()
-    runtime = build_runtime(native_session=native_session, trace_sink=trace)
+    runtime = build_runtime(
+        native_session=native_session,
+        trace_sink=trace,
+        policy_profile=NativeProfile(origin="native"),
+    )
     scene = SceneState()
     scene.apply(w.clear_objects())
     scene.tick += 1
@@ -205,7 +210,9 @@ def test_enabled_runtime_missing_native_endpoint_crashes_before_a_provider_call(
     monkeypatch.setenv("CREWBORG_LLM_COMMANDER", "1")
     monkeypatch.delenv("CREWBORG_COMMANDER_FORCE", raising=False)
     monkeypatch.delenv("COWORLD_LLM_ENDPOINT", raising=False)
-    runtime = build_runtime(native_session=native_session)
+    runtime = build_runtime(
+        native_session=native_session, policy_profile=NativeProfile(origin="native")
+    )
     scene = SceneState()
     with pytest.raises(KeyError, match="COWORLD_LLM_ENDPOINT"):
         runtime.step(Observation(scene=scene, tick=1))

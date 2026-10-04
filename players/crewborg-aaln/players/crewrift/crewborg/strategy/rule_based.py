@@ -65,6 +65,7 @@ from __future__ import annotations
 import os
 
 from players.crewrift.crewborg.modes.seek_crowd import SeekCrowdParams
+from players.crewrift.crewborg.scripted import policy_profile_from_env
 from players.crewrift.crewborg.strategy.hunter import (
     JAM_MAX_STAGING_TICKS,
     JAM_START_MARGIN_TICKS,
@@ -73,7 +74,10 @@ from players.crewrift.crewborg.strategy.hunter import (
     hunter_enabled,
     stakeout_window_active,
 )
-from players.crewrift.crewborg.strategy.meeting import MeetingParams, read_meeting_params_from_env
+from players.crewrift.crewborg.strategy.meeting import (
+    MeetingParams,
+    read_meeting_params_from_env,
+)
 from players.crewrift.crewborg.strategy.opportunity import (
     SEARCH_LEAD_TICKS,
     has_visible_victim,
@@ -156,8 +160,14 @@ class RuleBasedStrategy:
         hunter: bool | None = None,
     ) -> None:
         self._be_dumb = be_dumb if be_dumb is not None else _be_dumb_enabled()
-        self._meeting_params = meeting_params if meeting_params is not None else read_meeting_params_from_env()
-        self._dick_enabled = dick_enabled if dick_enabled is not None else _dick_mode_enabled()
+        self._meeting_params = (
+            meeting_params
+            if meeting_params is not None
+            else read_meeting_params_from_env(policy_profile=policy_profile_from_env())
+        )
+        self._dick_enabled = (
+            dick_enabled if dick_enabled is not None else _dick_mode_enabled()
+        )
         self._hunter = hunter if hunter is not None else hunter_enabled()
         self._flee_target: str | None = None
         self._dick_state: str = "idle"
@@ -202,7 +212,11 @@ class RuleBasedStrategy:
                 else:
                     self._finish_dick_attempt()
             if self._dick_state == "meeting":
-                return ModeDirective(mode="dick_mode", source="strategy", reason="dick mode: emergency meeting")
+                return ModeDirective(
+                    mode="dick_mode",
+                    source="strategy",
+                    reason="dick mode: emergency meeting",
+                )
             return ModeDirective(
                 mode="attend_meeting",
                 params=self._meeting_params,
@@ -220,7 +234,11 @@ class RuleBasedStrategy:
                 self._reset_dick_mode()
                 self._finish_button_attempt()
                 self._finish_jam_attempt()
-                return ModeDirective(mode="crewmate_ghost", source="strategy", reason="ghost: finish own tasks")
+                return ModeDirective(
+                    mode="crewmate_ghost",
+                    source="strategy",
+                    reason="ghost: finish own tasks",
+                )
             if belief.self_role == "imposter":
                 self._clear_flee()
                 self._reset_dick_mode()
@@ -234,18 +252,30 @@ class RuleBasedStrategy:
                 if self._dick_call_timed_out(belief, action_state):
                     self._finish_dick_attempt()
                 else:
-                    return ModeDirective(mode="dick_mode", source="strategy", reason="dick mode: call meeting")
+                    return ModeDirective(
+                        mode="dick_mode",
+                        source="strategy",
+                        reason="dick mode: call meeting",
+                    )
             if self._should_start_dick_mode(belief):
                 self._dick_state = "calling"
                 self._dick_call_started_tick = belief.last_tick
                 self._dick_button_spent = True
                 self._clear_flee()
-                return ModeDirective(mode="dick_mode", source="strategy", reason="dick mode: kill cooldown reset")
+                return ModeDirective(
+                    mode="dick_mode",
+                    source="strategy",
+                    reason="dick mode: kill cooldown reset",
+                )
             if any(bid in belief.bodies for bid in belief.visible_body_ids):
                 self._clear_flee()
-                return ModeDirective(mode="report_body", source="strategy", reason="body in view")
+                return ModeDirective(
+                    mode="report_body", source="strategy", reason="body in view"
+                )
             if self._sticky_flee_target(belief) is not None:
-                return ModeDirective(mode="flee", source="strategy", reason="believed imposter near")
+                return ModeDirective(
+                    mode="flee", source="strategy", reason="believed imposter near"
+                )
             self._clear_flee()
             # Tailed (a follower glued to us with no witnesses around — the
             # shadow-kill setup behind 34/46 of our crewmate deaths in the
@@ -270,7 +300,9 @@ class RuleBasedStrategy:
             button_directive = self._select_evidence_call(belief, action_state)
             if button_directive is not None:
                 return button_directive
-            return ModeDirective(mode="normal", source="strategy", reason="playing: do tasks")
+            return ModeDirective(
+                mode="normal", source="strategy", reason="playing: do tasks"
+            )
 
         # All non-play phases (GameInfo / RoleReveal / Lobby / MeetingCall /
         # VoteResult / GameOver / unknown). MeetingCall deliberately preserves an
@@ -283,7 +315,9 @@ class RuleBasedStrategy:
             self._reset_dick_mode()
             self._reset_button()
             self._reset_jam()
-        return ModeDirective(mode="idle", source="strategy", reason=f"idle in phase {phase}")
+        return ModeDirective(
+            mode="idle", source="strategy", reason=f"idle in phase {phase}"
+        )
 
     def _select_imposter(self, belief: Belief) -> ModeDirective:
         # Imposter priority (design §10): just killed -> Evade; non-fresh visible
@@ -305,20 +339,48 @@ class RuleBasedStrategy:
         #   tempo cost is mechanical. Deferred, not just unimplemented.
         if self._be_dumb:
             if belief.self_kill_ready and has_visible_victim(belief):
-                return ModeDirective(mode="hunt", source="strategy", reason="be dumb: kill ready with visible victim")
+                return ModeDirective(
+                    mode="hunt",
+                    source="strategy",
+                    reason="be dumb: kill ready with visible victim",
+                )
             if self._hunter and stakeout_window_active(belief):
-                return ModeDirective(mode="stakeout", source="strategy", reason="hunter: staking out the button")
-            return ModeDirective(mode="search", source="strategy", reason="be dumb: always seek kill setup")
+                return ModeDirective(
+                    mode="stakeout",
+                    source="strategy",
+                    reason="hunter: staking out the button",
+                )
+            return ModeDirective(
+                mode="search",
+                source="strategy",
+                reason="be dumb: always seek kill setup",
+            )
         if _recent_self_kill(belief):
-            return ModeDirective(mode="evade", source="strategy", reason="just killed: evade")
+            return ModeDirective(
+                mode="evade", source="strategy", reason="just killed: evade"
+            )
         if any(bid in belief.bodies for bid in belief.visible_body_ids):
-            return ModeDirective(mode="report_body", source="strategy", reason="body in view after evade window")
+            return ModeDirective(
+                mode="report_body",
+                source="strategy",
+                reason="body in view after evade window",
+            )
         if belief.self_kill_ready and has_visible_victim(belief):
-            return ModeDirective(mode="hunt", source="strategy", reason="kill ready: hunt visible victim")
+            return ModeDirective(
+                mode="hunt", source="strategy", reason="kill ready: hunt visible victim"
+            )
         if self._hunter and stakeout_window_active(belief):
-            return ModeDirective(mode="stakeout", source="strategy", reason="hunter: staking out the button")
+            return ModeDirective(
+                mode="stakeout",
+                source="strategy",
+                reason="hunter: staking out the button",
+            )
         if ticks_until_kill_ready(belief) <= SEARCH_LEAD_TICKS:
-            return ModeDirective(mode="search", source="strategy", reason="kill window near: search for target")
+            return ModeDirective(
+                mode="search",
+                source="strategy",
+                reason="kill window near: search for target",
+            )
         return ModeDirective(mode="pretend", source="strategy", reason="blend in")
 
     def _sticky_flee_target(self, belief: Belief) -> str | None:
@@ -330,7 +392,9 @@ class RuleBasedStrategy:
         exact trigger radius.
         """
 
-        if self._flee_target is not None and _should_continue_flee(belief, self._flee_target):
+        if self._flee_target is not None and _should_continue_flee(
+            belief, self._flee_target
+        ):
             return self._flee_target
         self._flee_target = _nearest_enter_threat(belief)
         return self._flee_target
@@ -363,7 +427,9 @@ class RuleBasedStrategy:
             return False
         return True
 
-    def _select_evidence_call(self, belief: Belief, action_state: ActionState) -> ModeDirective | None:
+    def _select_evidence_call(
+        self, belief: Belief, action_state: ActionState
+    ) -> ModeDirective | None:
         """The evidence-driven emergency-call directive, or ``None`` to task on.
 
         Trigger: an alive crewmate with a believed imposter (the flee-bar
@@ -383,14 +449,24 @@ class RuleBasedStrategy:
                 self._finish_button_attempt()
                 return None
             if self._button_walk_timed_out(belief, action_state):
-                self._evidence_button_spent = True  # unreachable button: don't retry forever
+                self._evidence_button_spent = (
+                    True  # unreachable button: don't retry forever
+                )
                 self._finish_button_attempt()
                 return None
-            return ModeDirective(mode="call_button", source="strategy", reason="evidence call: walking to button")
+            return ModeDirective(
+                mode="call_button",
+                source="strategy",
+                reason="evidence call: walking to button",
+            )
         if self._should_call_button(belief):
             self._button_state = "calling"
             self._button_started_tick = belief.last_tick
-            return ModeDirective(mode="call_button", source="strategy", reason="evidence call: believed imposter")
+            return ModeDirective(
+                mode="call_button",
+                source="strategy",
+                reason="evidence call: believed imposter",
+            )
         return None
 
     def _should_call_button(self, belief: Belief) -> bool:
@@ -410,11 +486,17 @@ class RuleBasedStrategy:
         timeout) spends it for all.
         """
 
-        return self._evidence_button_spent or self._dick_button_spent or self._jam_button_spent
+        return (
+            self._evidence_button_spent
+            or self._dick_button_spent
+            or self._jam_button_spent
+        )
 
     # --- hunter jam (strategy.hunter): the timed anti-sussyboi button ---------
 
-    def _select_jam(self, belief: Belief, action_state: ActionState) -> ModeDirective | None:
+    def _select_jam(
+        self, belief: Belief, action_state: ActionState
+    ) -> ModeDirective | None:
         """The hunter timed-button directive, or ``None`` to fall through.
 
         Trigger: an alive crewmate with the button budget free, once the
@@ -432,37 +514,61 @@ class RuleBasedStrategy:
                 self._finish_jam_attempt()
                 return None
             if self._jam_staging_timed_out(belief, action_state):
-                self._jam_button_spent = True  # unreachable/contested button: don't retry forever
+                self._jam_button_spent = (
+                    True  # unreachable/contested button: don't retry forever
+                )
                 self._finish_jam_attempt()
                 return None
-            return ModeDirective(mode="jam_button", source="strategy", reason="hunter: jam staging")
+            return ModeDirective(
+                mode="jam_button", source="strategy", reason="hunter: jam staging"
+            )
         if self._should_start_jam(belief):
             self._jam_state = "staging"
             self._jam_started_tick = belief.last_tick
-            return ModeDirective(mode="jam_button", source="strategy", reason="hunter: jam window opening")
+            return ModeDirective(
+                mode="jam_button",
+                source="strategy",
+                reason="hunter: jam window opening",
+            )
         return None
 
     def _should_start_jam(self, belief: Belief) -> bool:
-        if self._button_budget_spent() or self._button_state == "calling" or self._dick_state != "idle":
+        if (
+            self._button_budget_spent()
+            or self._button_state == "calling"
+            or self._dick_state != "idle"
+        ):
             return False
         if belief.self_role not in {None, "crewmate"}:
             return False
-        if belief.map is None or belief.self_world_x is None or belief.self_world_y is None:
+        if (
+            belief.map is None
+            or belief.self_world_x is None
+            or belief.self_world_y is None
+        ):
             return False
         goal = button_press_goal(belief)
         if goal is None:
             return False
-        travel = estimate_travel_ticks(belief, (belief.self_world_x, belief.self_world_y), goal)
+        travel = estimate_travel_ticks(
+            belief, (belief.self_world_x, belief.self_world_y), goal
+        )
         return ticks_until_kill_ready(belief) <= travel + JAM_START_MARGIN_TICKS
 
     def _jam_press_refused(self, belief: Belief, action_state: ActionState) -> bool:
         attempt_tick = action_state.last_call_meeting_attempt_tick
-        if self._jam_started_tick is None or attempt_tick is None or attempt_tick < self._jam_started_tick:
+        if (
+            self._jam_started_tick is None
+            or attempt_tick is None
+            or attempt_tick < self._jam_started_tick
+        ):
             return False
         return belief.last_tick - attempt_tick >= EVIDENCE_CALL_NO_MEETING_GRACE_TICKS
 
     def _jam_staging_timed_out(self, belief: Belief, action_state: ActionState) -> bool:
-        if self._jam_started_tick is None or self._did_press_button(action_state, self._jam_started_tick):
+        if self._jam_started_tick is None or self._did_press_button(
+            action_state, self._jam_started_tick
+        ):
             return False
         return belief.last_tick - self._jam_started_tick >= JAM_MAX_STAGING_TICKS
 
@@ -475,21 +581,32 @@ class RuleBasedStrategy:
         self._jam_started_tick = None
         self._jam_button_spent = False
 
-    def _did_press_button(self, action_state: ActionState, started_tick: int | None) -> bool:
+    def _did_press_button(
+        self, action_state: ActionState, started_tick: int | None
+    ) -> bool:
         if started_tick is None or action_state.last_call_meeting_attempt_tick is None:
             return False
         return action_state.last_call_meeting_attempt_tick >= started_tick
 
     def _button_press_refused(self, belief: Belief, action_state: ActionState) -> bool:
         attempt_tick = action_state.last_call_meeting_attempt_tick
-        if self._button_started_tick is None or attempt_tick is None or attempt_tick < self._button_started_tick:
+        if (
+            self._button_started_tick is None
+            or attempt_tick is None
+            or attempt_tick < self._button_started_tick
+        ):
             return False
         return belief.last_tick - attempt_tick >= EVIDENCE_CALL_NO_MEETING_GRACE_TICKS
 
     def _button_walk_timed_out(self, belief: Belief, action_state: ActionState) -> bool:
-        if self._button_started_tick is None or self._did_press_button(action_state, self._button_started_tick):
+        if self._button_started_tick is None or self._did_press_button(
+            action_state, self._button_started_tick
+        ):
             return False
-        return belief.last_tick - self._button_started_tick >= EVIDENCE_CALL_MAX_TRAVEL_TICKS
+        return (
+            belief.last_tick - self._button_started_tick
+            >= EVIDENCE_CALL_MAX_TRAVEL_TICKS
+        )
 
     def _finish_button_attempt(self) -> None:
         self._button_state = "idle"
@@ -512,9 +629,14 @@ class RuleBasedStrategy:
         return ticks_until_kill_ready(belief) <= trigger_window
 
     def _did_press_emergency_button(self, action_state: ActionState) -> bool:
-        if self._dick_call_started_tick is None or action_state.last_call_meeting_attempt_tick is None:
+        if (
+            self._dick_call_started_tick is None
+            or action_state.last_call_meeting_attempt_tick is None
+        ):
             return False
-        return action_state.last_call_meeting_attempt_tick >= self._dick_call_started_tick
+        return (
+            action_state.last_call_meeting_attempt_tick >= self._dick_call_started_tick
+        )
 
     def _dick_call_timed_out(self, belief: Belief, action_state: ActionState) -> bool:
         if self._dick_call_started_tick is None:
@@ -535,7 +657,10 @@ class RuleBasedStrategy:
 
 
 def _recent_self_kill(belief: Belief) -> bool:
-    return belief.last_kill_tick is not None and belief.last_tick - belief.last_kill_tick < EVADE_TICKS
+    return (
+        belief.last_kill_tick is not None
+        and belief.last_tick - belief.last_kill_tick < EVADE_TICKS
+    )
 
 
 def _be_dumb_enabled() -> bool:

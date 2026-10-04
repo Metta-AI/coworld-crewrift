@@ -51,7 +51,7 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
     def __init__(self, params=None, *, llm_client: MeetingLLMClient) -> None:
         super().__init__(params)
         self._llm_client = llm_client
-        self._pending_call: tuple[str, asyncio.Task[MeetingLLMResult]] | None = None
+        self._pending_call: tuple[str, asyncio.Future[MeetingLLMResult]] | None = None
         self._meeting_id: int | None = None
         self._deterministic_chatted = False
         self._disabled_traced = False
@@ -362,7 +362,7 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return None
 
     def _call_llm(
-        self, pending: asyncio.Task[MeetingLLMResult], *, trigger: str
+        self, pending: asyncio.Future[MeetingLLMResult], *, trigger: str
     ) -> MeetingLLMResult | None:
         try:
             result = pending.result()
@@ -379,7 +379,11 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         self.emit.histogram(
             "meeting_llm.latency_ms",
             result.latency_ms,
-            tags={"model": result.model, "trigger": trigger},
+            tags={
+                "policy_identity": result.policy_identity,
+                "origin": result.generation.origin,
+                "trigger": trigger,
+            },
         )
         return result
 
@@ -412,7 +416,8 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             {
                 "trigger": trigger,
                 "generation_id": str(result.generation.generation_id),
-                "model": result.model,
+                "policy_identity": result.policy_identity,
+                "origin": result.generation.origin,
                 "latency_ms": result.latency_ms,
                 "action": decision.action,
             },

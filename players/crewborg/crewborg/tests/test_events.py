@@ -17,6 +17,7 @@ from players.player_sdk import (
 
 from crewborg.action import BTN_A, BTN_B, BTN_LEFT
 from crewborg.events import CrewborgEventTracer
+from crewborg.native import NativeProfile
 from crewborg.strategy.commander.trace import CommanderTrace
 from crewborg.strategy.suspicion import VOTE_PROBABILITY
 from crewborg.types import (
@@ -961,7 +962,9 @@ def test_env_flag_enables_debug_dump(monkeypatch) -> None:
 def test_build_runtime_wires_the_tracer_as_on_step_complete(native_session) -> None:
     from crewborg import build_runtime
 
-    runtime = build_runtime(native_session=native_session)
+    runtime = build_runtime(
+        native_session=native_session, policy_profile=NativeProfile(origin="native")
+    )
     assert isinstance(runtime.on_step_complete, CrewborgEventTracer)
 
 
@@ -974,7 +977,11 @@ def test_domain_event_flows_through_a_real_runtime_step(native_session) -> None:
     from crewborg.types import Observation
 
     trace = ListTraceSink()
-    runtime = build_runtime(native_session=native_session, trace_sink=trace)
+    runtime = build_runtime(
+        native_session=native_session,
+        trace_sink=trace,
+        policy_profile=NativeProfile(origin="native"),
+    )
     scene = SceneState()
     scene.apply(w.clear_objects())
     scene.apply(w.define_sprite(50, 1, 1, "STARTING"))  # interstitial text => Lobby

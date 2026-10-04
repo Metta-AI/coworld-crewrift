@@ -14,12 +14,15 @@ from pydantic import Field, JsonValue
 
 from crewborg.native import (
     ControllerInstallation,
-    NativeGeneration,
     NativeModel,
     NativeRequest,
     NativeSession,
+    PolicyGeneration,
+    PolicyProfile,
+    ScriptedProfile,
     decision_json,
 )
+from crewborg.scripted import scripted_generation
 from crewborg.strategy.meeting.prompts import PROMPT_DIR_ENV, system_prompt_for_context
 from crewborg.strategy.meeting.schema import VOTE_SKIP, MeetingDecision
 from crewborg.types import Intent
@@ -37,14 +40,18 @@ class MeetingLLMConfig(NativeModel):
 
 class MeetingLLMResult(NativeModel):
     decision: MeetingDecision
-    generation: NativeGeneration
+    generation: PolicyGeneration
 
     @property
-    def model(self) -> str:
+    def policy_identity(self) -> str:
+        if self.generation.origin == "teacher":
+            return "scripted/" + self.generation.teacher_authority_sha256
         return self.generation.request.model
 
     @property
     def latency_ms(self) -> int:
+        if self.generation.origin == "teacher":
+            return self.generation.duration_ms
         assert self.generation.latency_ms is not None
         return self.generation.latency_ms
 
@@ -58,7 +65,7 @@ class MeetingLLMClient(Protocol):
 
     def decide(
         self, context: dict, *, trigger: str
-    ) -> asyncio.Task[MeetingLLMResult]: ...
+    ) -> asyncio.Future[MeetingLLMResult]: ...
 
     def cancel(self, cleanup_deadline: float) -> None: ...
 
@@ -78,7 +85,9 @@ class DisabledMeetingClient:
     disabled_reason: str | None = "disabled"
     enabled: bool = False
 
-    def decide(self, context: dict, *, trigger: str) -> asyncio.Task[MeetingLLMResult]:
+    def decide(
+        self, context: dict, *, trigger: str
+    ) -> asyncio.Future[MeetingLLMResult]:
         raise RuntimeError(self.disabled_reason)
 
     def cancel(self, cleanup_deadline: float) -> None:
@@ -95,6 +104,33 @@ class DisabledMeetingClient:
         tick: int,
     ) -> None:
         raise RuntimeError("Disabled meeting policy cannot install model decisions")
+
+
+def render_meeting_messages(
+    context: dict, *, trigger: str, prompt_dir: str | None
+) -> list[dict[str, str]]:
+    prompt: dict[str, JsonValue] = {
+        "trigger": trigger,
+        "context": context,
+        "response_schema": {
+            "schema_version": 1,
+            "action": "send_chat | set_tentative_vote | submit_vote | wait",
+            "chat_text": "string or null",
+            "vote_target": f"player color, {VOTE_SKIP}, or null",
+            "reason": "short rationale",
+            "confidence": "0.0 to 1.0 or null",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": system_prompt_for_context(context, prompt_dir=prompt_dir),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(prompt, sort_keys=True, separators=(",", ":")),
+        },
+    ]
 
 
 class NativeMeetingClient:
@@ -132,35 +168,14 @@ class NativeMeetingClient:
     def timeout_seconds(self) -> float:
         return self.config.timeout_seconds
 
-    def decide(self, context: dict, *, trigger: str) -> asyncio.Task[MeetingLLMResult]:
-        prompt: dict[str, JsonValue] = {
-            "trigger": trigger,
-            "context": context,
-            "response_schema": {
-                "schema_version": 1,
-                "action": "send_chat | set_tentative_vote | submit_vote | wait",
-                "chat_text": "string or null",
-                "vote_target": f"player color, {VOTE_SKIP}, or null",
-                "reason": "short rationale",
-                "confidence": "0.0 to 1.0 or null",
-            },
-        }
+    def decide(
+        self, context: dict, *, trigger: str
+    ) -> asyncio.Future[MeetingLLMResult]:
         request = NativeRequest(
             model=self.config.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system_prompt_for_context(
-                        context, prompt_dir=self.config.prompt_dir
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        prompt, sort_keys=True, separators=(",", ":")
-                    ),
-                },
-            ],
+            messages=render_meeting_messages(
+                context, trigger=trigger, prompt_dir=self.config.prompt_dir
+            ),
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
@@ -184,8 +199,39 @@ class NativeMeetingClient:
         return self.session.start(prepared, finish())
 
 
+class ScriptedMeetingClient(NativeMeetingClient):
+    def __init__(
+        self, config: MeetingLLMConfig, session: NativeSession, profile: ScriptedProfile
+    ):
+        super().__init__(config, session)
+        self.profile = profile
+
+    def decide(
+        self, context: dict, *, trigger: str
+    ) -> asyncio.Future[MeetingLLMResult]:
+        generation = scripted_generation(
+            self.profile,
+            self.session,
+            "meeting",
+            render_meeting_messages(
+                context, trigger=trigger, prompt_dir=self.config.prompt_dir
+            ),
+        )
+        decision = MeetingDecision.model_validate_json(
+            decision_json(generation.completion_text)
+        )
+        generation.parsed_action = decision.model_dump(mode="json")
+        self.session.record(generation)
+        result = asyncio.get_running_loop().create_future()
+        result.set_result(MeetingLLMResult(decision=decision, generation=generation))
+        return result
+
+
 def build_meeting_llm_client_from_env(
-    session: NativeSession, env: Mapping[str, str] | None = None
+    session: NativeSession,
+    env: Mapping[str, str] | None = None,
+    *,
+    policy_profile: PolicyProfile,
 ) -> MeetingLLMClient:
     env = os.environ if env is None else env
     if env.get("CREWBORG_LLM_MEETINGS", "").strip().lower() not in {
@@ -195,7 +241,7 @@ def build_meeting_llm_client_from_env(
         "on",
     }:
         return DisabledMeetingClient("CREWBORG_LLM_MEETINGS is not enabled")
-    if not env["COWORLD_LLM_ENDPOINT"]:
+    if policy_profile.origin == "native" and not env["COWORLD_LLM_ENDPOINT"]:
         raise ValueError("Native meeting endpoint must be nonempty")
     config = MeetingLLMConfig(
         model=env.get(
@@ -210,4 +256,6 @@ def build_meeting_llm_client_from_env(
         timeout_seconds=float(env.get("CREWBORG_LLM_TIMEOUT_SECONDS", "3")),
         prompt_dir=env.get(PROMPT_DIR_ENV),
     )
+    if policy_profile.origin == "teacher":
+        return ScriptedMeetingClient(config, session, policy_profile)
     return NativeMeetingClient(config, session)
