@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import signal
+import struct
 import sys
 import tempfile
 import time
@@ -88,9 +89,43 @@ class _BridgeState:
     previous_arrival: float | None = None
     terminal: EngineTerminal | None = None
     socket: Any = None
+    frame_owners_joined: bool = True
     tick_offset: int | None = (
         None  # (server_tick - scene.tick) when the marker first appears
     )
+
+
+class _ReceivedFrames:
+    """Own ordered immutable frames on disk while the controller falls behind."""
+
+    def __init__(self):
+        self.stream = tempfile.TemporaryFile()  # noqa: SIM115 - held until both owned frame tasks join; an unjoined reader retains its spool.
+        self.read_offset = 0
+        self.received = 0
+        self.applied = 0
+        self.ready = asyncio.Event()
+
+    def append(self, frame: bytes) -> tuple[int, float]:
+        arrival = time.perf_counter()
+        self.stream.seek(0, os.SEEK_END)
+        if self.stream.tell() + 16 + len(frame) > 200 * 1024 * 1024:
+            raise ValueError("Private received-frame spool exceeds 200 MiB")
+        self.stream.write(struct.pack("!Qd", len(frame), arrival))
+        self.stream.write(frame)
+        sequence = self.received
+        self.received += 1
+        self.ready.set()
+        return sequence, arrival
+
+    async def next(self) -> tuple[int, bytes, float]:
+        while self.applied == self.received:
+            self.ready.clear()
+            await self.ready.wait()
+        self.stream.seek(self.read_offset)
+        size, arrival = struct.unpack("!Qd", self.stream.read(16))
+        frame = self.stream.read(size)
+        self.read_offset = self.stream.tell()
+        return self.applied, frame, arrival
 
 
 # The engine pushes one frame per game tick at ~24 Hz and does NOT wait for the
@@ -176,6 +211,7 @@ async def run_bridge(
         complete = (
             terminal
             and native_joined
+            and state.frame_owners_joined
             and nlp_joined
             and socket_joined
             and failure is None
@@ -185,6 +221,7 @@ async def run_bridge(
         outcome = PrivateOutcome(
             status="completed" if complete else "truncated",
             native_work_joined=native_joined,
+            frame_owners_joined=state.frame_owners_joined,
             nlp_work_joined=nlp_joined,
             socket_joined=socket_joined,
             terminal_engine_evidence=terminal,
@@ -256,163 +293,236 @@ async def _run_session(
     native: NativeSession,
     artifact: PrivateArtifact,
 ) -> None:
-    """Drive the per-tick loop on an established connection until it closes.
+    """Receive terminal independently of the ordered ordinary controller loop."""
+    frames = _ReceivedFrames()
 
-    Raises the websockets close/connection errors to the caller, which decides —
-    based on whether any frame was seen — whether it's a game-over or a connect
-    race to retry. A clean ``ConnectionClosed`` from the async iterator returns
-    normally (the caller still inspects ``state.frames_seen``)."""
-
-    async for message in websocket:
-        if isinstance(message, str):
-            event = ENGINE_MESSAGE.validate_json(message)
+    async def receive() -> None:
+        async for message in websocket:
+            if isinstance(message, str):
+                event = ENGINE_MESSAGE.validate_json(message)
+                artifact.write_record(
+                    {"kind": "engine_event", "event": event.model_dump(mode="json")}
+                )
+                if isinstance(event, EngineWelcome):
+                    registration = native.registration
+                    if (
+                        registration.requested_slot is not None
+                        and event.player_slot != registration.requested_slot
+                    ):
+                        raise ValueError(
+                            "Engine assigned a different requested player slot"
+                        )
+                    registration.engine_player_index = event.engine_player_index
+                    registration.authenticated_upgrade = event.configured_seat
+                    registration.assigned_slot = (
+                        event.player_slot if event.configured_seat else None
+                    )
+                    if (
+                        registration.requested_slot is not None
+                        and not event.configured_seat
+                    ):
+                        raise ValueError(
+                            "Hosted native seat lacks configured engine admission"
+                        )
+                else:
+                    state.terminal = event
+                    deadline = native.begin_stop(time.monotonic() + 2)
+                    async with asyncio.timeout_at(deadline):
+                        await websocket.send(
+                            json.dumps(
+                                {"kind": "native_terminal_ack", "tick": event.tick},
+                                separators=(",", ":"),
+                            )
+                        )
+                    return
+                continue
+            if native.registration.engine_player_index is None:
+                raise RuntimeError(
+                    "Engine sent a player frame before assigned-seat evidence"
+                )
+            sequence, received_at = frames.append(message)
             artifact.write_record(
-                {"kind": "engine_event", "event": event.model_dump(mode="json")}
+                {
+                    "kind": "engine_frame",
+                    "frame_sequence": sequence,
+                    "received_monotonic": received_at,
+                    "bytes_b64": base64.b64encode(message).decode(),
+                    "engine_player_index": native.registration.engine_player_index,
+                }
             )
-            if isinstance(event, EngineWelcome):
-                registration = native.registration
-                if (
-                    registration.requested_slot is not None
-                    and event.player_slot != registration.requested_slot
-                ):
-                    raise ValueError(
-                        "Engine assigned a different requested player slot"
-                    )
-                registration.engine_player_index = event.engine_player_index
-                registration.authenticated_upgrade = event.configured_seat
-                registration.assigned_slot = (
-                    event.player_slot if event.configured_seat else None
-                )
-                if (
-                    registration.requested_slot is not None
-                    and not event.configured_seat
-                ):
-                    raise ValueError(
-                        "Hosted native seat lacks configured engine admission"
-                    )
-            else:
-                await websocket.send(
-                    json.dumps(
-                        {"kind": "native_terminal_ack", "tick": event.tick},
-                        separators=(",", ":"),
-                    )
-                )
-                state.terminal = event
-                return
-            continue
-        if native.registration.engine_player_index is None:
+            state.frames_seen += 1
+        if state.terminal is None:
             raise RuntimeError(
-                "Engine sent a player frame before assigned-seat evidence"
+                "Engine stream ended without authoritative terminal evidence"
             )
-        artifact.write_record(
-            {
-                "kind": "engine_frame",
-                "bytes_b64": base64.b64encode(message).decode(),
-                "engine_player_index": native.registration.engine_player_index,
-            }
-        )
-        state.frames_seen += 1
-        # loop_gap_ms: wall-clock between consecutive frame arrivals
-        # — sustained gaps *below* the ~42 ms frame interval mean queued
-        # frames are being drained, i.e. we had fallen behind the engine.
-        # (Measured here; emitted below, tagged with the server tick.)
-        arrival = time.perf_counter()
-        loop_gap_ms = (
-            round((arrival - state.previous_arrival) * 1000.0, 3)
-            if state.previous_arrival is not None
-            else None
-        )
-        scene.apply(message)
-        scene.tick += 1
 
-        # Ground-truth tick: prefer the engine's streamed tick-marker
-        # over our local frame counter, and drive the SDK runtime from it
-        # so perception, belief.last_tick, and ALL tracing/metrics carry
-        # the engine's true tick. step() does `self.tick += 1`, so seed it
-        # one below the server tick to land exactly on it. Before the
-        # marker arrives (first frames) fall back to the local counter.
-        server_tick = scene.server_tick()
-        tick = server_tick if server_tick >= 0 else scene.tick
-        if server_tick >= 0:
-            runtime.tick = server_tick - 1
-            if state.tick_offset is None:
-                state.tick_offset = server_tick - scene.tick
+    async def control() -> None:
+        while state.terminal is None:
+            sequence, message, arrival = await frames.next()
+            # loop_gap_ms: wall-clock between consecutive frame arrivals
+            # — sustained gaps *below* the ~42 ms frame interval mean queued
+            # frames are being drained, i.e. we had fallen behind the engine.
+            # (Measured here; emitted below, tagged with the server tick.)
+            loop_gap_ms = (
+                round((arrival - state.previous_arrival) * 1000.0, 3)
+                if state.previous_arrival is not None
+                else None
+            )
+            scene.apply(message)
+            scene.tick += 1
 
-        # Validate the baked map against the streamed walkability mask
-        # once it arrives (design §6); a size mismatch means a different
-        # map than croatoan. Warn loudly rather than misnavigate later.
-        if not state.walkability_checked and scene.walkability is not None:
-            state.walkability_checked = True
-            map_data = runtime.belief.map
-            if map_data is not None and not walkability_matches(
-                map_data, scene.walkability_width, scene.walkability_height
-            ):
-                print(
-                    "WARNING: walkability map "
-                    f"{scene.walkability_width}x{scene.walkability_height} does not match "
-                    f"baked map {map_data.width}x{map_data.height}; server may be running "
-                    "a different map than croatoan.",
-                    file=sys.stderr,
-                    flush=True,
+            # Ground-truth tick: prefer the engine's streamed tick-marker
+            # over our local frame counter, and drive the SDK runtime from it
+            # so perception, belief.last_tick, and ALL tracing/metrics carry
+            # the engine's true tick. step() does `self.tick += 1`, so seed it
+            # one below the server tick to land exactly on it. Before the
+            # marker arrives (first frames) fall back to the local counter.
+            server_tick = scene.server_tick()
+            tick = server_tick if server_tick >= 0 else scene.tick
+            if server_tick >= 0:
+                runtime.tick = server_tick - 1
+                if state.tick_offset is None:
+                    state.tick_offset = server_tick - scene.tick
+
+            # Validate the baked map against the streamed walkability mask
+            # once it arrives (design §6); a size mismatch means a different
+            # map than croatoan. Warn loudly rather than misnavigate later.
+            if not state.walkability_checked and scene.walkability is not None:
+                state.walkability_checked = True
+                map_data = runtime.belief.map
+                if map_data is not None and not walkability_matches(
+                    map_data, scene.walkability_width, scene.walkability_height
+                ):
+                    print(
+                        "WARNING: walkability map "
+                        f"{scene.walkability_width}x{scene.walkability_height} does not match "
+                        f"baked map {map_data.width}x{map_data.height}; server may be running "
+                        "a different map than croatoan.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                # Optional capture: emit the streamed walkability mask once
+                # so tools/nav_bake.py can re-bake the offline nav asset when
+                # the map changes. Inert unless CREWBORG_CAPTURE_WALKABILITY
+                # is set; the mask is the authoritative input crewborg sees.
+                if _capture_walkability_enabled():
+                    _emit_walkability_capture(scene.walkability)
+
+            # step_ms: the per-tick compute budget check (~42 ms at 24 Hz).
+            step_start = time.perf_counter()
+            command = runtime.step(Observation(scene=scene, tick=tick))
+            if native.shutdown_deadline is not None:
+                return
+            frames.applied += 1
+            artifact.write_record(
+                {
+                    "kind": "controller_frame_applied",
+                    "frame_sequence": sequence,
+                    "tick": tick,
+                }
+            )
+            step_end = time.perf_counter()
+            if loop_gap_ms is not None:
+                metrics.histogram(
+                    "bridge.loop_gap_ms", loop_gap_ms, tags={"tick": tick}
                 )
-            # Optional capture: emit the streamed walkability mask once
-            # so tools/nav_bake.py can re-bake the offline nav asset when
-            # the map changes. Inert unless CREWBORG_CAPTURE_WALKABILITY
-            # is set; the mask is the authoritative input crewborg sees.
-            if _capture_walkability_enabled():
-                _emit_walkability_capture(scene.walkability)
-
-        # step_ms: the per-tick compute budget check (~42 ms at 24 Hz).
-        step_start = time.perf_counter()
-        command = runtime.step(Observation(scene=scene, tick=tick))
-        step_end = time.perf_counter()
-        if loop_gap_ms is not None:
-            metrics.histogram("bridge.loop_gap_ms", loop_gap_ms, tags={"tick": tick})
-        metrics.histogram(
-            "bridge.step_ms",
-            round((step_end - step_start) * 1000.0, 3),
-            tags={"tick": tick},
-        )
-        # tick_drift: frames we've fallen behind the engine since the
-        # marker first appeared (ground truth: server tick minus frames
-        # processed). 0 means we're keeping up; growth means falling behind.
-        if server_tick >= 0:
-            assert state.tick_offset is not None
-            metrics.gauge(
-                "bridge.tick_drift",
-                server_tick - scene.tick - state.tick_offset,
+            metrics.histogram(
+                "bridge.step_ms",
+                round((step_end - step_start) * 1000.0, 3),
                 tags={"tick": tick},
             )
+            # tick_drift: frames we've fallen behind the engine since the
+            # marker first appeared (ground truth: server tick minus frames
+            # processed). 0 means we're keeping up; growth means falling behind.
+            if server_tick >= 0:
+                assert state.tick_offset is not None
+                metrics.gauge(
+                    "bridge.tick_drift",
+                    server_tick - scene.tick - state.tick_offset,
+                    tags={"tick": tick},
+                )
 
-        # Send only when the held mask changes (design §3.3). The first
-        # tick sends the neutral mask once, establishing "all released".
-        if command.held_mask != state.last_sent_mask:
-            packet = encode_input(command.held_mask)
-            artifact.write_record(
-                {
-                    "kind": "controller_packet",
-                    "tick": tick,
-                    "phase": "input",
-                    "bytes_b64": base64.b64encode(packet).decode(),
-                }
-            )
-            await websocket.send(packet)
-            state.last_sent_mask = command.held_mask
+            # Send only when the held mask changes (design §3.3). The first
+            # tick sends the neutral mask once, establishing "all released".
+            if command.held_mask != state.last_sent_mask:
+                packet = encode_input(command.held_mask)
+                artifact.write_record(
+                    {
+                        "kind": "controller_packet",
+                        "tick": tick,
+                        "phase": "input",
+                        "bytes_b64": base64.b64encode(packet).decode(),
+                    }
+                )
+                await websocket.send(packet)
+                if native.shutdown_deadline is not None:
+                    return
+                state.last_sent_mask = command.held_mask
 
-        # Meeting chat (accepted only during Voting); sent as it appears.
-        if command.chat is not None:
-            packet = encode_chat(command.chat)
-            artifact.write_record(
-                {
-                    "kind": "controller_packet",
-                    "tick": tick,
-                    "phase": "chat",
-                    "bytes_b64": base64.b64encode(packet).decode(),
-                }
-            )
-            await websocket.send(packet)
-        await websocket.send(bytes([0x85]))
-        state.previous_arrival = arrival
+            # Meeting chat (accepted only during Voting); sent as it appears.
+            if command.chat is not None:
+                packet = encode_chat(command.chat)
+                artifact.write_record(
+                    {
+                        "kind": "controller_packet",
+                        "tick": tick,
+                        "phase": "chat",
+                        "bytes_b64": base64.b64encode(packet).decode(),
+                    }
+                )
+                await websocket.send(packet)
+                if native.shutdown_deadline is not None:
+                    return
+            if native.shutdown_deadline is not None:
+                return
+            await websocket.send(bytes([0x85]))
+            state.previous_arrival = arrival
+            await asyncio.sleep(0)
+
+    receiver = asyncio.create_task(receive())
+    controller = asyncio.create_task(control())
+    owners = {receiver, controller}
+    try:
+        done, _ = await asyncio.wait(owners, return_when=asyncio.FIRST_COMPLETED)
+        if state.terminal is not None and not receiver.done():
+            await receiver
+    finally:
+        deadline = native.begin_stop(time.monotonic() + 2)
+        for task in owners:
+            if not task.done():
+                task.cancel()
+        settled, pending = await asyncio.wait(
+            owners, timeout=max(0, deadline - time.monotonic())
+        )
+        state.frame_owners_joined = not pending
+        artifact.write_record(
+            {
+                "kind": "controller_frame_outcome",
+                "received_frames": frames.received,
+                "controller_applied_frames": frames.applied,
+                "unapplied_frames": frames.received - frames.applied,
+                "owners_joined": state.frame_owners_joined,
+            }
+        )
+        if not pending:
+            frames.stream.close()
+        else:
+
+            def release_joined_spool(_: asyncio.Task[None]) -> None:
+                if all(task.done() for task in owners):
+                    frames.stream.close()
+
+            for task in pending:
+                task.add_done_callback(release_joined_spool)
+        for task in settled:
+            if not task.cancelled():
+                task.exception()
+    for task in done:
+        task.result()
+    if not state.frame_owners_joined:
+        raise RuntimeError(
+            "Engine frame owners did not join before the original deadline"
+        )
 
 
 def main() -> None:
