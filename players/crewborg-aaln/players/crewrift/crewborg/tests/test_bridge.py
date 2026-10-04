@@ -501,3 +501,36 @@ async def test_unjoined_reader_cannot_append_after_private_seal(tmp_path, monkey
     frames = [row for row in records if row["kind"] == "engine_frame"]
     assert len(frames) == 1
     assert runtime.closed
+
+
+async def test_failed_runtime_construction_joins_compression_and_seals_truncated(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    monkeypatch.setattr(
+        "players.crewrift.crewborg.coworld.policy_player.tempfile.mkdtemp",
+        lambda **kwargs: str(tmp_path),
+    )
+    destination = tmp_path / "published.zip"
+    monkeypatch.setenv("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL", destination.as_uri())
+    before = {thread.ident for thread in threading.enumerate()}
+
+    class ConstructionFailure(RuntimeError):
+        pass
+
+    def build(**kwargs):
+        raise ConstructionFailure("runtime startup failed")
+
+    with pytest.raises(ConstructionFailure):
+        await run_bridge("ws://localhost/player?slot=3&token=fixture", build=build)
+    assert not any(
+        thread.ident not in before and thread.name.startswith("sqlite-compression")
+        for thread in threading.enumerate()
+    )
+    with zipfile.ZipFile(destination) as archive:
+        outcome = json.loads(archive.read("private-outcome.json"))
+        assert outcome["status"] == "truncated"
+        assert outcome["failure_kind"] == "ConstructionFailure"
+        assert outcome["stored_writers_joined"]
+        assert not outcome["terminal_engine_evidence"]

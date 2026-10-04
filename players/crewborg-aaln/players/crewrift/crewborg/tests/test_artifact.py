@@ -7,6 +7,7 @@ import json
 import sqlite3
 import zipfile
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Self
 
 import pytest
@@ -64,7 +65,7 @@ def test_recorder_persists_traces_and_metrics_to_sqlite(tmp_path) -> None:
     assert summary["first_tick"] == 1
     assert summary["last_tick"] == 7
     assert summary["event_counts"] == {"mode_entered": 1, "domain.vote_cast": 1}
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_recorder_zip_contains_database_summary_and_readme(tmp_path) -> None:
@@ -89,7 +90,7 @@ def test_recorder_zip_contains_database_summary_and_readme(tmp_path) -> None:
     assert "CREATE TABLE metrics" in readme
     assert "domain.vote_cast" in readme
     assert "policy_agent_{slot}.log" in readme
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_summary_includes_schema_version_and_timestamp(tmp_path) -> None:
@@ -102,7 +103,7 @@ def test_summary_includes_schema_version_and_timestamp(tmp_path) -> None:
     assert generated.utcoffset() == timedelta(0)
     # No episode section when nothing has been populated.
     assert "episode" not in summary
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_set_episode_info_surfaces_in_summary_and_omits_none(tmp_path) -> None:
@@ -113,7 +114,7 @@ def test_set_episode_info_surfaces_in_summary_and_omits_none(tmp_path) -> None:
     # None-valued fields are dropped rather than stored.
     assert "token" not in summary["episode"]
     assert "outcome" not in summary["episode"]
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_episode_info_from_env_parses_slot_and_drops_token(monkeypatch) -> None:
@@ -147,7 +148,7 @@ def test_summary_with_env_slot_excludes_token_anywhere(monkeypatch, tmp_path) ->
     serialized = json.dumps(summary)
     assert "SECRETTOK" not in serialized
     assert "token" not in serialized
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_episode_info_from_env_empty_when_no_ws_url(monkeypatch, tmp_path) -> None:
@@ -157,17 +158,17 @@ def test_episode_info_from_env_empty_when_no_ws_url(monkeypatch, tmp_path) -> No
     # And a summary with no info populated cleanly omits the episode key.
     recorder = SqliteEpisodeRecorder(tmp_path / "trace-6.db")
     assert "episode" not in recorder.summary()
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_recorder_drops_writes_after_close(tmp_path) -> None:
     recorder = SqliteEpisodeRecorder(tmp_path / "trace-7.db")
-    recorder.close()
+    recorder.close(monotonic() + 2)
     # Must not raise even though the connection is gone.
     recorder.record(TraceEvent(tick=1, name="perception", data={}))
     recorder.counter("cyborg.mode.ran")
     recorder.record_position(tick=1)
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_recorder_persists_positions_table(tmp_path) -> None:
@@ -198,7 +199,7 @@ def test_recorder_persists_positions_table(tmp_path) -> None:
     summary = recorder.summary()
     assert summary["position_rows"] == 2
     assert summary["dropped_position_rows"] == 0
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_recorder_caps_position_rows_and_counts_drops(monkeypatch, tmp_path) -> None:
@@ -212,7 +213,7 @@ def test_recorder_caps_position_rows_and_counts_drops(monkeypatch, tmp_path) -> 
     assert summary["dropped_position_rows"] == 2
     connection = _read_back(recorder.database_bytes())
     assert connection.execute("SELECT COUNT(*) FROM positions").fetchone() == (2,)
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_readme_documents_the_positions_table() -> None:
@@ -279,7 +280,7 @@ def test_zip_contains_self_contained_report_html(tmp_path) -> None:
     assert "crewmate" in report
     assert "crew_wins" in report
     assert "green" in report
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_report_payload_summarizes_player_specific_data(tmp_path) -> None:
@@ -306,7 +307,7 @@ def test_report_payload_summarizes_player_specific_data(tmp_path) -> None:
     marker_events = {m["event"] for m in payload["markers"]}
     assert "domain.kill_landed" not in marker_events  # not present this game
     assert {"domain.meeting_called", "domain.player_died", "domain.vote_cast", "domain.game_over"} <= marker_events
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_report_degrades_without_episode_info_or_suspicion(tmp_path) -> None:
@@ -326,7 +327,7 @@ def test_report_degrades_without_episode_info_or_suspicion(tmp_path) -> None:
     html = artifact_module.build_report_html(summary, connection)
     assert "<html" in html
     assert "const DATA = {" in html
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_report_generation_failure_does_not_break_zip(monkeypatch, tmp_path) -> None:
@@ -343,7 +344,7 @@ def test_report_generation_failure_does_not_break_zip(monkeypatch, tmp_path) -> 
         names = sorted(archive.namelist())
     # report.html is dropped, but the durable artifact survives intact.
     assert names == ["README.md", "summary.json", "trace.db"]
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_upload_skips_when_env_unset_but_still_emits_metadata(monkeypatch, capsys, tmp_path) -> None:
@@ -377,7 +378,7 @@ def test_upload_skips_when_env_unset_but_still_emits_metadata(monkeypatch, capsy
     assert summary["last_tick"] == 9
     assert summary["event_counts"] == {"domain.phase_change": 1, "perception": 1}
     assert summary["zip_bytes"] > 0
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_upload_writes_file_url(monkeypatch, tmp_path, capsys) -> None:
@@ -399,7 +400,7 @@ def test_upload_writes_file_url(monkeypatch, tmp_path, capsys) -> None:
     # file:// writes are confirmed with "wrote" (not "upload OK").
     assert f"crewborg artifact: wrote -> {target}" in err
     assert "bytes in" in err
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_upload_puts_zip_to_https_url(monkeypatch, capsys, tmp_path) -> None:
@@ -443,7 +444,7 @@ def test_upload_puts_zip_to_https_url(monkeypatch, capsys, tmp_path) -> None:
     assert "SECRETSIG123" not in err
     assert "sig=" not in err
     assert "<redacted>" in err
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_upload_failure_is_swallowed(monkeypatch, capsys, tmp_path) -> None:
@@ -461,7 +462,7 @@ def test_upload_failure_is_swallowed(monkeypatch, capsys, tmp_path) -> None:
     assert "network down" in err
     # The signature is redacted even on the failure path.
     assert "SECRETSIG123" not in err
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_upload_skips_oversized_payload(monkeypatch, capsys, tmp_path) -> None:
@@ -480,7 +481,7 @@ def test_upload_skips_oversized_payload(monkeypatch, capsys, tmp_path) -> None:
     assert "> 8 max" in err
     assert "https://example.invalid/upload" in err
     assert "SECRETSIG123" not in err
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_recorder_caps_rows_and_counts_drops(monkeypatch, tmp_path) -> None:
@@ -497,7 +498,7 @@ def test_recorder_caps_rows_and_counts_drops(monkeypatch, tmp_path) -> None:
     assert summary["dropped_metric_rows"] == 2
     # Tick range still spans dropped events.
     assert summary["last_tick"] == 3
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_tee_sinks_fan_out(tmp_path) -> None:
@@ -515,7 +516,7 @@ def test_tee_sinks_fan_out(tmp_path) -> None:
         summary = recorder.summary()
         assert summary["trace_rows"] == 1
         assert summary["metric_rows"] == 1
-        recorder.close()
+        recorder.close(monotonic() + 2)
 
 
 @pytest.mark.parametrize("invalid", ["", "   "])
@@ -527,7 +528,7 @@ def test_upload_treats_blank_url_as_disabled(monkeypatch, capsys, invalid, tmp_p
     # Blank is treated as no URL: no binary upload, but metadata is still captured.
     assert "crewborg artifact: no upload URL set" in err
     assert "crewborg artifact: summary.json " in err
-    recorder.close()
+    recorder.close(monotonic() + 2)
 
 
 def test_resolve_upload_url_uses_candidate_order(monkeypatch) -> None:
@@ -562,7 +563,7 @@ def test_closed_database_report_and_zip_preserve_recorded_rows(tmp_path) -> None
     )
     recorder.histogram("bridge.step_ms", 1.25, tags={"tick": 7})
     summary = recorder.summary()
-    recorder.close()
+    recorder.close(monotonic() + 2)
     database = sqlite3.connect(f"{recorder.database_path.as_uri()}?mode=ro", uri=True)
     try:
         assert database.execute("SELECT tick, event FROM traces").fetchall() == [
@@ -592,7 +593,7 @@ async def test_sealed_sqlite_streams_into_private_zip_and_expiry_truncates(
 
     recorder = SqliteEpisodeRecorder(tmp_path / "sealed.db")
     recorder.record(TraceEvent(tick=9, name="private-row", data={"value": "preserved"}))
-    recorder.close()
+    recorder.close(monotonic() + 2)
     expected = recorder.database_path.read_bytes()
     artifact = PrivateArtifact(tmp_path / "player.zip")
     artifact.write_record({"kind": "engine-terminal", "tick": 9})
@@ -615,13 +616,156 @@ async def test_sealed_sqlite_streams_into_private_zip_and_expiry_truncates(
         None,
         monotonic() + (-1 if expired else 2),
         {"summary.json": b"{}"},
-        {"trace.db": recorder.database_path},
+        {"trace.db": recorder.compression_cache},
     )
     with zipfile.ZipFile(artifact.path) as archive:
-        assert archive.read("trace.db") == expected
-        assert archive.getinfo("trace.db").compress_type == zipfile.ZIP_STORED
+        assert archive.read("trace.db") == (b"" if expired else expected)
+        assert archive.getinfo("trace.db").compress_type == zipfile.ZIP_DEFLATED
         private = json.loads(archive.read("private-outcome.json"))
     assert private["status"] == ("truncated" if expired else "completed")
     assert private["stored_writers_joined"] is not expired
     with pytest.raises(RuntimeError, match="sealed"):
         artifact.write_record({"kind": "late"})
+
+
+@pytest.mark.asyncio
+async def test_expired_seal_cannot_begin_publication(tmp_path):
+    from players.crewrift.crewborg.coworld.private_artifact import (
+        PrivateArtifact,
+        PrivateOutcome,
+    )
+
+    artifact = PrivateArtifact(tmp_path / "player.zip")
+    destination = tmp_path / "published.zip"
+    outcome = PrivateOutcome(
+        status="completed",
+        native_work_joined=True,
+        frame_owners_joined=True,
+        nlp_work_joined=True,
+        socket_joined=True,
+        stored_writers_joined=True,
+        terminal_engine_evidence=True,
+        requested_player_slot=2,
+        engine_player_index=4,
+        source_revision=None,
+        image_digest=None,
+        failure_kind=None,
+    )
+    with pytest.raises(TimeoutError, match="seal exceeded"):
+        await artifact.finish(outcome, destination.as_uri(), monotonic() - 1, {}, {})
+    assert not destination.exists()
+    with zipfile.ZipFile(artifact.path) as archive:
+        assert json.loads(archive.read("private-outcome.json"))["status"] == "truncated"
+
+
+@pytest.mark.asyncio
+async def test_unjoined_cache_seals_truncated_without_late_zip_mutation(tmp_path):
+    import hashlib
+    import threading
+
+    from players.crewrift.crewborg.compression_cache import ImmutableCompressionCache
+    from players.crewrift.crewborg.coworld.private_artifact import (
+        PrivateArtifact,
+        PrivateOutcome,
+    )
+
+    source = tmp_path / "trace.db"
+    source.write_bytes(b"actual")
+    lock = threading.Lock()
+    entered = threading.Event()
+
+    class OwnedLock:
+        def __enter__(self):
+            entered.set()
+            lock.acquire()
+
+        def __exit__(self, *args):
+            lock.release()
+
+    lock.acquire()
+    cache = ImmutableCompressionCache(source, OwnedLock())
+    assert entered.wait(2)
+    artifact = PrivateArtifact(tmp_path / "player.zip")
+    outcome = PrivateOutcome(
+        status="completed",
+        native_work_joined=True,
+        frame_owners_joined=True,
+        nlp_work_joined=True,
+        socket_joined=True,
+        stored_writers_joined=True,
+        terminal_engine_evidence=True,
+        requested_player_slot=2,
+        engine_player_index=4,
+        source_revision=None,
+        image_digest=None,
+        failure_kind=None,
+    )
+    try:
+        assert not cache.stop(monotonic() - 1)
+        assert not await artifact.finish(
+            outcome, None, monotonic() + 2, {}, {"trace.db": cache}
+        )
+        original_sha = hashlib.sha256(artifact.path.read_bytes()).hexdigest()
+        with zipfile.ZipFile(artifact.path) as archive:
+            private = json.loads(archive.read("private-outcome.json"))
+            assert private["status"] == "truncated"
+            assert not private["stored_writers_joined"]
+            assert "trace.db" not in archive.namelist()
+    finally:
+        lock.release()
+        assert cache.stop(monotonic() + 2)
+    assert hashlib.sha256(artifact.path.read_bytes()).hexdigest() == original_sha
+
+
+@pytest.mark.asyncio
+async def test_mid_assembly_deadline_keeps_partial_database_unqualified(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    from players.crewrift.crewborg.compression_cache import (
+        CHUNK_BYTES,
+        CachedDeflater,
+        ImmutableCompressionCache,
+    )
+    from players.crewrift.crewborg.coworld.private_artifact import (
+        PrivateArtifact,
+        PrivateOutcome,
+    )
+
+    source = tmp_path / "trace.db"
+    source.write_bytes(b"a" * CHUNK_BYTES + b"b" * CHUNK_BYTES)
+    cache = ImmutableCompressionCache(source, threading.Lock())
+    assert cache.stop(monotonic() + 2)
+    compress = CachedDeflater.compress
+
+    def slow_received_chunk(self, raw):
+        result = compress(self, raw)
+        threading.Event().wait(0.05)
+        return result
+
+    monkeypatch.setattr(CachedDeflater, "compress", slow_received_chunk)
+    artifact = PrivateArtifact(tmp_path / "player.zip")
+    outcome = PrivateOutcome(
+        status="completed",
+        native_work_joined=True,
+        frame_owners_joined=True,
+        nlp_work_joined=True,
+        socket_joined=True,
+        stored_writers_joined=True,
+        terminal_engine_evidence=True,
+        requested_player_slot=2,
+        engine_player_index=4,
+        source_revision=None,
+        image_digest=None,
+        failure_kind=None,
+    )
+    assert not await artifact.finish(
+        outcome, None, monotonic() + 0.02, {}, {"trace.db": cache}
+    )
+    with zipfile.ZipFile(artifact.path) as archive:
+        assert archive.read("trace.db") == b"a" * CHUNK_BYTES
+        private = json.loads(archive.read("private-outcome.json"))
+        assert private["status"] == "truncated"
+        assert not private["stored_writers_joined"]
+        assert private["failure_kind"] == "StoredArtifactDeadlineExceeded"

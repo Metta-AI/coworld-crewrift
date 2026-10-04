@@ -9,11 +9,12 @@ from pathlib import Path
 from time import monotonic
 from typing import Literal
 from urllib.parse import unquote, urlsplit
-from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
 from pydantic import JsonValue
 
+from players.crewrift.crewborg.compression_cache import ImmutableCompressionCache
 from players.crewrift.crewborg.native import (
     NativeModel,
     NativeSession,
@@ -88,12 +89,29 @@ class PrivateArtifact:
         upload_url: str | None,
         cleanup_deadline: float,
         stored_members: dict[str, bytes],
-        stored_files: dict[str, Path],
+        stored_files: dict[str, ImmutableCompressionCache],
     ) -> bool:
         if not self.sealed:
             self.member.close()
-            for name, path in stored_files.items():
-                self.archive.write(path, name, compress_type=ZIP_STORED)
+            for name, cache in stored_files.items():
+                if cache.joined:
+                    compressor = cache.write_zip(self.archive, name, cleanup_deadline)
+                    if not compressor.source_complete:
+                        outcome = outcome.model_copy(
+                            update={
+                                "status": "truncated",
+                                "stored_writers_joined": False,
+                                "failure_kind": "StoredArtifactDeadlineExceeded",
+                            }
+                        )
+                else:
+                    outcome = outcome.model_copy(
+                        update={
+                            "status": "truncated",
+                            "stored_writers_joined": False,
+                            "failure_kind": "StoredCompressionOwnerUnjoined",
+                        }
+                    )
             for name, content in stored_members.items():
                 self.archive.writestr(name, content)
             if monotonic() >= cleanup_deadline:
@@ -113,6 +131,8 @@ class PrivateArtifact:
                 )
         if upload_url is None:
             return False
+        if monotonic() >= cleanup_deadline:
+            raise TimeoutError("Private artifact seal exceeded the cleanup deadline")
 
         async def chunks():
             with self.path.open("rb") as stream:

@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -160,13 +161,7 @@ async def run_bridge(
     )
     recorder = SqliteEpisodeRecorder(directory / "trace.db")
     recorder.set_episode_info(player_slot=registration.requested_slot)
-    runtime = build(
-        trace_sink=recorder,
-        metrics_sink=recorder,
-        native_session=native,
-        policy_profile=policy_profile_from_env(),
-        episode_recorder=recorder,
-    )
+    runtime_owner = ExitStack()
     scene = SceneState()
     state = _BridgeState()
     owner = asyncio.current_task()
@@ -191,6 +186,14 @@ async def run_bridge(
         split._replace(query=urlencode([*query, ("native_evidence", "1")]))
     )
     try:
+        runtime = build(
+            trace_sink=recorder,
+            metrics_sink=recorder,
+            native_session=native,
+            policy_profile=policy_profile_from_env(),
+            episode_recorder=recorder,
+        )
+        runtime_owner.callback(runtime.close)
         await _connect_with_retry(
             url,
             connect=connect,
@@ -204,7 +207,7 @@ async def run_bridge(
     finally:
         failure = sys.exception()
         deadline = native.begin_stop(time.monotonic() + 2)
-        runtime.close()
+        runtime_owner.close()
         native_joined = await native.stop(deadline)
         # This controller has no background NLP loader.
         nlp_joined = True
@@ -212,13 +215,14 @@ async def run_bridge(
             state.socket.close(), deadline
         )
         summary = recorder.summary()
-        recorder.close()
+        compression_joined = recorder.close(deadline)
         stored_members = {
             "summary.json": json.dumps(summary, indent=2).encode(),
             "README.md": ARTIFACT_README.encode(),
-            "report.html": recorder._report_html(summary).encode(),
         }
-        stored_writers_joined = time.monotonic() < deadline
+        if compression_joined and time.monotonic() < deadline:
+            stored_members["report.html"] = recorder._report_html(summary).encode()
+        stored_writers_joined = compression_joined and time.monotonic() < deadline
         terminal = state.terminal is not None
         complete = (
             terminal
@@ -252,7 +256,7 @@ async def run_bridge(
             os.environ.get("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL"),
             deadline,
             stored_members,
-            {"trace.db": recorder.database_path},
+            {"trace.db": recorder.compression_cache},
         )
 
 

@@ -25,6 +25,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from players.player_sdk.trace import MetricSample, TraceEvent
 
+from .compression_cache import ImmutableCompressionCache
+
 ARTIFACT_URL_ENV = "COWORLD_PLAYER_ARTIFACT_UPLOAD_URL"
 
 # Env vars the Coworld runner injects into the player pod (verified against the
@@ -774,6 +776,7 @@ class SqliteEpisodeRecorder:
         self._conn.executescript(_SCHEMA)
         self._lock = threading.Lock()
         self._closed = False
+        self.compression_cache = ImmutableCompressionCache(database_path, self._lock)
         self._trace_rows = 0
         self._metric_rows = 0
         self._position_rows = 0
@@ -921,10 +924,14 @@ class SqliteEpisodeRecorder:
         """
 
         summary = self.summary()
-        self.close()
+        deadline = time.monotonic() + 2
+        if not self.close(deadline):
+            raise RuntimeError("Stored artifact compression owner did not join")
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(self.database_path, "trace.db")
+            compressor = self.compression_cache.write_zip(archive, "trace.db", deadline)
+            if not compressor.source_complete:
+                raise TimeoutError("Stored artifact assembly exceeded its cleanup deadline")
             archive.writestr("summary.json", json.dumps(summary, indent=2))
             archive.writestr("README.md", ARTIFACT_README)
             try:
@@ -944,13 +951,13 @@ class SqliteEpisodeRecorder:
         finally:
             conn.close()
 
-    def close(self) -> None:
+    def close(self, deadline: float) -> bool:
         with self._lock:
-            if self._closed:
-                return
-            self._conn.commit()
-            self._closed = True
-            self._conn.close()
+            if not self._closed:
+                self._conn.commit()
+                self._closed = True
+                self._conn.close()
+        return self.compression_cache.stop(deadline)
 
 
 def upload_episode_artifact(recorder: SqliteEpisodeRecorder) -> bool:
