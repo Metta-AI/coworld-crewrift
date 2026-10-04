@@ -8115,13 +8115,18 @@ when not defined(italkalotLibrary):
     ## Returns true when a websocket player token is configured.
     token.strip().len > 0 or url.urlHasQueryParam("token")
 
-  proc printNativeStartupStatus() =
+  proc printPolicyStartupStatus() =
     ## No private prompts, bodies, credentials, or received identity headers are public.
-    doAssert getEnv("COWORLD_LLM_ENDPOINT").len > 0,
-      "COWORLD_LLM_ENDPOINT is required for Notsus"
+    let profile = nativeAi.policyProfile()
+    if profile.origin == nativeAi.NativeOrigin:
+      doAssert getEnv("COWORLD_LLM_ENDPOINT").len > 0,
+        "COWORLD_LLM_ENDPOINT is required for native Notsus"
     doAssert getEnv("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL").len > 0,
       "native_social_unsupported_artifact_context: private artifact destination is required"
-    echo "notsus transport: native_messages"
+    if profile.origin == nativeAi.NativeOrigin:
+      echo "notsus transport: native_messages"
+    else:
+      echo "notsus policy: scripted_teacher"
 
   proc runBot(
     host = DefaultHost,
@@ -8475,7 +8480,7 @@ when isMainModule and not defined(italkalotLibrary):
   let target = config.connectUrl()
   echo "starting notsus -> ", target.redactedTokenUrl(), " protocol=sprite"
   config.requirePlayerToken(target)
-  printNativeStartupStatus()
+  printPolicyStartupStatus()
   addExitProc(finishProfileTrace)
   runBot(
     config.address,
