@@ -51,7 +51,9 @@ async def test_scripted_meeting_is_immediate_private_evidence_not_a_model_call(
     client.installed(
         result, result.decision, Intent(kind="chat", text=result.decision.chat_text), 13
     )
-    generation = next(iter(native_session.generations.values()))
+    generation = TypeAdapter(PolicyGeneration).validate_json(
+        native_session.path.read_text().splitlines()[-1]
+    )
     assert (
         generation.origin == "teacher" and len(generation.controller_installations) == 1
     )

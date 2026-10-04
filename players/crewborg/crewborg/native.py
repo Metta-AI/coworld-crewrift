@@ -191,7 +191,10 @@ class NativeSession:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(descriptor)
         self.tasks: dict[asyncio.Task[object], PreparedCall] = {}
-        self.generations: dict[str, PolicyGeneration] = {}
+        self.cleanup_joined: dict[Literal["meeting", "commander"], bool] = {
+            "meeting": True,
+            "commander": True,
+        }
         self.shutdown_deadline: float | None = None
         self.sealed = False
 
@@ -199,7 +202,6 @@ class NativeSession:
         if self.sealed:
             raise RuntimeError("Cannot mutate sealed native player evidence")
         frozen = generation.model_copy(deep=True)
-        self.generations[str(frozen.generation_id)] = frozen
         self.record_generation(frozen)
         with self.path.open("a") as stream:
             stream.write(frozen.model_dump_json() + "\n")
@@ -212,7 +214,21 @@ class NativeSession:
             raise RuntimeError("Cannot start model work after player STOP")
         task = asyncio.create_task(operation)
         self.tasks[task] = prepared
+        task.add_done_callback(self._retire)
         return task
+
+    def _retire(self, task: asyncio.Task[object]) -> None:
+        if task not in self.tasks:
+            return
+        prepared = self.tasks.pop(task)
+        if not task.cancelled():
+            task.exception()
+        generation = prepared.generation
+        self.cleanup_joined[generation.phase] = (
+            self.cleanup_joined[generation.phase]
+            and generation.response_reader_joined is not False
+            and generation.transport_cleanup_joined is not False
+        )
 
     def cancel_phase(
         self, phase: Literal["meeting", "commander"], deadline: float
@@ -223,7 +239,7 @@ class NativeSession:
                 task.cancel()
 
     def phase_joined(self, phase: Literal["meeting", "commander"]) -> bool:
-        return all(
+        return self.cleanup_joined[phase] and all(
             task.done()
             and prepared.generation.response_reader_joined is not False
             and prepared.generation.transport_cleanup_joined is not False
@@ -253,15 +269,10 @@ class NativeSession:
             joined = not unresolved
         else:
             joined = True
-        for task in pending:
-            if task.done() and not task.cancelled():
-                task.exception()
-        joined = joined and all(
-            generation.response_reader_joined is not False
-            and generation.transport_cleanup_joined is not False
-            for generation in self.generations.values()
-            if generation.origin == "native"
-        )
+        for task in list(self.tasks):
+            if task.done():
+                self._retire(task)
+        joined = joined and all(self.cleanup_joined.values())
         self.sealed = True
         return joined
 

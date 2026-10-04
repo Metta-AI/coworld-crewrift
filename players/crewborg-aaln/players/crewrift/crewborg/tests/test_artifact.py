@@ -7,6 +7,7 @@ import json
 import sqlite3
 import zipfile
 from datetime import datetime, timedelta
+from typing import Self
 
 import pytest
 
@@ -35,8 +36,8 @@ def _parse_summary_json_line(stderr: str) -> dict:
     raise AssertionError(f"no summary.json line in stderr:\n{stderr}")
 
 
-def test_recorder_persists_traces_and_metrics_to_sqlite() -> None:
-    recorder = SqliteEpisodeRecorder()
+def test_recorder_persists_traces_and_metrics_to_sqlite(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-1.db")
     recorder.record(TraceEvent(tick=1, name="mode_entered", data={"mode": "idle"}))
     recorder.record(TraceEvent(tick=7, name="domain.vote_cast", data={"target": "red"}))
     recorder.counter("cyborg.mode.ran", tags={"mode": "idle"})
@@ -66,8 +67,8 @@ def test_recorder_persists_traces_and_metrics_to_sqlite() -> None:
     recorder.close()
 
 
-def test_recorder_zip_contains_database_summary_and_readme() -> None:
-    recorder = SqliteEpisodeRecorder()
+def test_recorder_zip_contains_database_summary_and_readme(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-2.db")
     recorder.record(TraceEvent(tick=1, name="domain.phase_change", data={"to": "Playing"}))
 
     with zipfile.ZipFile(io.BytesIO(recorder.zip_bytes())) as archive:
@@ -91,8 +92,8 @@ def test_recorder_zip_contains_database_summary_and_readme() -> None:
     recorder.close()
 
 
-def test_summary_includes_schema_version_and_timestamp() -> None:
-    recorder = SqliteEpisodeRecorder()
+def test_summary_includes_schema_version_and_timestamp(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-3.db")
     summary = recorder.summary()
     assert summary["schema_version"] == artifact_module.SCHEMA_VERSION
     # ISO-8601 UTC timestamp, parseable and timezone-aware.
@@ -104,8 +105,8 @@ def test_summary_includes_schema_version_and_timestamp() -> None:
     recorder.close()
 
 
-def test_set_episode_info_surfaces_in_summary_and_omits_none() -> None:
-    recorder = SqliteEpisodeRecorder()
+def test_set_episode_info_surfaces_in_summary_and_omits_none(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-4.db")
     recorder.set_episode_info(slot=3, role="imposter", token=None, outcome=None)
     summary = recorder.summary()
     assert summary["episode"] == {"slot": 3, "role": "imposter"}
@@ -135,10 +136,10 @@ def test_episode_info_from_ws_url_parses_slot_and_drops_token() -> None:
     assert artifact_module.episode_info_from_ws_url("ws://svc:8080/player?token=t") == {}
 
 
-def test_summary_with_env_slot_excludes_token_anywhere(monkeypatch) -> None:
+def test_summary_with_env_slot_excludes_token_anywhere(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("COWORLD_PLAYER_WS_URL", raising=False)
     monkeypatch.setenv("COGAMES_ENGINE_WS_URL", "ws://svc:8080/player?slot=2&token=SECRETTOK")
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-5.db")
     recorder.set_episode_info(**artifact_module.episode_info_from_env())
     summary = recorder.summary()
     assert summary["episode"]["slot"] == 2
@@ -149,18 +150,18 @@ def test_summary_with_env_slot_excludes_token_anywhere(monkeypatch) -> None:
     recorder.close()
 
 
-def test_episode_info_from_env_empty_when_no_ws_url(monkeypatch) -> None:
+def test_episode_info_from_env_empty_when_no_ws_url(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("COWORLD_PLAYER_WS_URL", raising=False)
     monkeypatch.delenv("COGAMES_ENGINE_WS_URL", raising=False)
     assert artifact_module.episode_info_from_env() == {}
     # And a summary with no info populated cleanly omits the episode key.
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-6.db")
     assert "episode" not in recorder.summary()
     recorder.close()
 
 
-def test_recorder_drops_writes_after_close() -> None:
-    recorder = SqliteEpisodeRecorder()
+def test_recorder_drops_writes_after_close(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-7.db")
     recorder.close()
     # Must not raise even though the connection is gone.
     recorder.record(TraceEvent(tick=1, name="perception", data={}))
@@ -169,8 +170,8 @@ def test_recorder_drops_writes_after_close() -> None:
     recorder.close()
 
 
-def test_recorder_persists_positions_table() -> None:
-    recorder = SqliteEpisodeRecorder()
+def test_recorder_persists_positions_table(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-8.db")
     recorder.record_position(
         tick=7,
         server_tick=4807,
@@ -200,9 +201,9 @@ def test_recorder_persists_positions_table() -> None:
     recorder.close()
 
 
-def test_recorder_caps_position_rows_and_counts_drops(monkeypatch) -> None:
+def test_recorder_caps_position_rows_and_counts_drops(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(artifact_module, "MAX_ROWS_PER_TABLE", 2)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-9.db")
     for tick in range(4):
         recorder.record_position(tick=tick)
 
@@ -227,10 +228,10 @@ def test_readme_documents_the_positions_table() -> None:
     assert "report.html" in readme
 
 
-def _build_episode_recorder() -> SqliteEpisodeRecorder:
+def _build_episode_recorder(tmp_path) -> SqliteEpisodeRecorder:
     """A recorder with a representative crewmate game: positions + domain events + info."""
 
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-10.db")
     recorder.set_episode_info(slot=2, role="crewmate", color="green", outcome="crew_wins")
     for tick in range(0, 200, 4):
         recorder.record_position(
@@ -263,8 +264,8 @@ def _build_episode_recorder() -> SqliteEpisodeRecorder:
     return recorder
 
 
-def test_zip_contains_self_contained_report_html() -> None:
-    recorder = _build_episode_recorder()
+def test_zip_contains_self_contained_report_html(tmp_path) -> None:
+    recorder = _build_episode_recorder(tmp_path)
     with zipfile.ZipFile(io.BytesIO(recorder.zip_bytes())) as archive:
         assert "report.html" in archive.namelist()
         report = archive.read("report.html").decode("utf-8")
@@ -281,8 +282,8 @@ def test_zip_contains_self_contained_report_html() -> None:
     recorder.close()
 
 
-def test_report_payload_summarizes_player_specific_data() -> None:
-    recorder = _build_episode_recorder()
+def test_report_payload_summarizes_player_specific_data(tmp_path) -> None:
+    recorder = _build_episode_recorder(tmp_path)
     summary = recorder.summary()
     connection = _read_back(recorder.database_bytes())
     payload = artifact_module.build_report_payload(summary, connection)
@@ -308,10 +309,10 @@ def test_report_payload_summarizes_player_specific_data() -> None:
     recorder.close()
 
 
-def test_report_degrades_without_episode_info_or_suspicion() -> None:
+def test_report_degrades_without_episode_info_or_suspicion(tmp_path) -> None:
     """An imposter-style game (no suspicion, no episode block) still builds a report."""
 
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-11.db")
     recorder.record(TraceEvent(tick=1, name="domain.phase_change", data={"to": "Playing"}))
     recorder.record(TraceEvent(tick=5, name="domain.kill_landed", data={"target_color": "pink"}))
     summary = recorder.summary()
@@ -328,14 +329,14 @@ def test_report_degrades_without_episode_info_or_suspicion() -> None:
     recorder.close()
 
 
-def test_report_generation_failure_does_not_break_zip(monkeypatch) -> None:
+def test_report_generation_failure_does_not_break_zip(monkeypatch, tmp_path) -> None:
     """If report generation raises, the zip still assembles with the other 3 entries."""
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("report builder exploded")
 
     monkeypatch.setattr(artifact_module, "build_report_html", boom)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-12.db")
     recorder.record(TraceEvent(tick=1, name="domain.phase_change", data={"to": "Playing"}))
 
     with zipfile.ZipFile(io.BytesIO(recorder.zip_bytes())) as archive:
@@ -345,7 +346,7 @@ def test_report_generation_failure_does_not_break_zip(monkeypatch) -> None:
     recorder.close()
 
 
-def test_upload_skips_when_env_unset_but_still_emits_metadata(monkeypatch, capsys) -> None:
+def test_upload_skips_when_env_unset_but_still_emits_metadata(monkeypatch, capsys, tmp_path) -> None:
     """No upload URL (today's hosted reality): still emit the metadata to stderr.
 
     This is the production guarantee — the player pod receives no per-player upload
@@ -353,7 +354,7 @@ def test_upload_skips_when_env_unset_but_still_emits_metadata(monkeypatch, capsy
     """
 
     monkeypatch.delenv(ARTIFACT_URL_ENV, raising=False)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-13.db")
     recorder.record(TraceEvent(tick=2, name="domain.phase_change", data={"to": "Playing"}))
     recorder.record(TraceEvent(tick=9, name="perception", data={}))
 
@@ -382,7 +383,7 @@ def test_upload_skips_when_env_unset_but_still_emits_metadata(monkeypatch, capsy
 def test_upload_writes_file_url(monkeypatch, tmp_path, capsys) -> None:
     target = tmp_path / "nested" / "artifact.zip"
     monkeypatch.setenv(ARTIFACT_URL_ENV, target.as_uri())
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-14.db")
     recorder.record(TraceEvent(tick=3, name="domain.kill_landed", data={}))
 
     assert upload_episode_artifact(recorder) is True
@@ -401,12 +402,12 @@ def test_upload_writes_file_url(monkeypatch, tmp_path, capsys) -> None:
     recorder.close()
 
 
-def test_upload_puts_zip_to_https_url(monkeypatch, capsys) -> None:
+def test_upload_puts_zip_to_https_url(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setenv(ARTIFACT_URL_ENV, "https://example.invalid/upload?sig=SECRETSIG123")
     captured: dict[str, object] = {}
 
     class FakeResponse:
-        def __enter__(self) -> FakeResponse:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *exc: object) -> bool:
@@ -423,7 +424,7 @@ def test_upload_puts_zip_to_https_url(monkeypatch, capsys) -> None:
         return FakeResponse()
 
     monkeypatch.setattr(artifact_module.urllib.request, "urlopen", fake_urlopen)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-15.db")
     recorder.record(TraceEvent(tick=1, name="perception", data={}))
 
     assert upload_episode_artifact(recorder) is True
@@ -431,6 +432,7 @@ def test_upload_puts_zip_to_https_url(monkeypatch, capsys) -> None:
     assert captured["url"] == "https://example.invalid/upload?sig=SECRETSIG123"
     assert captured["method"] == "PUT"
     assert captured["content_type"] == "application/zip"
+    assert isinstance(captured["body"], bytes)
     with zipfile.ZipFile(io.BytesIO(captured["body"])) as archive:
         assert "trace.db" in archive.namelist()
 
@@ -444,14 +446,14 @@ def test_upload_puts_zip_to_https_url(monkeypatch, capsys) -> None:
     recorder.close()
 
 
-def test_upload_failure_is_swallowed(monkeypatch, capsys) -> None:
+def test_upload_failure_is_swallowed(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setenv(ARTIFACT_URL_ENV, "https://example.invalid/upload?sig=SECRETSIG123")
 
     def failing_urlopen(*_args, **_kwargs):
         raise OSError("network down")
 
     monkeypatch.setattr(artifact_module.urllib.request, "urlopen", failing_urlopen)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-16.db")
 
     assert upload_episode_artifact(recorder) is False
     err = capsys.readouterr().err
@@ -462,7 +464,7 @@ def test_upload_failure_is_swallowed(monkeypatch, capsys) -> None:
     recorder.close()
 
 
-def test_upload_skips_oversized_payload(monkeypatch, capsys) -> None:
+def test_upload_skips_oversized_payload(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setenv(ARTIFACT_URL_ENV, "https://example.invalid/upload?sig=SECRETSIG123")
     monkeypatch.setattr(artifact_module, "MAX_ARTIFACT_BYTES", 8)
 
@@ -470,7 +472,7 @@ def test_upload_skips_oversized_payload(monkeypatch, capsys) -> None:
         raise AssertionError("urlopen must not be called for oversized payloads")
 
     monkeypatch.setattr(artifact_module.urllib.request, "urlopen", must_not_be_called)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-17.db")
     assert upload_episode_artifact(recorder) is False
     err = capsys.readouterr().err
     # Oversize skip states the size vs cap and the masked URL.
@@ -481,9 +483,9 @@ def test_upload_skips_oversized_payload(monkeypatch, capsys) -> None:
     recorder.close()
 
 
-def test_recorder_caps_rows_and_counts_drops(monkeypatch) -> None:
+def test_recorder_caps_rows_and_counts_drops(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(artifact_module, "MAX_ROWS_PER_TABLE", 2)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-18.db")
     for tick in range(4):
         recorder.record(TraceEvent(tick=tick, name="perception", data={}))
         recorder.counter("cyborg.mode.ran")
@@ -498,11 +500,11 @@ def test_recorder_caps_rows_and_counts_drops(monkeypatch) -> None:
     recorder.close()
 
 
-def test_tee_sinks_fan_out() -> None:
+def test_tee_sinks_fan_out(tmp_path) -> None:
     from players.crewrift.crewborg.trace import TeeMetricsSink, TeeTraceSink
 
-    recorder_a = SqliteEpisodeRecorder()
-    recorder_b = SqliteEpisodeRecorder()
+    recorder_a = SqliteEpisodeRecorder(tmp_path / "trace-19.db")
+    recorder_b = SqliteEpisodeRecorder(tmp_path / "trace-20.db")
     trace_tee = TeeTraceSink(recorder_a, None, recorder_b)
     metrics_tee = TeeMetricsSink(recorder_a, None, recorder_b)
 
@@ -517,9 +519,9 @@ def test_tee_sinks_fan_out() -> None:
 
 
 @pytest.mark.parametrize("invalid", ["", "   "])
-def test_upload_treats_blank_url_as_disabled(monkeypatch, capsys, invalid) -> None:
+def test_upload_treats_blank_url_as_disabled(monkeypatch, capsys, invalid, tmp_path) -> None:
     monkeypatch.setenv(ARTIFACT_URL_ENV, invalid)
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-21.db")
     assert upload_episode_artifact(recorder) is False
     err = capsys.readouterr().err
     # Blank is treated as no URL: no binary upload, but metadata is still captured.
@@ -551,3 +553,75 @@ def test_resolve_upload_url_uses_candidate_order(monkeypatch) -> None:
 )
 def test_display_url_masks_query_signature(url, expected) -> None:
     assert artifact_module._display_url(url) == expected
+
+
+def test_closed_database_report_and_zip_preserve_recorded_rows(tmp_path) -> None:
+    recorder = SqliteEpisodeRecorder(tmp_path / "trace-22.db")
+    recorder.record(
+        TraceEvent(tick=7, name="domain.phase_change", data={"to": "Playing"})
+    )
+    recorder.histogram("bridge.step_ms", 1.25, tags={"tick": 7})
+    summary = recorder.summary()
+    recorder.close()
+    database = sqlite3.connect(f"{recorder.database_path.as_uri()}?mode=ro", uri=True)
+    try:
+        assert database.execute("SELECT tick, event FROM traces").fetchall() == [
+            (7, "domain.phase_change")
+        ]
+        assert database.execute("SELECT name, value FROM metrics").fetchall() == [
+            ("bridge.step_ms", 1.25)
+        ]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            database.execute("DELETE FROM traces")
+    finally:
+        database.close()
+    assert "<html" in recorder._report_html(summary)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired", [False, True])
+async def test_sealed_sqlite_streams_into_private_zip_and_expiry_truncates(
+    tmp_path, expired
+):
+    from time import monotonic
+
+    from players.crewrift.crewborg.coworld.private_artifact import (
+        PrivateArtifact,
+        PrivateOutcome,
+    )
+
+    recorder = SqliteEpisodeRecorder(tmp_path / "sealed.db")
+    recorder.record(TraceEvent(tick=9, name="private-row", data={"value": "preserved"}))
+    recorder.close()
+    expected = recorder.database_path.read_bytes()
+    artifact = PrivateArtifact(tmp_path / "player.zip")
+    artifact.write_record({"kind": "engine-terminal", "tick": 9})
+    outcome = PrivateOutcome(
+        status="completed",
+        native_work_joined=True,
+        frame_owners_joined=True,
+        nlp_work_joined=True,
+        socket_joined=True,
+        stored_writers_joined=True,
+        terminal_engine_evidence=True,
+        requested_player_slot=2,
+        engine_player_index=4,
+        source_revision=None,
+        image_digest=None,
+        failure_kind=None,
+    )
+    assert not await artifact.finish(
+        outcome,
+        None,
+        monotonic() + (-1 if expired else 2),
+        {"summary.json": b"{}"},
+        {"trace.db": recorder.database_path},
+    )
+    with zipfile.ZipFile(artifact.path) as archive:
+        assert archive.read("trace.db") == expected
+        assert archive.getinfo("trace.db").compress_type == zipfile.ZIP_STORED
+        private = json.loads(archive.read("private-outcome.json"))
+    assert private["status"] == ("truncated" if expired else "completed")
+    assert private["stored_writers_joined"] is not expired
+    with pytest.raises(RuntimeError, match="sealed"):
+        artifact.write_record({"kind": "late"})

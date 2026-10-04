@@ -9,7 +9,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Literal
 from urllib.parse import unquote, urlsplit
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 import httpx
 from pydantic import JsonValue
@@ -88,9 +88,12 @@ class PrivateArtifact:
         upload_url: str | None,
         cleanup_deadline: float,
         stored_members: dict[str, bytes],
+        stored_files: dict[str, Path],
     ) -> bool:
         if not self.sealed:
             self.member.close()
+            for name, path in stored_files.items():
+                self.archive.write(path, name, compress_type=ZIP_STORED)
             for name, content in stored_members.items():
                 self.archive.writestr(name, content)
             if monotonic() >= cleanup_deadline:

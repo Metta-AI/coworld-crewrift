@@ -158,7 +158,7 @@ async def run_bridge(
     native = NativeSession(
         registration, directory / "native.jsonl", artifact.record_policy
     )
-    recorder = SqliteEpisodeRecorder()
+    recorder = SqliteEpisodeRecorder(directory / "trace.db")
     recorder.set_episode_info(player_slot=registration.requested_slot)
     runtime = build(
         trace_sink=recorder,
@@ -212,14 +212,12 @@ async def run_bridge(
             state.socket.close(), deadline
         )
         summary = recorder.summary()
-        database = recorder.database_bytes()
+        recorder.close()
         stored_members = {
-            "trace.db": database,
             "summary.json": json.dumps(summary, indent=2).encode(),
             "README.md": ARTIFACT_README.encode(),
-            "report.html": recorder._report_html(summary, database).encode(),
+            "report.html": recorder._report_html(summary).encode(),
         }
-        recorder.close()
         stored_writers_joined = time.monotonic() < deadline
         terminal = state.terminal is not None
         complete = (
@@ -254,6 +252,7 @@ async def run_bridge(
             os.environ.get("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL"),
             deadline,
             stored_members,
+            {"trace.db": recorder.database_path},
         )
 
 

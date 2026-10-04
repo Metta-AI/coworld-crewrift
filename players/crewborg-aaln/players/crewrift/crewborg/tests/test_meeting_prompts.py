@@ -6,7 +6,11 @@ from time import monotonic
 
 import pytest
 
-from players.crewrift.crewborg.native import NativeSession, PlayerRegistration
+from players.crewrift.crewborg.native import (
+    NativeGeneration,
+    NativeSession,
+    PlayerRegistration,
+)
 from players.crewrift.crewborg.strategy.meeting import build_system_prompt
 from players.crewrift.crewborg.strategy.meeting.llm import (
     MeetingParams,
@@ -65,7 +69,9 @@ async def test_client_selects_exact_native_prompt_from_context_role(tmp_path):
         task = client.decide(
             {"self": {"role": role}, "meeting": {"tick": 0}}, trigger="meeting_start"
         )
-        generation = next(iter(owner.generations.values()))
+        generation = NativeGeneration.model_validate_json(
+            owner.path.read_text().splitlines()[0]
+        )
         assert generation.request.messages[0]["content"] == build_system_prompt(role)
         assert (_IMPOSTER_TELL in generation.request.messages[0]["content"]) == (
             role == "imposter"

@@ -75,15 +75,12 @@ async def test_native_started_partial_body_abort_and_owned_join(tmp_path, monkey
     assert captures[0].player_slot == 3
     task = owner.start(prepared, owner.complete(prepared))
     await request_seen.wait()
-    while (
-        owner.generations[str(prepared.generation.generation_id)].response_body_b64
-        != base64.b64encode(body).decode()
-    ):
+    while captures[-1].response_body_b64 != base64.b64encode(body).decode():
         await asyncio.sleep(0)
     deadline = monotonic() + 0.5
     assert await owner.stop(deadline)
     assert task.cancelled()
-    generation = owner.generations[str(prepared.generation.generation_id)]
+    generation = captures[-1]
     assert generation.platform_call_id == "actual-call"
     assert base64.b64decode(generation.response_body_b64) == body
     assert generation.raw_response == body.decode()
@@ -140,3 +137,82 @@ async def test_policy_entrypoint_imports_in_a_cold_interpreter():
     stdout, stderr = await process.communicate()
     assert process.returncode == 0, stderr.decode()
     assert stdout == b""
+
+
+async def test_completed_native_calls_retire_owners_and_keep_every_private_attempt(
+    tmp_path, monkeypatch
+):
+    body = json.dumps(
+        {"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}
+    ).encode()
+    requests = []
+
+    async def serve(reader, writer):
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in headers.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            requests.append(await reader.readexactly(length))
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\nConnection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    monkeypatch.setenv(
+        "COWORLD_LLM_ENDPOINT", f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    )
+    captured = []
+    session = NativeSession(
+        PlayerRegistration(
+            requested_slot=1,
+            assigned_slot=1,
+            authenticated_upgrade=True,
+            engine_player_index=2,
+        ),
+        tmp_path / "native.jsonl",
+        captured.append,
+    )
+    ids = []
+    try:
+        for tick in range(25):
+            prepared = session.prepare(
+                NativeRequest(
+                    model="fixture",
+                    messages=[{"role": "user", "content": f"prompt-{tick}"}],
+                    max_tokens=10,
+                    temperature=0,
+                ),
+                phase="meeting",
+                observation_tick=tick,
+                deadline=monotonic() + 2,
+            )
+            task = session.start(prepared, session.complete(prepared))
+            completion = await task
+            ids.append(str(completion.generation_id))
+            assert session.tasks == {}
+            assert session.phase_joined("meeting")
+        assert await session.stop(monotonic() + 2)
+    finally:
+        server.close()
+        await server.wait_closed()
+    records = [json.loads(line) for line in session.path.read_text().splitlines()]
+    assert len(requests) == 25
+    for identifier in ids:
+        evidence = [
+            record for record in records if record["generation_id"] == identifier
+        ]
+        assert evidence[0]["raw_response"] is None
+        assert evidence[-1]["raw_response"].encode() == body
+        assert evidence[-1]["response_reader_joined"] is True
+        assert evidence[-1]["transport_cleanup_joined"] is True
+    assert len(captured) == len(records)

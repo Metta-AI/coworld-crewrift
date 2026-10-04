@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from crewborg.native import NativeProfile
+from crewborg.native import NativeGeneration, NativeProfile
 from crewborg.strategy.commander.llm import build_commander_client_from_env
 from crewborg.strategy.meeting.llm import build_meeting_llm_client_from_env
 
@@ -80,12 +80,35 @@ async def test_native_sidecar_drives_meeting_and_commander(monkeypatch, native_s
             {"self": {"role": "crewmate"}, "meeting": {"tick": 12}},
             trigger="meeting_start",
         )
-        assert len(native_session.generations) == 1
+        assert (
+            len(
+                {
+                    json.loads(line)["generation_id"]
+                    for line in native_session.path.read_text().splitlines()
+                }
+            )
+            == 1
+        )
         assert (await task).decision.action == "wait"
         task = commander.decide({"self": {"role": "crewmate"}, "observation_tick": 13})
-        assert len(native_session.generations) == 2
+        assert (
+            len(
+                {
+                    json.loads(line)["generation_id"]
+                    for line in native_session.path.read_text().splitlines()
+                }
+            )
+            == 2
+        )
         assert (await task).priorities["reason"] == "hold"
-        for generation in native_session.generations.values():
+        generations = {
+            generation.generation_id: generation
+            for generation in (
+                NativeGeneration.model_validate_json(line)
+                for line in native_session.path.read_text().splitlines()
+            )
+        }
+        for generation in generations.values():
             assert generation.request.model == "checkpoint/source"
             assert generation.decoder["temperature"] == 0
             assert (
@@ -97,6 +120,7 @@ async def test_native_sidecar_drives_meeting_and_commander(monkeypatch, native_s
                 generation.raw_response is not None
                 and "choices" in generation.raw_response
             )
+            assert generation.platform_call_id is not None
             assert generation.platform_call_id.startswith("received-")
             assert generation.input_tokens == 10 and generation.output_tokens == 3
             assert generation.stop_reason == "stop"

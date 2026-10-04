@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from time import monotonic
 
 import pytest
@@ -61,4 +62,12 @@ async def test_commander_closes_and_joins_its_pending_call_without_late_publicat
     worker.poll()
     assert worker.priorities.take() is None
     assert client.calls == 1
-    assert len(native_session.generations) == 1
+    assert (
+        len(
+            {
+                json.loads(line)["generation_id"]
+                for line in native_session.path.read_text().splitlines()
+            }
+        )
+        == 1
+    )
