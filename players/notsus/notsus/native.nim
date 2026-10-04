@@ -1,6 +1,6 @@
 ## One owned native model request. Private records precede worker admission;
 ## request controls and received buffers remain alive through the worker join.
-import std/[atomics, base64, json, monotimes, options, os, sets, strutils,
+import std/[atomics, base64, json, math, monotimes, options, os, sets, strutils,
   sysrand, tables, times, unicode]
 import bitworld/[artifact_runtime, native_http, native_stop]
 import zippy/ziparchives
@@ -181,6 +181,67 @@ proc startTalkToAI*(messages: openArray[ConversationMessage], tag: string,
   active = true
   createThread(worker, runRequest, job)
 
+proc validateFiniteJson(value: JsonNode) =
+  ## Parsed numeric overflow cannot be serialized as truthful RFC 8259 evidence.
+  case value.kind
+  of JFloat:
+    if value.getFloat().classify in {fcNan, fcInf, fcNegInf}:
+      raise newException(ValueError, "Invalid native JSON number")
+  of JArray:
+    for child in value: validateFiniteJson(child)
+  of JObject:
+    for _, child in value: validateFiniteJson(child)
+  else: discard
+
+proc validateSamplingEvidence*(evidence: JsonNode, requestedTemperature: float, actualOutput: string) =
+  ## Validate live draw metadata without translating archived unit-temperature records.
+  if evidence.kind == JNull: return
+  if evidence.kind != JObject:
+    raise newException(ValueError, "Invalid native sampler schema")
+  for name in ["policy_revision", "tokenizer_revision", "chat_template", "response"]:
+    if evidence[name].kind != JString:
+      raise newException(ValueError, "Invalid native sampler text")
+  if evidence["enable_thinking"].kind != JBool or evidence["enable_thinking"].getBool():
+    raise newException(ValueError, "Invalid native sampler thinking mode")
+  for name in ["max_new_tokens", "max_sequence_length"]:
+    if evidence[name].kind != JInt or evidence[name].getInt() <= 0:
+      raise newException(ValueError, "Invalid native sampler limit")
+  if evidence["sampling_seed"].kind != JInt:
+    raise newException(ValueError, "Invalid native sampler seed")
+  for name in ["eos_token_ids", "prompt_token_ids", "completion_token_ids"]:
+    if evidence[name].kind != JArray:
+      raise newException(ValueError, "Invalid native sampler tokens")
+    for token in evidence[name]:
+      if token.kind != JInt or token.getInt() < 0:
+        raise newException(ValueError, "Invalid native sampler token")
+  if evidence["behavior_log_probs"].kind != JArray:
+    raise newException(ValueError, "Invalid native sampler probabilities")
+  if evidence["behavior_log_probs"].len != evidence["completion_token_ids"].len:
+    raise newException(ValueError, "Native sampler draw lengths differ")
+  for probability in evidence["behavior_log_probs"]:
+    if probability.kind notin {JInt, JFloat}:
+      raise newException(ValueError, "Invalid native sampler probability")
+    let value = probability.getFloat()
+    if value.classify in {fcNan, fcInf, fcNegInf} or value > 0:
+      raise newException(ValueError, "Invalid native sampler probability")
+  if evidence["response"].getStr() != actualOutput:
+    raise newException(ValueError, "Native sampler response differs from actual output")
+  if evidence["stop_reason"].kind != JString or
+      evidence["stop_reason"].getStr() notin ["eos", "length"]:
+    raise newException(ValueError, "Invalid native sampler stop reason")
+  if evidence["sampling"].kind != JString:
+    raise newException(ValueError, "Invalid native sampler mode")
+  let temperature = case evidence["sampling"].getStr()
+    of "full_softmax_temperature_one": 1.0
+    of "full_softmax":
+      if evidence["temperature"].kind notin {JInt, JFloat}:
+        raise newException(ValueError, "Invalid native sampler temperature")
+      evidence["temperature"].getFloat()
+    else: raise newException(ValueError, "Invalid native sampler mode")
+  if temperature.classify in {fcNan, fcInf, fcNegInf} or
+      temperature <= 0 or temperature > 2 or temperature != requestedTemperature:
+    raise newException(ValueError, "Native sampler temperature differs from request")
+
 proc pollTalkToAI*(): NativeAsyncResult =
   if teacherPending.isSome:
     result = teacherPending.get()
@@ -255,6 +316,7 @@ proc pollTalkToAI*(): NativeAsyncResult =
   if result.error.len == 0:
     try:
       let response = parseJson(body)
+      validateFiniteJson(response)
       generation["response"] = response
       if response.kind != JObject or response["content"].kind != JArray:
         raise newException(ValueError, "Invalid native response schema")
@@ -265,6 +327,9 @@ proc pollTalkToAI*(): NativeAsyncResult =
           if part["text"].kind != JString:
             raise newException(ValueError, "Invalid native text schema")
           result.reply.add part["text"].getStr()
+      if response.hasKey("sampling_evidence"):
+        validateSamplingEvidence(response["sampling_evidence"],
+          generation["request"]["temperature"].getFloat(), result.reply)
       generation["response_text"] = %result.reply
       if response.hasKey("usage"):
         let usage = response["usage"]

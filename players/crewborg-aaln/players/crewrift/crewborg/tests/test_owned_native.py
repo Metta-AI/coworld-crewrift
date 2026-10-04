@@ -216,3 +216,151 @@ async def test_completed_native_calls_retire_owners_and_keep_every_private_attem
         assert evidence[-1]["response_reader_joined"] is True
         assert evidence[-1]["transport_cleanup_joined"] is True
     assert len(captured) == len(records)
+
+
+@pytest.mark.parametrize(
+    (
+        "sampling",
+        "sampled_temperature",
+        "requested_temperature",
+        "accepted",
+        "corruption",
+    ),
+    [
+        ("full_softmax", 0.2, 0.2, True, None),
+        ("full_softmax_temperature_one", 1.0, 1.0, True, None),
+        ("full_softmax", 0.7, 0.2, False, None),
+        ("full_softmax_temperature_one", 1.0, 0.2, False, None),
+        (None, 0.0, 0.2, True, None),
+        *[
+            ("full_softmax", 0.2, 0.2, False, corruption)
+            for corruption in ["length", "positive", "nonfinite", "token", "response"]
+        ],
+    ],
+)
+async def test_actual_sampler_matches_request_and_keeps_private_response(
+    tmp_path,
+    monkeypatch,
+    sampling,
+    sampled_temperature,
+    requested_temperature,
+    accepted,
+    corruption,
+):
+    evidence = (
+        None
+        if sampling is None
+        else {
+            "policy_revision": "checkpoint",
+            "tokenizer_revision": "tokenizer",
+            "chat_template": "template",
+            "sampling": sampling,
+            "enable_thinking": False,
+            "max_new_tokens": 20,
+            "max_sequence_length": 100,
+            "sampling_seed": 7,
+            "eos_token_ids": [2],
+            "prompt_token_ids": [10],
+            "completion_token_ids": [12, 2],
+            "behavior_log_probs": [-0.2, -0.3],
+            "stop_reason": "eos",
+            "response": "private sample",
+            **(
+                {"temperature": sampled_temperature}
+                if sampling == "full_softmax"
+                else {}
+            ),
+        }
+    )
+    if corruption is not None:
+        assert evidence is not None
+        if corruption == "length":
+            evidence["behavior_log_probs"] = [-0.2]
+        elif corruption == "positive":
+            evidence["behavior_log_probs"] = [0.2, -0.3]
+        elif corruption == "nonfinite":
+            evidence["behavior_log_probs"] = [float("-inf"), -0.3]
+        elif corruption == "token":
+            evidence["prompt_token_ids"] = [-1]
+        elif corruption == "response":
+            evidence["response"] = "private mismatched sample"
+    body = (
+        json.dumps(
+            {
+                "choices": [{"message": {"content": "private sample"}}],
+                "sampling_evidence": evidence,
+            }
+        )
+        .encode()
+        .replace(b"-Infinity", b"-1e309")
+    )
+    requests = []
+
+    async def serve(reader, writer):
+        try:
+            header = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in header.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            requests.append(json.loads(await reader.readexactly(length)))
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: "
+                + str(len(body)).encode()
+                + b"\r\nX-Softmax-Llm-Call-Id: 20c53756-d9a5-4ed1-9e29-a366efb81919\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    monkeypatch.setenv(
+        "COWORLD_LLM_ENDPOINT", f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    )
+    captures = []
+    session = NativeSession(
+        PlayerRegistration(
+            requested_slot=0,
+            assigned_slot=0,
+            engine_player_index=0,
+            authenticated_upgrade=True,
+        ),
+        tmp_path / "native.jsonl",
+        captures.append,
+    )
+    prepared = session.prepare(
+        NativeRequest(
+            model="checkpoint/test",
+            messages=[{"role": "user", "content": "ordinary view"}],
+            max_tokens=20,
+            temperature=requested_temperature,
+        ),
+        phase="meeting",
+        observation_tick=1,
+        deadline=monotonic() + 2,
+    )
+    try:
+        task = session.start(prepared, session.complete(prepared))
+        if accepted:
+            assert (await task).completion_text == "private sample"
+        else:
+            with pytest.raises(ValueError) as failure:
+                await task
+            assert "private sample" not in str(failure.value)
+            assert "private mismatched sample" not in str(failure.value)
+        assert captures[-1].raw_response == body.decode()
+        if corruption == "nonfinite":
+            assert captures[-1].response is None
+        else:
+            assert isinstance(captures[-1].response, dict)
+            assert captures[-1].response["sampling_evidence"] == evidence
+        assert captures[-1].response_reader_joined
+        assert captures[-1].transport_cleanup_joined
+        assert requests[0]["temperature"] == requested_temperature
+        assert await session.stop(monotonic() + 2)
+    finally:
+        server.close()
+        await server.wait_closed()

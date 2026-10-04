@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
+import math
 import os
 import sys
 from collections.abc import Callable, Coroutine
@@ -16,9 +16,35 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    model_validator,
+)
 
 T = TypeVar("T")
+
+
+def validate_finite_json(value: JsonValue) -> JsonValue:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("Invalid native JSON number")
+    if isinstance(value, list):
+        for child in value:
+            validate_finite_json(child)
+    elif isinstance(value, dict):
+        for child in value.values():
+            validate_finite_json(child)
+    return value
+
+
+RECEIVED_JSON = TypeAdapter(
+    Annotated[JsonValue, AfterValidator(validate_finite_json)],
+    config=ConfigDict(hide_input_in_errors=True),
+)
 
 
 class NativeModel(BaseModel):
@@ -151,10 +177,48 @@ class NativeUsage(NativeModel):
     completion_tokens: int | None = None
 
 
+class SamplingEvidenceFields(NativeModel):
+    policy_revision: str
+    tokenizer_revision: str
+    chat_template: str
+    enable_thinking: Literal[False]
+    max_new_tokens: int = Field(gt=0)
+    max_sequence_length: int = Field(gt=0)
+    sampling_seed: int
+    eos_token_ids: list[Annotated[int, Field(ge=0)]]
+    prompt_token_ids: list[Annotated[int, Field(ge=0)]]
+    completion_token_ids: list[Annotated[int, Field(ge=0)]]
+    behavior_log_probs: list[Annotated[float, Field(le=0, allow_inf_nan=False)]]
+    stop_reason: Literal["eos", "length"]
+    response: str
+
+    @model_validator(mode="after")
+    def draw_lengths(self) -> SamplingEvidenceFields:
+        if len(self.completion_token_ids) != len(self.behavior_log_probs):
+            raise ValueError("Native sampler draw lengths differ")
+        return self
+
+
+class TemperatureOneSampling(SamplingEvidenceFields):
+    sampling: Literal["full_softmax_temperature_one"]
+
+
+class FullSoftmaxSampling(SamplingEvidenceFields):
+    sampling: Literal["full_softmax"]
+    temperature: float = Field(gt=0, le=2, allow_inf_nan=False)
+
+
 class NativeResponse(NativeModel):
     model_config = ConfigDict(extra="allow", hide_input_in_errors=True)
     choices: list[NativeChoice] = Field(min_length=1)
     usage: NativeUsage | None = None
+    sampling_evidence: (
+        Annotated[
+            TemperatureOneSampling | FullSoftmaxSampling,
+            Field(discriminator="sampling"),
+        ]
+        | None
+    ) = None
 
 
 @dataclass
@@ -396,8 +460,26 @@ class NativeSession:
                     raise RuntimeError(
                         f"Native inference failed: HTTP {response.status_code}"
                     )
+                generation.response = RECEIVED_JSON.validate_json(body)
                 parsed = NativeResponse.model_validate_json(bytes(body))
-                generation.response = json.loads(body)
+                if parsed.sampling_evidence is not None:
+                    sampled_temperature = (
+                        1.0
+                        if isinstance(parsed.sampling_evidence, TemperatureOneSampling)
+                        else parsed.sampling_evidence.temperature
+                    )
+                    if sampled_temperature != request.temperature:
+                        raise ValueError(
+                            "Native sampler temperature differs from request"
+                        )
+                if (
+                    parsed.sampling_evidence is not None
+                    and parsed.sampling_evidence.response
+                    != parsed.choices[0].message.content
+                ):
+                    raise ValueError(
+                        "Native sampler response differs from actual output"
+                    )
                 generation.completion_text = parsed.choices[0].message.content
                 generation.stop_reason = parsed.choices[0].finish_reason
                 if parsed.usage is not None:
