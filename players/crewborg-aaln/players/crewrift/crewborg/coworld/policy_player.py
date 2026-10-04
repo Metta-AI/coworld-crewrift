@@ -26,6 +26,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import websockets
 from pydantic import ConfigDict, Field, JsonValue, TypeAdapter
+from websockets.exceptions import WebSocketException
 
 from players.crewrift.crewborg import build_runtime
 from players.crewrift.crewborg.action import encode_chat, encode_input
@@ -52,7 +53,7 @@ RECONNECT_INTERVAL_SECONDS = 0.1
 _RETRYABLE_CONNECT_ERRORS = (
     OSError,
     asyncio.TimeoutError,
-    websockets.exceptions.WebSocketException,
+    WebSocketException,
 )
 
 

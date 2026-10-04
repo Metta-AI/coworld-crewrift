@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import sys
 from time import monotonic
 
 import pytest
@@ -126,3 +127,16 @@ async def test_unadmitted_slot_and_unjoined_phase_cannot_issue_new_request(tmp_p
         owner.prepare(
             request, phase="meeting", observation_tick=2, deadline=monotonic() + 1
         )
+
+
+async def test_policy_entrypoint_imports_in_a_cold_interpreter():
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import players.crewrift.crewborg.coworld.policy_player",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode()
+    assert stdout == b""
