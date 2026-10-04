@@ -65,7 +65,9 @@ proc tickTime*(tick: int): uint32 =
 
 proc openReplayWriter*(path: string, configJson: string): ReplayWriter =
   ## Opens a replay file and writes the header.
-  replayCodec.openReplayWriter(path, configJson, CrewriftReplaySpec)
+  var config = parseJson(configJson)
+  config["closedRosterSeatAllocation"] = %"configured_slots"
+  replayCodec.openReplayWriter(path, $config, CrewriftReplaySpec)
 
 proc parseReplayBytes*(bytes: string): ReplayData =
   ## Parses one replay file buffer into memory.
@@ -93,6 +95,16 @@ proc replayGameConfig*(data: ReplayData): GameConfig =
   if not data.configJson.replayConfigHasField("buttonResetsKillCooldowns"):
     result.buttonResetsKillCooldowns = true
   result.update(data.configJson)
+
+proc initReplaySimulation*(data: ReplayData): SimServer =
+  ## A stored header owns allocation semantics; absence means historical arrival indices.
+  if data.configJson.replayConfigHasField("closedRosterSeatAllocation"):
+    let allocation = parseJson(data.configJson)["closedRosterSeatAllocation"].getStr()
+    if allocation != "configured_slots":
+      raise newException(ReplayError, "Unknown closed-roster seat allocation")
+    result = initSimServer(data.replayGameConfig())
+  else:
+    result = initArrivalReplaySim(data.replayGameConfig())
 
 proc serializeReplaySim*(sim: SimServer): string =
   ## Serializes one simulation state for replay keyframes.
@@ -221,35 +233,44 @@ proc applyReplayEvents(replay: var ReplayPlayer, sim: var SimServer) =
       sim.markPlayerDisconnected(playerIndex)
     else:
       sim.removePlayerAt(playerIndex)
-      if playerIndex < replay.masks.len:
-        replay.masks.delete(playerIndex)
-      if playerIndex < replay.pressedMasks.len:
-        replay.pressedMasks.delete(playerIndex)
-      if playerIndex < replay.lastAppliedMasks.len:
-        replay.lastAppliedMasks.delete(playerIndex)
-      if playerIndex < replay.debugSprites.len:
-        replay.debugSprites.delete(playerIndex)
+      if not sim.usesStableClosedRoster():
+        if playerIndex < replay.masks.len:
+          replay.masks.delete(playerIndex)
+        if playerIndex < replay.pressedMasks.len:
+          replay.pressedMasks.delete(playerIndex)
+        if playerIndex < replay.lastAppliedMasks.len:
+          replay.lastAppliedMasks.delete(playerIndex)
+        if playerIndex < replay.debugSprites.len:
+          replay.debugSprites.delete(playerIndex)
+    if sim.usesStableClosedRoster():
+      replay.ensureReplayPlayer(playerIndex)
+      replay.masks[playerIndex] = 0
+      replay.pressedMasks[playerIndex] = 0
+      replay.lastAppliedMasks[playerIndex] = 0
+      replay.debugSprites[playerIndex] = @[]
     inc replay.leaveIndex
+
+  if sim.usesStableClosedRoster():
+    if sim.phase != Lobby and sim.shouldAbortFiniteMatch():
+      sim.finishGame(Crewmate, timeLimitReached = true)
+    elif sim.phase notin {Lobby, GameOver} and sim.admittedPlayerCount() == 0:
+      sim.resetToLobby()
 
   while replay.joinIndex < replay.data.joins.len and
       replay.data.joins[replay.joinIndex].time <= time:
     let join = replay.data.joins[replay.joinIndex]
     let playerIndex = int(join.player)
-    if playerIndex < sim.players.len:
-      let reconnectIndex = sim.reconnectPlayerIndex(
-        join.name,
-        join.token,
-        join.slot
-      )
+    let reconnectIndex = sim.reconnectPlayerIndex(join.name, join.token, join.slot)
+    if reconnectIndex >= 0:
       if reconnectIndex != playerIndex:
         raise newException(ReplayError, "Replay player reconnect is invalid")
       sim.markPlayerConnected(playerIndex)
-      replay.ensureReplayPlayer(playerIndex)
-      inc replay.joinIndex
-      continue
-    if playerIndex != sim.players.len:
-      raise newException(ReplayError, "Replay player join order is invalid")
-    discard sim.addPlayer(join.name, join.slot, join.token, trusted = true)
+    else:
+      if not sim.usesStableClosedRoster() and playerIndex != sim.players.len:
+        raise newException(ReplayError, "Replay player join order is invalid")
+      let admittedIndex = sim.addPlayer(join.name, join.slot, join.token, trusted = true)
+      if admittedIndex != playerIndex:
+        raise newException(ReplayError, "Replay configured seat index is invalid")
     replay.ensureReplayPlayer(playerIndex)
     inc replay.joinIndex
 
@@ -374,7 +395,7 @@ proc seekReplay*(replay: var ReplayPlayer, sim: var SimServer, tick: int) =
     )
   else:
     let gameEventLoggingEnabled = sim.gameEventLoggingEnabled
-    sim = initSimServer(sim.config)
+    sim = replay.data.initReplaySimulation()
     sim.gameEventLoggingEnabled = gameEventLoggingEnabled
     replay.resetReplay()
   while sim.tickCount < tick and replay.hashIndex < replay.data.hashes.len:

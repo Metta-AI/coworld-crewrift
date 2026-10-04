@@ -268,9 +268,10 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   let removedIndex = removeWebSocketState(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.removePlayerAt(removedIndex)
-    for ws, value in appState.playerIndices.mpairs:
-      if value > removedIndex:
-        dec value
+    if not sim.usesStableClosedRoster():
+      for ws, value in appState.playerIndices.mpairs:
+        if value > removedIndex:
+          dec value
 
 proc cleanPlayerName(name: string): string =
   ## Returns a protocol-safe player display name.
@@ -1039,9 +1040,15 @@ proc runServerLoop*(
                 sim.recordGameAbandon(playerIndex)
                 replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
-                  replayWriter.lastMasks.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    replayWriter.lastMasks[playerIndex] = 0
+                  else:
+                    replayWriter.lastMasks.delete(playerIndex)
                 if playerIndex < prevInputs.len:
-                  prevInputs.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    prevInputs[playerIndex] = InputState()
+                  else:
+                    prevInputs.delete(playerIndex)
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
         if not replayLoaded and appState.kickRequests.len > 0:
@@ -1067,9 +1074,15 @@ proc runServerLoop*(
                   # removal from the first leave's reconnect-grace transition.
                   replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
-                  replayWriter.lastMasks.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    replayWriter.lastMasks[playerIndex] = 0
+                  else:
+                    replayWriter.lastMasks.delete(playerIndex)
                 if playerIndex < prevInputs.len:
-                  prevInputs.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    prevInputs[playerIndex] = InputState()
+                  else:
+                    prevInputs.delete(playerIndex)
             sim.removePlayer(websocket)
             socketsToClose.add(websocket)
         if not replayLoaded and sim.shouldAbortFiniteMatch():
@@ -1080,7 +1093,8 @@ proc runServerLoop*(
             )
           sim.finishGame(Crewmate, timeLimitReached = true)
           gamesPlayed = max(gamesPlayed, config.maxGames)
-        elif not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
+        elif not replayLoaded and sim.phase notin {Lobby, GameOver} and
+            sim.admittedPlayerCount() == 0:
           sim.resetToLobby()
           prevInputs = @[]
           replayWriter.lastMasks = @[]
@@ -1146,10 +1160,8 @@ proc runServerLoop*(
                 appState.playerIndices[websocket] = -1
             pendingPlayers.sort(comparePendingPlayerJoins)
             for join in pendingPlayers:
-              # Admit any pending socket whose resolved slot is free. The slot is
-              # decoupled from the players-seq index, so out-of-order/concurrent
-              # connects no longer have to wait for strictly sequential slots,
-              # which previously stranded validly-connected sockets in pending.
+              # Closed rosters already own their configured engine indices;
+              # socket arrival only changes each reserved seat's admission.
               try:
                 appState.playerIndices[join.websocket] = sim.addPlayer(
                   join.address,
@@ -1166,7 +1178,7 @@ proc runServerLoop*(
                 tickTime(sim.tickCount),
                 appState.playerIndices[join.websocket],
                 join.address,
-                join.requestedSlot,
+                sim.players[appState.playerIndices[join.websocket]].joinOrder,
                 join.token
               )
               while replayWriter.lastMasks.len < sim.players.len:

@@ -1185,7 +1185,7 @@ proc interstitialTextItems(
   ## Returns separate text sprites for one interstitial player screen.
   case sim.phase
   of Lobby:
-    let needed = max(0, sim.config.minPlayers - sim.players.len)
+    let needed = max(0, sim.requiredLobbyPlayers() - sim.lobbyPlayerCount())
     if needed > 0:
       result.addTextItem(sim.centeredTextX("WAITING"), 4, ["WAITING"])
       result.addTextItem(sim.centeredTextX("NEED MORE!"), 14, ["NEED MORE!"])
