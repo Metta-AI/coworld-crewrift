@@ -1,7 +1,9 @@
 import
-  std/[algorithm, options, strutils],
+  std/[algorithm, base64, json, monotimes, options, strutils, times],
   bitworld/[profile, spriteprotocol, server],
-  pixie, supersnappy, whisky
+  bitworld/native_websocket,
+  pixie, supersnappy,
+  native as nativeAi
 
 const
   MaxFrameDrain* = 128
@@ -63,6 +65,8 @@ type
     packetBytes: seq[uint8]
     objectIds: seq[int]
     votingFramePending: bool
+    expectedSlot*: int
+    nativeTerminal*: JsonNode
 
 proc initSpriteState(): SpriteState =
   ## Builds the initial sprite protocol state.
@@ -73,7 +77,8 @@ proc initProtocolClient*(): ProtocolClient =
   result = ProtocolClient(
     sprite: initSpriteState(),
     packed: newSeq[uint8](ProtocolBytes),
-    unpacked: newSeq[uint8](ScreenWidth * ScreenHeight)
+    unpacked: newSeq[uint8](ScreenWidth * ScreenHeight),
+    expectedSlot: -1, nativeTerminal: newJNull()
   )
 
 proc reset*(client: ProtocolClient) =
@@ -576,39 +581,56 @@ proc renderSpriteFrame(client: ProtocolClient) =
   client.renderSpriteFrame(client.unpacked, client.packed)
 
 proc acceptPlayerMessage(
-  ws: WebSocket,
-  message: Message,
+  ws: NativeWebSocket,
+  message: WebSocketResult,
   client: ProtocolClient,
   decodePixels: bool
 ) {.measure.} =
-  ## Handles one websocket message and updates the active parser.
-  case message.kind
-  of BinaryMessage:
+  ## Only fully received native messages reach the ordinary sprite parser.
+  doAssert message.kind == wsMessage
+  nativeAi.privateRecord(%*{"kind": "engine_received_message",
+    "message_kind": $message.messageKind.get(), "bytes_b64": encode(message.data)})
+  case message.messageKind.get()
+  of wsmBinary:
+    doAssert nativeAi.seat.observed, "Sprite frame arrived before assigned-seat evidence"
     if not client.applySpritePacket(message.data, decodePixels):
-      raise newException(ValueError, "Malformed sprite protocol packet.")
+      raise newException(ValueError, "Malformed sprite protocol packet")
     inc client.spritePending
-  of Ping:
-    ws.send(message.data, Pong)
-  of TextMessage, Pong:
-    discard
+  of wsmText:
+    let control = parseJson(message.data)
+    case control["kind"].getStr()
+    of "native_welcome": nativeAi.bindEngineSeat(client.expectedSlot, control)
+    of "native_terminal":
+      doAssert nativeAi.seat.observed, "Terminal arrived before engine admission"
+      doAssert control["protocol"].getStr() == "crewrift.native-evidence.v1",
+        "Unsupported native terminal"
+      let deadline = nativeAi.beginFinalization()
+      let acknowledgement = ws.sendCleanupText(
+        $(%*{"kind": "native_terminal_ack", "tick": control["tick"].getInt()}), deadline)
+      doAssert acknowledgement.kind == wsReady, "Native terminal acknowledgement did not join"
+      client.nativeTerminal = control
+    else: raise newException(ValueError, "Unknown native engine control")
 
 proc receiveLatestFrameInto*(
   client: ProtocolClient,
-  ws: WebSocket,
+  ws: NativeWebSocket,
   gui: bool,
   packed,
   unpacked: var seq[uint8],
-  timeout = -1
+  timeout: int
 ): bool {.measure.} =
   ## Receives wire data and updates the provided reusable frame buffers.
   client.frameAdvance = 0
+  let receiveDeadline = getMonoTime() + initDuration(milliseconds = timeout)
   if client.spritePending == 0:
-    let firstMessage = ws.receiveMessage(timeout)
-    if firstMessage.isNone:
+    let firstMessage = ws.receiveNativeMessage(receiveDeadline)
+    if firstMessage.kind == wsDeadline:
       client.frameBufferLen = 0
       client.framesDropped = 0
       return false
-    ws.acceptPlayerMessage(firstMessage.get, client, gui)
+    if firstMessage.kind != wsMessage:
+      raise newException(IOError, "Native engine receive " & $firstMessage.kind)
+    ws.acceptPlayerMessage(firstMessage, client, gui)
     if client.votingFramePending:
       client.frameAdvance = client.spritePending
       client.framesDropped = max(0, client.spritePending - 1)
@@ -622,10 +644,12 @@ proc receiveLatestFrameInto*(
 
   var drained = 0
   while drained < MaxFrameDrain:
-    let message = ws.receiveMessage(0)
-    if message.isNone:
-      break
-    ws.acceptPlayerMessage(message.get, client, gui)
+    let message = ws.receiveNativeMessage(min(receiveDeadline, getMonoTime() + initDuration(milliseconds = 1)))
+    if message.kind == wsDeadline: break
+    if message.kind != wsMessage:
+      raise newException(IOError, "Native engine receive " & $message.kind)
+    ws.acceptPlayerMessage(message, client, gui)
+    if client.nativeTerminal.kind != JNull: break
     inc drained
     if client.votingFramePending:
       break
@@ -646,11 +670,12 @@ proc receiveLatestFrameInto*(
 
 proc receiveLatestFrame*(
   client: ProtocolClient,
-  ws: WebSocket,
-  gui: bool
+  ws: NativeWebSocket,
+  gui: bool,
+  timeout: int
 ): bool =
   ## Receives wire data and updates the latest client-owned frame buffers.
-  client.receiveLatestFrameInto(ws, gui, client.packed, client.unpacked)
+  client.receiveLatestFrameInto(ws, gui, client.packed, client.unpacked, timeout)
 
 proc copyLatestFrame*(
   client: ProtocolClient,

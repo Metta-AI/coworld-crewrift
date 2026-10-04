@@ -1,17 +1,30 @@
 from __future__ import annotations
 
-import time
 from typing import Any
 
-from crewborg import build_runtime
-from crewborg.coworld.scene import SceneState
-from crewborg.strategy.commander.strategy import CommanderStrategy, apply_commander_inferences
-from crewborg.strategy.rule_based import RuleBasedStrategy
-from crewborg.tests import sprite_wire as w
-from crewborg.types import ActionState, Belief, BodyEntry, CommanderPriorities, Observation, PlayerRecord
+import pytest
 from players.player_sdk import OverwriteBuffer
 from players.player_sdk.trace import ListTraceSink
 from players.player_sdk.types import BeliefSnapshot, ModeDirective, SharedMemory
+
+from crewborg import build_runtime
+from crewborg.coworld.scene import SceneState
+from crewborg.native import NativeGeneration, NativeRequest
+from crewborg.strategy.commander.llm import CommanderLLMResult
+from crewborg.strategy.commander.strategy import (
+    CommanderStrategy,
+    apply_commander_inferences,
+)
+from crewborg.strategy.rule_based import RuleBasedStrategy
+from crewborg.tests import sprite_wire as w
+from crewborg.types import (
+    ActionState,
+    Belief,
+    BodyEntry,
+    CommanderPriorities,
+    Observation,
+    PlayerRecord,
+)
 
 
 class _DisabledWorker:
@@ -25,6 +38,12 @@ class _DisabledWorker:
 
     def start(self) -> None:
         self.started = True
+
+    def poll(self) -> None:
+        pass
+
+    def installed(self, result, value, tick):
+        self.installation = value
 
     def close(self) -> None:
         self.closed = True
@@ -54,7 +73,9 @@ def test_commander_strategy_matches_rules_when_disabled() -> None:
     for belief in cases:
         expected = RuleBasedStrategy().decide(_snapshot(belief)).mode
         worker = _DisabledWorker()
-        result = CommanderStrategy(RuleBasedStrategy(), worker, feature_enabled=False).decide(_snapshot(belief))
+        result = CommanderStrategy(
+            RuleBasedStrategy(), worker, feature_enabled=False
+        ).decide(_snapshot(belief))
 
         assert result.directive is not None
         assert result.directive.mode == expected
@@ -62,17 +83,33 @@ def test_commander_strategy_matches_rules_when_disabled() -> None:
         assert worker.started is False
 
 
-def test_commander_strategy_sanitizes_and_returns_latest_worker_priorities(monkeypatch) -> None:
+def test_commander_strategy_sanitizes_and_returns_latest_worker_priorities(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("CREWBORG_COMMANDER_FORCE", raising=False)
     belief = _imposter_with_visible_target(self_kill_ready=False)
     worker = _ManualWorker()
+    request = NativeRequest(
+        model="fixture/commander", messages=[], max_tokens=1, temperature=0
+    )
+    generation = NativeGeneration(
+        phase="commander",
+        observation_tick=12,
+        player_slot=None,
+        request=request,
+        prompt=[],
+        decoder={},
+    )
     worker.priorities.publish(
-        {
-            "hunt_room": "electrical",
-            "target_player": "red",
-            "allow_witnessed_kill": True,
-            "reason": "fake",
-        }
+        CommanderLLMResult(
+            priorities={
+                "hunt_room": "electrical",
+                "target_player": "red",
+                "allow_witnessed_kill": True,
+                "reason": "fake",
+            },
+            generation=generation,
+        )
     )
     strategy = CommanderStrategy(RuleBasedStrategy(), worker, feature_enabled=True)
 
@@ -86,7 +123,9 @@ def test_commander_strategy_sanitizes_and_returns_latest_worker_priorities(monke
     assert worker.snapshots.take()["active_mode"] == "search"
 
 
-def test_commander_strategy_force_returns_fresh_priorities_without_worker(monkeypatch) -> None:
+def test_commander_strategy_force_returns_fresh_priorities_without_worker(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("CREWBORG_COMMANDER_FORCE", '{"target_room":"electrical"}')
     belief = _imposter_with_visible_target(self_kill_ready=False)
     worker = _DisabledWorker()
@@ -120,7 +159,11 @@ def test_apply_commander_inferences_sets_belief() -> None:
 
     apply_commander_inferences(
         belief,
-        {"commander": CommanderPriorities(target_room="electrical", as_of_tick=10).model_dump()},
+        {
+            "commander": CommanderPriorities(
+                target_room="electrical", as_of_tick=10
+            ).model_dump()
+        },
     )
 
     assert belief.commander is not None
@@ -137,11 +180,13 @@ def test_commander_strategy_close_closes_worker() -> None:
     assert worker.closed is True
 
 
-def test_runtime_with_commander_off_leaves_belief_unset_and_no_inference_trace(monkeypatch) -> None:
+def test_runtime_with_commander_off_leaves_belief_unset_and_no_inference_trace(
+    monkeypatch, native_session
+) -> None:
     monkeypatch.delenv("CREWBORG_LLM_COMMANDER", raising=False)
     monkeypatch.setenv("CREWBORG_TRACE_GROUPS", "commander")
     trace = ListTraceSink()
-    runtime = build_runtime(trace_sink=trace)
+    runtime = build_runtime(native_session=native_session, trace_sink=trace)
     scene = SceneState()
     scene.apply(w.clear_objects())
     scene.tick += 1
@@ -154,40 +199,17 @@ def test_runtime_with_commander_off_leaves_belief_unset_and_no_inference_trace(m
     assert "domain.commander_started" not in trace.names()
 
 
-def test_runtime_with_commander_trace_group_reports_backend_env_seen(monkeypatch) -> None:
+def test_enabled_runtime_missing_native_endpoint_crashes_before_a_provider_call(
+    monkeypatch, native_session
+) -> None:
     monkeypatch.setenv("CREWBORG_LLM_COMMANDER", "1")
     monkeypatch.delenv("CREWBORG_COMMANDER_FORCE", raising=False)
-    monkeypatch.delenv("USE_BEDROCK", raising=False)
-    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "false")
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("COWORLD_LLM_ENDPOINT", raising=False)
-    monkeypatch.setenv("CREWBORG_TRACE_GROUPS", "commander")
-    trace = ListTraceSink()
-    runtime = build_runtime(trace_sink=trace)
+    runtime = build_runtime(native_session=native_session)
     scene = SceneState()
-    scene.apply(w.clear_objects())
-    scene.tick += 1
-
-    runtime.step(Observation(scene=scene, tick=scene.tick))
-    time.sleep(0.02)
-    scene.tick += 1
-    runtime.step(Observation(scene=scene, tick=scene.tick))
+    with pytest.raises(KeyError, match="COWORLD_LLM_ENDPOINT"):
+        runtime.step(Observation(scene=scene, tick=1))
     runtime.close()
-
-    [started] = [event for event in trace.events if event.name == "domain.commander_started"]
-    assert started.data == {
-        "enabled": False,
-        "backend": None,
-        "model": None,
-        "disabled_reason": "no LLM backend configured",
-        "attempt": 1,
-        "env_seen": {
-            "USE_BEDROCK": False,
-            "CLAUDE_CODE_USE_BEDROCK": False,
-            "ANTHROPIC_API_KEY": False,
-            "COWORLD_LLM_ENDPOINT": False,
-        },
-    }
 
 
 def _snapshot(
@@ -206,7 +228,9 @@ def _snapshot(
 
 def _crewmate_with_visible_body() -> Belief:
     belief = Belief(phase="Playing", self_role="crewmate", visible_body_ids={2003})
-    belief.bodies[2003] = BodyEntry(object_id=2003, color="green", world_x=10, world_y=10, first_seen_tick=1)
+    belief.bodies[2003] = BodyEntry(
+        object_id=2003, color="green", world_x=10, world_y=10, first_seen_tick=1
+    )
     return belief
 
 

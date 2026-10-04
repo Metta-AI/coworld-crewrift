@@ -10,14 +10,14 @@
 # crewborg is the `crewborg` package and imports only `players.player_sdk`
 # from the shared SDK. We install that SDK from the public Metta-AI/coworld-tools
 # monorepo (pinned via PLAYERS_SDK_REF — pass a fixed ref for a reproducible build;
-# `main` is only a fallback) and put the package on PYTHONPATH. We install NO lab
+# the ordinary build uses this fixed ref) and put the package on PYTHONPATH. We install NO lab
 # tooling, and bake NO behavior/experiment env (e.g. CREWBORG_BE_DUMB) — those are
 # set at upload time so the image stays behavior-neutral and reproducible.
 
 # Platform is set by the build invocation (buildx --platform=linux/amd64), not here.
 FROM python:3.12-slim
 
-ARG PLAYERS_SDK_REF=main
+ARG PLAYERS_SDK_REF=3c61631e9806d5a93f04c72c47c859e18cac84b4
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -30,10 +30,10 @@ WORKDIR /app
 # players' base deps). The players repo moved into the coworld-tools monorepo as the
 # `players/` subdirectory; install from its GitHub source tarball at the pinned ref
 # (tarball = no git/submodules or local checkout needed in the build).
-# `[bedrock]` adds boto3 so the meeting LLM can route through AWS Bedrock when the
-# policy is uploaded with `--use-bedrock`; inert otherwise.
 RUN pip install --upgrade pip \
- && pip install "players[bedrock] @ https://github.com/Metta-AI/coworld-tools/archive/${PLAYERS_SDK_REF}.tar.gz#subdirectory=players"
+ && pip install "players @ https://github.com/Metta-AI/coworld-tools/archive/${PLAYERS_SDK_REF}.tar.gz#subdirectory=players"
+
+RUN pip install "httpx==0.28.1"
 
 # Meeting chat NLP (imposter bandwagon, design §10.5): spaCy dependency-parse negation
 # scope over opponents' chat. Loaded lazily in a background thread and gated by

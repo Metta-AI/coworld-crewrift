@@ -1,12 +1,35 @@
-include "../players/notsus/notsus/bedrocks"
+import std/[json, monotimes, os, times]
+import bitworld/native_stop
+import ../players/notsus/notsus/native as nativeAi
 
-putEnv("COWORLD_LLM_ENDPOINT", "http://127.0.0.1:19350/")
-putEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
-putEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://retired.invalid")
-let request = buildBedrockRequest(@[ConversationMessage(role: "user", content: "state")], "test")
-doAssert request.url == "http://127.0.0.1:19350/v1/messages"
-let body = parseJson(request.body)
-doAssert body["model"].getStr() == "anthropic/claude-haiku-4.5"
-doAssert not body.hasKey("anthropic_version") and not body.hasKey("requestMetadata")
-for (name, _) in request.headers:
-  doAssert name.toLowerAscii() notin ["authorization", "x-api-key"]
+installNativeStopHandlers()
+nativeAi.initializeNative(paramStr(1))
+nativeAi.seat = nativeAi.NativeSeat(observed: true, configured: true, slot: 3, engineIndex: 0)
+let mode = paramStr(2)
+let deadline = getMonoTime() + initDuration(seconds = 5)
+let firstTag = if mode in ["phase_cancel", "SIGTERM", "SIGINT"]: "first" else: "fixture"
+nativeAi.startTalkToAI(@[nativeAi.ConversationMessage(role: "system", content: "Owned native fixture"),
+  nativeAi.ConversationMessage(role: "user", content: "No policy or strength qualification")],
+  firstTag, 1, deadline)
+var response: NativeAsyncResult
+if mode in ["phase_cancel", "SIGTERM", "SIGINT"]:
+  while not fileExists(paramStr(1).parentDir() / "request-started") and getMonoTime() < deadline: sleep(1)
+  doAssert getMonoTime() < deadline, "Native fixture did not actually start"
+  if mode == "phase_cancel":
+    doAssert nativeAi.cancelTalkToAI(getMonoTime() + initDuration(seconds = 2))
+    nativeAi.startTalkToAI(@[ConversationMessage(role: "user", content: "Later ordinary phase")],
+      "second", 2, getMonoTime() + initDuration(seconds = 5))
+    while not response.ready:
+      response = nativeAi.pollTalkToAI()
+      sleep(1)
+    doAssert response.error.len == 0 and response.reply == "later phase"
+  else:
+    while not interruptionRequested(): sleep(1)
+else:
+  while not response.ready and not interruptionRequested():
+    response = nativeAi.pollTalkToAI()
+    sleep(1)
+let cleanup = nativeAi.beginFinalization()
+let complete = nativeAi.finishNative(newJNull(), true, cleanup)
+echo $(%*{"ready": response.ready, "error_kind": response.error,
+  "private_artifact_returned": true, "complete": complete, "usage": response.usage})

@@ -16,13 +16,16 @@ jobs:
       - uses: actions/checkout@v5
       - run: node --test tests/test_replay_artifact_url.mjs
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev libevdev-dev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libevdev-dev libcurl4
       - uses: treeform/setup-nim-action@v6
       - run: nimby create && nimby sync nimby.lock -g
       - run: nim check src/crewrift.nim
       - run: nim r tests/tests.nim
       - name: Native notsus transport regression
-        run: nim r tests/test_notsus_native_llm.nim
+        run: |
+          nim c --threads:on -d:release --out:/tmp/notsus-native-probe tests/test_notsus_native_llm.nim
+          python3 tests/test_notsus_native_http.py /tmp/notsus-native-fixture /tmp/notsus-native-probe
+          python3 tests/test_notsus_native_cancel.py /tmp/notsus-native-cancel /tmp/notsus-native-probe
 
   language-players:
     runs-on: ubuntu-latest
@@ -36,16 +39,21 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - run: python -m pip install anthropic pydantic numpy cramjam pytest pytest-asyncio websockets httpx
+      - run: python -m pip install pydantic numpy cramjam pytest pytest-asyncio websockets httpx
       - name: Meeting and commander native routing
         env:
           PYTHONPATH: players/crewborg:.shared-tools/players
         run: >-
           python -m pytest players/crewborg/crewborg/tests/test_native_llm.py
           players/crewborg/crewborg/tests/test_meeting_llm.py
-          players/crewborg/crewborg/tests/test_meeting_bedrock_gate.py
-          players/crewborg/crewborg/tests/test_commander* -q
+          players/crewborg/crewborg/tests/test_commander*
+          players/crewborg/crewborg/tests/test_owned_native.py
+          players/crewborg/crewborg/tests/test_native_admission.py
+          players/crewborg/crewborg/tests/test_bridge.py -q
       - name: Self-contained meeting player
         env:
           PYTHONPATH: players/crewborg-aaln
-        run: python -m pytest players/crewborg-aaln/players/crewrift/crewborg/tests/test_meeting_modes.py -q
+        run: >-
+          python -m pytest players/crewborg-aaln/players/crewrift/crewborg/tests/test_meeting_modes.py
+          players/crewborg-aaln/players/crewrift/crewborg/tests/test_owned_native.py
+          players/crewborg-aaln/players/crewrift/crewborg/tests/test_bridge.py -q

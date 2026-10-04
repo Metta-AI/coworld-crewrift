@@ -1,4 +1,4 @@
-# crewborg-rohit:v5 — Crewrift policy with hosted Bedrock meetings enabled.
+# crewborg-rohit:v5 — Crewrift policy with native sidecar meetings enabled.
 #
 # Self-contained build: vendored players/player_sdk + players/crewrift/crewborg.
 # Scripted baseline with LLM meetings on and no hunter fork.

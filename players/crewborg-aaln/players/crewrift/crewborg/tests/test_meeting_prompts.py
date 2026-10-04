@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from time import monotonic
 
+import pytest
+
+from players.crewrift.crewborg.native import NativeSession, PlayerRegistration
 from players.crewrift.crewborg.strategy.meeting import build_system_prompt
-from players.crewrift.crewborg.strategy.meeting.llm import AnthropicMeetingClient, MeetingLLMConfig
+from players.crewrift.crewborg.strategy.meeting.llm import (
+    MeetingParams,
+    NativeMeetingClient,
+)
 from players.crewrift.crewborg.strategy.meeting.prompts import (
     IMPOSTER_STRATEGY,
     SHARED_BOILERPLATE,
@@ -48,31 +53,23 @@ def test_unknown_and_ghost_roles_default_to_crewmate() -> None:
     assert resolve_role("crewmate") == "crewmate"
 
 
-class _RecordingAnthropic:
-    """Minimal Anthropic stand-in that records the system prompt it is given."""
-
-    def __init__(self, decision_json: str) -> None:
-        self.captured: dict[str, Any] = {}
-        self.messages = self
-        self._decision_json = decision_json
-
-    def create(self, **kwargs: Any) -> Any:
-        self.captured = kwargs
-        return SimpleNamespace(content=[SimpleNamespace(text=self._decision_json)], usage=None)
-
-
-def _context_with_role(role: str | None) -> dict[str, Any]:
-    return {"self": {"role": role}, "meeting": {"tick": 0}}
-
-
-def test_client_selects_prompt_from_context_role() -> None:
-    fake = _RecordingAnthropic('{"schema_version":1,"action":"wait"}')
-    client = AnthropicMeetingClient(MeetingLLMConfig(), client=fake)
-
-    client.decide(_context_with_role("imposter"), trigger="meeting_start")
-    assert fake.captured["system"] == build_system_prompt("imposter")
-    assert _IMPOSTER_TELL in fake.captured["system"]
-
-    client.decide(_context_with_role("crewmate"), trigger="meeting_start")
-    assert fake.captured["system"] == build_system_prompt("crewmate")
-    assert _IMPOSTER_TELL not in fake.captured["system"]
+@pytest.mark.asyncio
+async def test_client_selects_exact_native_prompt_from_context_role(tmp_path):
+    for role in ("imposter", "crewmate"):
+        owner = NativeSession(
+            PlayerRegistration(requested_slot=None),
+            tmp_path / f"{role}.jsonl",
+            lambda generation: None,
+        )
+        client = NativeMeetingClient(MeetingParams(), owner)
+        task = client.decide(
+            {"self": {"role": role}, "meeting": {"tick": 0}}, trigger="meeting_start"
+        )
+        generation = next(iter(owner.generations.values()))
+        assert generation.request.messages[0]["content"] == build_system_prompt(role)
+        assert (_IMPOSTER_TELL in generation.request.messages[0]["content"]) == (
+            role == "imposter"
+        )
+        assert generation.platform_call_id is None
+        assert await owner.stop(monotonic() + 2)
+        assert task.cancelled()

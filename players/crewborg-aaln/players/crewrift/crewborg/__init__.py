@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 
-from players.crewrift.crewborg.agent_tracking import update_agent_tracking
 from players.crewrift.crewborg.action import resolve_action
+from players.crewrift.crewborg.agent_tracking import update_agent_tracking
 from players.crewrift.crewborg.events import CrewborgEventTracer
 from players.crewrift.crewborg.map import MapData, load_croatoan_map
 from players.crewrift.crewborg.modes import (
@@ -30,11 +30,16 @@ from players.crewrift.crewborg.modes import (
     SeekCrowdMode,
     StakeoutMode,
 )
+from players.crewrift.crewborg.native import NativeSession
 from players.crewrift.crewborg.strategy import (
     RuleBasedStrategy,
     update_event_log,
     update_suspicion,
     update_tail_tracking,
+)
+from players.crewrift.crewborg.strategy.meeting import (
+    build_meeting_client,
+    read_meeting_params_from_env,
 )
 from players.crewrift.crewborg.types import (
     ActionState,
@@ -67,6 +72,7 @@ def _positive_int_env(name: str) -> int | None:
 
 def build_runtime(
     *,
+    native_session: NativeSession,
     trace_sink: TraceSink | None = None,
     metrics_sink: MetricsSink | None = None,
     map_data: MapData | None = None,
@@ -103,7 +109,15 @@ def build_runtime(
     registry.register(IdleMode)
     registry.register(NormalMode)
     registry.register(CrewmateGhostMode)
-    registry.register(AttendMeetingMode)
+
+    class SessionAttendMeetingMode(AttendMeetingMode):
+        def __init__(self, params=None):
+            params = read_meeting_params_from_env() if params is None else params
+            super().__init__(
+                params, llm_client=build_meeting_client(params, native_session)
+            )
+
+    registry.register(SessionAttendMeetingMode)
     registry.register(CallButtonMode)
     registry.register(DickMode)
     registry.register(ReportBodyMode)
@@ -141,7 +155,9 @@ def build_runtime(
         update_belief=fold_belief,
         resolve_action=resolve_action,
         mode_registry=registry,
-        default_directive=ModeDirective(mode="idle", source="default", reason="default idle"),
+        default_directive=ModeDirective(
+            mode="idle", source="default", reason="default idle"
+        ),
         strategy_runner=SynchronousStrategyRunner(
             RuleBasedStrategy(),
             trace_sink=trace_sink,
