@@ -415,3 +415,86 @@ async def test_invalid_received_frame_is_private_and_cannot_complete(
     ledger = next(row for row in records if row["kind"] == "controller_frame_outcome")
     assert ledger["received_frames"] == 1 and ledger["controller_applied_frames"] == 0
     assert ledger["owners_joined"] is True
+
+
+async def test_unjoined_reader_cannot_append_after_private_seal(tmp_path, monkeypatch):
+    import hashlib
+
+    from websockets.asyncio.client import connect
+
+    from crewborg.perception.decoder import SpriteProtocolError
+
+    monkeypatch.setattr(
+        "crewborg.coworld.policy_player.tempfile.mkdtemp",
+        lambda **kwargs: str(tmp_path),
+    )
+    monkeypatch.delenv("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL", raising=False)
+    late_release = asyncio.Event()
+    reader_returned = asyncio.Event()
+    wrapped_sockets = []
+    runtime = Runtime()
+
+    class LateReader:
+        def __init__(self, socket):
+            self.socket = socket
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return await self.socket.recv()
+            except asyncio.CancelledError:
+                # Deliberately ignore cancellation until after the original budget.
+                await late_release.wait()
+                packet = await self.socket.recv()
+                reader_returned.set()
+                return packet
+
+        async def send(self, packet):
+            await self.socket.send(packet)
+
+        async def close(self):
+            await late_release.wait()
+            await self.socket.close()
+
+    async def owned_connect(*args, **kwargs):
+        wrapped = LateReader(await connect(*args, **kwargs))
+        wrapped_sockets.append(wrapped)
+        return wrapped
+
+    async def engine(socket):
+        await socket.send(welcome())
+        await socket.send(b"\xffprivate-original-frame")
+        await late_release.wait()
+        await socket.send(b"late-private-frame")
+        await socket.wait_closed()
+
+    async with serve(engine, "127.0.0.1", 0) as server:
+        with pytest.raises(SpriteProtocolError):
+            await run_bridge(
+                f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/player?slot=3&token=secret",
+                connect=owned_connect,
+                build=lambda **kwargs: runtime,
+            )
+        sealed = hashlib.sha256((tmp_path / "player.zip").read_bytes()).hexdigest()
+        late_release.set()
+        await asyncio.wait_for(reader_returned.wait(), 1)
+        await asyncio.sleep(0)
+        await wrapped_sockets[0].socket.close()
+        assert (
+            hashlib.sha256((tmp_path / "player.zip").read_bytes()).hexdigest() == sealed
+        )
+    with zipfile.ZipFile(tmp_path / "player.zip") as archive:
+        records = [
+            json.loads(line) for line in archive.read("records.jsonl").splitlines()
+        ]
+        outcome = next(
+            row["outcome"] for row in records if row["kind"] == "private_outcome"
+        )
+    assert outcome["status"] == "truncated"
+    assert outcome["frame_owners_joined"] is False
+    assert outcome["terminal_engine_evidence"] is False
+    frames = [row for row in records if row["kind"] == "engine_frame"]
+    assert len(frames) == 1
+    assert runtime.closed

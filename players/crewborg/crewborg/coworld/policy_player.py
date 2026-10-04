@@ -298,6 +298,8 @@ async def _run_session(
 
     async def receive() -> None:
         async for message in websocket:
+            if native.shutdown_deadline is not None:
+                return
             if isinstance(message, str):
                 event = ENGINE_MESSAGE.validate_json(message)
                 artifact.write_record(

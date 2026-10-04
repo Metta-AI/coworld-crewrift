@@ -27,8 +27,7 @@ class PrivateOutcome(NativeModel):
     protocol: str = "crewborg.private-player.v1"
     status: Literal["completed", "truncated"]
     native_work_joined: bool
-    # Historical artifacts did not observe this owner; current callers supply it.
-    frame_owners_joined: bool | None = None
+    frame_owners_joined: bool
     nlp_work_joined: bool
     socket_joined: bool
     stored_writers_joined: bool
