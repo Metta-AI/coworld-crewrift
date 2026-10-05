@@ -8194,6 +8194,9 @@ when not defined(italkalotLibrary):
         notifiedFailure = false
         var
           lastMask = 0xff'u8
+        nativeAi.privateRecord(%*{"kind": "controller_connection_reset",
+          "unprocessed_sequence_start": client.consumedSequence + 1,
+          "received_sequence_end": client.receivedSequence})
         client.reset()
         bot.resetProtocolMap()
         bot.frameBufferLen = 0
@@ -8230,10 +8233,16 @@ when not defined(italkalotLibrary):
                 receiveTimeout()
               )
           if client.nativeTerminal.kind != JNull:
+            nativeAi.privateRecord(%*{"kind": "controller_terminal_drain",
+              "frame_batch": (if receivedFrame: %client.frameBatch else: newJNull()),
+              "frame_processed": false})
             break
           if not receivedFrame:
             bot.notePacketTimeout()
             continue
+          nativeAi.privateRecord(%*{"kind": "controller_frame_admitted",
+            "frame_batch": client.frameBatch, "frame_tick_before": bot.frameTick,
+            "frame_advance": client.frameAdvance})
           bot.frameTick += client.frameAdvance
           bot.frameBufferLen = client.frameBufferLen
           bot.framesDropped = client.framesDropped
@@ -8253,6 +8262,10 @@ when not defined(italkalotLibrary):
             profileBlock "update protocol detections":
               bot.updateProtocolDetections(client)
           if exitOnGameOver and bot.interstitialText.isGameOverText():
+            nativeAi.privateRecord(%*{"kind": "controller_frame_processed",
+              "frame_batch": client.frameBatch, "frame_tick": bot.frameTick,
+              "observation_tick": bot.serverTick, "decision_evaluated": false,
+              "reason": "game_over_interstitial"})
             echo "game over: ", bot.interstitialText, "; exiting"
             flushFile(stdout)
             continue
@@ -8266,6 +8279,10 @@ when not defined(italkalotLibrary):
           if not gui and profileShouldDump(bot.frameTick):
             finishProfileTrace()
           bot.lastMask = nextMask
+          nativeAi.privateRecord(%*{"kind": "controller_frame_processed",
+            "frame_batch": client.frameBatch, "frame_tick": bot.frameTick,
+            "observation_tick": bot.serverTick, "decision_evaluated": true,
+            "selected_mask": nextMask})
           if nextMask != lastMask:
             if gui:
               doAssert ws.sendNativeBinary(inputBlob(nextMask), getMonoTime() +
@@ -8277,6 +8294,7 @@ when not defined(italkalotLibrary):
                   initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
                   "Native engine write did not join"
             nativeAi.privateRecord(%*{"kind": "engine_input_write_joined",
+              "frame_batch": client.frameBatch,
               "observation_tick": bot.serverTick, "mask": nextMask})
             lastMask = nextMask
           if bot.pendingChatReady():

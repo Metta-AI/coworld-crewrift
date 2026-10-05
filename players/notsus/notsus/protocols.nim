@@ -50,6 +50,11 @@ type
     sprite: SpriteState
     spritePending: int
     frameAdvance*: int
+    receivedSequence*: int
+    consumedSequence*: int
+    frameBatch*: int
+    frameFirstSequence: int
+    frameLastSequence: int
     frameBufferLen*: int
     framesDropped*: int
     skippedFrames*: int
@@ -85,6 +90,7 @@ proc reset*(client: ProtocolClient) =
   ## Clears queued wire data while preserving reusable frame buffers.
   client.sprite = initSpriteState()
   client.spritePending = 0
+  client.consumedSequence = client.receivedSequence
   client.frameAdvance = 0
   client.frameBufferLen = 0
   client.framesDropped = 0
@@ -588,13 +594,18 @@ proc acceptPlayerMessage(
 ) {.measure.} =
   ## Only fully received native messages reach the ordinary sprite parser.
   doAssert message.kind == wsMessage
+  inc client.receivedSequence
   nativeAi.privateRecord(%*{"kind": "engine_received_message",
+    "received_sequence": client.receivedSequence,
     "message_kind": $message.messageKind.get(), "bytes_b64": encode(message.data)})
   case message.messageKind.get()
   of wsmBinary:
     doAssert nativeAi.seat.observed, "Sprite frame arrived before assigned-seat evidence"
     if not client.applySpritePacket(message.data, decodePixels):
       raise newException(ValueError, "Malformed sprite protocol packet")
+    if client.spritePending == 0:
+      client.frameFirstSequence = client.receivedSequence
+    client.frameLastSequence = client.receivedSequence
     inc client.spritePending
   of wsmText:
     let control = parseJson(message.data)
@@ -610,6 +621,27 @@ proc acceptPlayerMessage(
       doAssert acknowledgement.kind == wsReady, "Native terminal acknowledgement did not join"
       client.nativeTerminal = control
     else: raise newException(ValueError, "Unknown native engine control")
+
+proc consumeFrameBatch(client: ProtocolClient) =
+  ## Records the exact parsed wire batch made available to the ordinary controller.
+  inc client.frameBatch
+  client.frameAdvance = client.spritePending
+  client.framesDropped = max(0, client.spritePending - 1)
+  nativeAi.privateRecord(%*{"kind": "controller_frame_ready",
+    "frame_batch": client.frameBatch,
+    "received_sequence_start": client.consumedSequence + 1,
+    "received_sequence_end": client.receivedSequence,
+    "first_binary_sequence": client.frameFirstSequence,
+    "last_binary_sequence": client.frameLastSequence,
+    "frame_advance": client.frameAdvance,
+    "frames_dropped": client.framesDropped,
+    "voting_frame": client.votingFramePending,
+    "terminal_received": client.nativeTerminal.kind != JNull})
+  client.consumedSequence = client.receivedSequence
+  client.frameBufferLen = 0
+  client.skippedFrames += client.framesDropped
+  client.spritePending = 0
+  client.votingFramePending = false
 
 proc receiveLatestFrameInto*(
   client: ProtocolClient,
@@ -632,12 +664,7 @@ proc receiveLatestFrameInto*(
       raise newException(IOError, "Native engine receive " & $firstMessage.kind)
     ws.acceptPlayerMessage(firstMessage, client, gui)
     if client.votingFramePending:
-      client.frameAdvance = client.spritePending
-      client.framesDropped = max(0, client.spritePending - 1)
-      client.frameBufferLen = 0
-      client.skippedFrames += client.framesDropped
-      client.spritePending = 0
-      client.votingFramePending = false
+      client.consumeFrameBatch()
       if gui:
         client.renderSpriteFrame(unpacked, packed)
       return true
@@ -658,12 +685,7 @@ proc receiveLatestFrameInto*(
     client.frameBufferLen = 0
     client.framesDropped = 0
     return false
-  client.frameAdvance = client.spritePending
-  client.framesDropped = max(0, client.spritePending - 1)
-  client.frameBufferLen = 0
-  client.skippedFrames += client.framesDropped
-  client.spritePending = 0
-  client.votingFramePending = false
+  client.consumeFrameBatch()
   if gui:
     client.renderSpriteFrame(unpacked, packed)
   true
