@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from crewborg_native import NativeProfile
 from players.player_sdk.trace import ListMetricsSink, ListTraceSink
 
 from crewborg import build_runtime
 from crewborg.coworld.scene import SceneState
-from crewborg.native import NativeProfile
 from crewborg.tests import sprite_wire as w
 from crewborg.types import Observation
 

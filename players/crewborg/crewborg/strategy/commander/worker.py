@@ -7,9 +7,9 @@ from collections.abc import Callable
 from time import monotonic
 
 import httpx
+from crewborg_native import ControllerInstallation, NativeSession
 from players.player_sdk import OverwriteBuffer
 
-from crewborg.native import ControllerInstallation, NativeSession
 from crewborg.strategy.commander.llm import CommanderLLMClient, CommanderLLMResult
 from crewborg.strategy.commander.trace import CommanderTrace
 

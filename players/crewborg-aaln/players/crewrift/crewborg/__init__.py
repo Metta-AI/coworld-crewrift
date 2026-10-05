@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 
+from crewborg_native import NativeSession, PolicyProfile
+
 from players.crewrift.crewborg.action import resolve_action
 from players.crewrift.crewborg.agent_tracking import update_agent_tracking
 from players.crewrift.crewborg.events import CrewborgEventTracer
@@ -30,7 +32,6 @@ from players.crewrift.crewborg.modes import (
     SeekCrowdMode,
     StakeoutMode,
 )
-from players.crewrift.crewborg.native import NativeSession, PolicyProfile
 from players.crewrift.crewborg.strategy import (
     RuleBasedStrategy,
     update_event_log,

@@ -26,6 +26,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import websockets
+from crewborg_native import NativeModel, NativeSession, PlayerRegistration
 from players.player_sdk import TraceOutputs
 from pydantic import ConfigDict, Field, JsonValue, TypeAdapter
 from websockets.exceptions import WebSocketException
@@ -35,7 +36,6 @@ from crewborg.action import encode_chat, encode_input
 from crewborg.coworld.private_artifact import PrivateArtifact, PrivateOutcome
 from crewborg.coworld.scene import SceneState
 from crewborg.map import walkability_matches
-from crewborg.native import NativeModel, NativeSession, PlayerRegistration
 from crewborg.scripted import policy_profile_from_env
 from crewborg.strategy.meeting import chat_nlp
 from crewborg.trace import TraceConfig

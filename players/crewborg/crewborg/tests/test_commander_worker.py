@@ -7,8 +7,8 @@ import json
 from time import monotonic
 
 import pytest
+from crewborg_native import NativeRequest
 
-from crewborg.native import NativeRequest
 from crewborg.strategy.commander.llm import CommanderLLMResult
 from crewborg.strategy.commander.trace import CommanderTrace
 from crewborg.strategy.commander.worker import CommanderWorker

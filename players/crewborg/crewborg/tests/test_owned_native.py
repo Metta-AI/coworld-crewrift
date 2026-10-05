@@ -9,8 +9,7 @@ import sys
 from time import monotonic
 
 import pytest
-
-from crewborg.native import NativeRequest, NativeSession, PlayerRegistration
+from crewborg_native import NativeRequest, NativeSession, PlayerRegistration
 
 pytestmark = pytest.mark.asyncio
 

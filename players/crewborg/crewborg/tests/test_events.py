@@ -7,6 +7,7 @@ counters it emits through an :class:`EventEmitter` bound to list sinks.
 
 from __future__ import annotations
 
+from crewborg_native import NativeProfile
 from players.player_sdk import (
     EventEmitter,
     ListMetricsSink,
@@ -17,7 +18,6 @@ from players.player_sdk import (
 
 from crewborg.action import BTN_A, BTN_B, BTN_LEFT
 from crewborg.events import CrewborgEventTracer
-from crewborg.native import NativeProfile
 from crewborg.strategy.commander.trace import CommanderTrace
 from crewborg.strategy.suspicion import VOTE_PROBABILITY
 from crewborg.types import (

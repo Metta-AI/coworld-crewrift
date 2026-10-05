@@ -6,8 +6,8 @@ import asyncio
 from time import monotonic
 
 import httpx
+from crewborg_native import NativeHttpError
 
-from players.crewrift.crewborg.native import NativeHttpError
 from players.crewrift.crewborg.strategy.meeting import (
     CHAT_MAX_CHARS,
     VOTE_SKIP,

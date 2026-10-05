@@ -58,7 +58,7 @@ jobs:
           players/crewborg/crewborg/tests/test_bridge.py -q
       - name: Self-contained meeting player
         env:
-          PYTHONPATH: players/crewborg-aaln
+          PYTHONPATH: players/crewborg-aaln:players/crewborg
         run: >-
           python -m pytest players/crewborg-aaln/players/crewrift/crewborg/tests/test_meeting_modes.py
           players/crewborg-aaln/players/crewrift/crewborg/tests/test_owned_native.py

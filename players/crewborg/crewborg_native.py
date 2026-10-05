@@ -6,7 +6,6 @@ import asyncio
 import base64
 import math
 import os
-import sys
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -273,7 +272,7 @@ class NativeSession:
     def start(
         self, prepared: PreparedCall, operation: Coroutine[object, object, T]
     ) -> asyncio.Task[T]:
-        if self.shutdown_deadline is not None or self.sealed:
+        if self.shutdown_deadline is not None:
             operation.close()
             raise RuntimeError("Cannot start model work after player STOP")
         task = asyncio.create_task(operation)
@@ -323,12 +322,11 @@ class NativeSession:
         return self.shutdown_deadline
 
     async def stop(self, cleanup_deadline: float) -> bool:
-        self.begin_stop(cleanup_deadline)
-        assert self.shutdown_deadline is not None
+        deadline = self.begin_stop(cleanup_deadline)
         pending = {task for task in self.tasks if not task.done()}
         if pending:
             _, unresolved = await asyncio.wait(
-                pending, timeout=max(0, self.shutdown_deadline - monotonic())
+                pending, timeout=max(0, deadline - monotonic())
             )
             joined = not unresolved
         else:
@@ -348,7 +346,7 @@ class NativeSession:
         observation_tick: int,
         deadline: float,
     ) -> PreparedCall:
-        if self.shutdown_deadline is not None or self.sealed:
+        if self.shutdown_deadline is not None:
             raise RuntimeError("Cannot prepare inference after player STOP")
         if (
             self.registration.requested_slot is not None
@@ -389,7 +387,7 @@ class NativeSession:
         request = generation.request
         deadline = prepared.deadline
         slot = generation.player_slot
-        if self.shutdown_deadline is not None or self.sealed:
+        if self.shutdown_deadline is not None:
             raise RuntimeError("Cannot issue inference after player STOP")
         started = monotonic()
         client = httpx.AsyncClient(timeout=max(0.001, deadline - monotonic()))
@@ -472,21 +470,19 @@ class NativeSession:
                         raise ValueError(
                             "Native sampler temperature differs from request"
                         )
-                if (
-                    parsed.sampling_evidence is not None
-                    and parsed.sampling_evidence.response
-                    != parsed.choices[0].message.content
-                ):
-                    raise ValueError(
-                        "Native sampler response differs from actual output"
-                    )
+                    if (
+                        parsed.sampling_evidence.response
+                        != parsed.choices[0].message.content
+                    ):
+                        raise ValueError(
+                            "Native sampler response differs from actual output"
+                        )
                 generation.completion_text = parsed.choices[0].message.content
                 generation.stop_reason = parsed.choices[0].finish_reason
                 if parsed.usage is not None:
                     generation.input_tokens = parsed.usage.prompt_tokens
                     generation.output_tokens = parsed.usage.completion_tokens
         finally:
-            original_error = sys.exception()
             cleanup_deadline = prepared.cleanup.begin(
                 self.shutdown_deadline
                 if self.shutdown_deadline is not None
@@ -501,7 +497,7 @@ class NativeSession:
             )
             generation.latency_ms = round((monotonic() - started) * 1000)
             self.record(generation)
-        if original_error is None and (
+        if (
             generation.response_reader_joined is False
             or generation.transport_cleanup_joined is False
         ):

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from crewborg_native import NativeProfile
 
-from crewborg.native import NativeProfile
 from crewborg.strategy.commander.llm import build_commander_client_from_env
 from crewborg.strategy.meeting.llm import build_meeting_llm_client_from_env
 

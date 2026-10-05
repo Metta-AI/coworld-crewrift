@@ -12,9 +12,8 @@ from urllib.parse import unquote, urlsplit
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
+from crewborg_native import NativeModel, NativeSession, PolicyGeneration
 from pydantic import JsonValue
-
-from crewborg.native import NativeModel, NativeSession, PolicyGeneration
 
 MAX_ARTIFACT_BYTES = 200 * 1024 * 1024
 

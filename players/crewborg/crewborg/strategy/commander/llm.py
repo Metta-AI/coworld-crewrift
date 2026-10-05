@@ -10,9 +10,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol
 
-from pydantic import Field, JsonValue
-
-from crewborg.native import (
+from crewborg_native import (
     NativeModel,
     NativeRequest,
     NativeSession,
@@ -21,6 +19,8 @@ from crewborg.native import (
     ScriptedProfile,
     decision_json,
 )
+from pydantic import Field, JsonValue
+
 from crewborg.scripted import scripted_generation
 from crewborg.strategy.commander.prompts import PROMPT_DIR_ENV, system_prompt_for_role
 

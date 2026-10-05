@@ -27,6 +27,11 @@ from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import websockets
+from crewborg_native import (
+    NativeModel,
+    NativeSession,
+    PlayerRegistration,
+)
 from pydantic import ConfigDict, Field, JsonValue, TypeAdapter
 from websockets.exceptions import WebSocketException
 
@@ -40,11 +45,6 @@ from players.crewrift.crewborg.coworld.private_artifact import (
 from players.crewrift.crewborg.coworld.scene import SceneState
 from players.crewrift.crewborg.debug_overlay import build_overlay, encode_debug_sprites
 from players.crewrift.crewborg.map import walkability_matches
-from players.crewrift.crewborg.native import (
-    NativeModel,
-    NativeSession,
-    PlayerRegistration,
-)
 from players.crewrift.crewborg.scripted import policy_profile_from_env
 from players.crewrift.crewborg.types import Observation
 

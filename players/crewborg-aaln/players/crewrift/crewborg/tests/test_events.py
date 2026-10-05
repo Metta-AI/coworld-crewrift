@@ -7,9 +7,10 @@ counters it emits through an :class:`EventEmitter` bound to list sinks.
 
 from __future__ import annotations
 
+from crewborg_native import NativeProfile
+
 from players.crewrift.crewborg.action import BTN_A, BTN_B, BTN_LEFT
 from players.crewrift.crewborg.events import CrewborgEventTracer
-from players.crewrift.crewborg.native import NativeProfile
 from players.crewrift.crewborg.strategy.meeting.vote_policy import vote_bar
 from players.crewrift.crewborg.types import (
     ActionState,

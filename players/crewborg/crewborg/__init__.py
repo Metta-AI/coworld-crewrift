@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from typing import Protocol
 
+from crewborg_native import NativeSession, PolicyProfile
 from players.player_sdk import (
     AgentRuntime,
     MetricsSink,
@@ -35,7 +36,6 @@ from crewborg.modes import (
     ReportBodyMode,
     SearchMode,
 )
-from crewborg.native import NativeSession, PolicyProfile
 from crewborg.strategy import (
     RuleBasedStrategy,
     update_event_log,

@@ -10,9 +10,7 @@ from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol
 
-from pydantic import Field, JsonValue
-
-from players.crewrift.crewborg.native import (
+from crewborg_native import (
     ControllerInstallation,
     NativeModel,
     NativeRequest,
@@ -22,6 +20,8 @@ from players.crewrift.crewborg.native import (
     ScriptedProfile,
     decision_json,
 )
+from pydantic import Field, JsonValue
+
 from players.crewrift.crewborg.scripted import scripted_generation
 from players.crewrift.crewborg.strategy.meeting.prompts import build_system_prompt
 from players.crewrift.crewborg.strategy.meeting.schema import VOTE_SKIP, MeetingDecision

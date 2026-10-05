@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from crewborg_native import NativeProfile
+
 from players.crewrift.crewborg import build_runtime
 from players.crewrift.crewborg.coworld.scene import SceneState
-from players.crewrift.crewborg.native import NativeProfile
 from players.crewrift.crewborg.tests import sprite_wire as w
 from players.crewrift.crewborg.types import Observation
 from players.player_sdk.trace import ListMetricsSink, ListTraceSink

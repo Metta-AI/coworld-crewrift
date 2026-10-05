@@ -1,10 +1,10 @@
 # Crewborg player image — self-contained build for coworld-crewrift.
 #
 # Build context = the player directory `players/crewborg/`, which holds the `crewborg/`
-# package (the policy source). Only the package is copied into the image; the
-# surrounding optimizer toolkit stays out.
+# package and shared `crewborg_native.py` lifecycle owner. Both are copied into
+# the image; the surrounding optimizer toolkit stays out.
 #
-#   docker build -f crewborg/coworld/Dockerfile -t crewborg players/crewborg
+#   docker build -f players/crewborg/crewborg/coworld/Dockerfile -t crewborg players/crewborg
 #   (add --platform=linux/amd64 via buildx; the cluster is amd64)
 #
 # crewborg is the `crewborg` package and imports only `players.player_sdk`
@@ -50,6 +50,7 @@ RUN pip install "spacy>=3.8.0,<3.9.0" click \
 # directory, so the `crewborg/` package is copied directly onto PYTHONPATH (/app).
 # (A `.dockerignore` could later trim tests/docs/viewer from the image.)
 COPY crewborg /app/crewborg
+COPY crewborg_native.py /app/crewborg_native.py
 
 # Reads COWORLD_PLAYER_WS_URL (canonical) / COGAMES_ENGINE_WS_URL (alias), connects,
 # plays one slot, and exits when the episode ends.

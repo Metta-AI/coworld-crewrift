@@ -9,7 +9,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Literal
 
-from players.crewrift.crewborg.native import (
+from crewborg_native import (
     NativeProfile,
     NativeSession,
     PolicyProfile,
@@ -40,7 +40,7 @@ def scripted_generation(
 ) -> ScriptedGeneration:
     """An immediate scripted profile, never a model/latency parity assertion."""
     started = monotonic()
-    if session.shutdown_deadline is not None or session.sealed:
+    if session.shutdown_deadline is not None:
         raise RuntimeError("Cannot admit scripted decisions after player STOP")
     if (
         profile.teacher_authority_sha256

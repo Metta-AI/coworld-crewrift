@@ -5,12 +5,12 @@ from __future__ import annotations
 from time import monotonic
 
 import pytest
-
-from players.crewrift.crewborg.native import (
+from crewborg_native import (
     NativeGeneration,
     NativeSession,
     PlayerRegistration,
 )
+
 from players.crewrift.crewborg.strategy.meeting import build_system_prompt
 from players.crewrift.crewborg.strategy.meeting.llm import (
     MeetingParams,

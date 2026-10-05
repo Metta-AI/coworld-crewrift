@@ -12,14 +12,14 @@ from urllib.parse import unquote, urlsplit
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import httpx
-from pydantic import JsonValue
-
-from players.crewrift.crewborg.compression_cache import ImmutableCompressionCache
-from players.crewrift.crewborg.native import (
+from crewborg_native import (
     NativeModel,
     NativeSession,
     PolicyGeneration,
 )
+from pydantic import JsonValue
+
+from players.crewrift.crewborg.compression_cache import ImmutableCompressionCache
 
 MAX_ARTIFACT_BYTES = 200 * 1024 * 1024
 

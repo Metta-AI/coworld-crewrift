@@ -6,8 +6,8 @@ import asyncio
 import json
 
 import pytest
+from crewborg_native import NativeGeneration, NativeProfile
 
-from crewborg.native import NativeGeneration, NativeProfile
 from crewborg.strategy.commander.llm import build_commander_client_from_env
 from crewborg.strategy.meeting.llm import build_meeting_llm_client_from_env
 

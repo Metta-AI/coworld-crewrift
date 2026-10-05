@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from crewborg_native import NativeGeneration, NativeProfile, NativeRequest
 from players.player_sdk import OverwriteBuffer
 from players.player_sdk.trace import ListTraceSink
 from players.player_sdk.types import BeliefSnapshot, ModeDirective, SharedMemory
 
 from crewborg import build_runtime
 from crewborg.coworld.scene import SceneState
-from crewborg.native import NativeGeneration, NativeProfile, NativeRequest
 from crewborg.strategy.commander.llm import CommanderLLMResult
 from crewborg.strategy.commander.strategy import (
     CommanderStrategy,

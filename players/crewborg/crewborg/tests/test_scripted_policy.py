@@ -6,9 +6,9 @@ import json
 from time import monotonic
 
 import pytest
+from crewborg_native import PolicyGeneration
 from pydantic import TypeAdapter, ValidationError
 
-from crewborg.native import PolicyGeneration
 from crewborg.scripted import policy_profile_from_env
 from crewborg.strategy.meeting.llm import (
     build_meeting_llm_client_from_env,

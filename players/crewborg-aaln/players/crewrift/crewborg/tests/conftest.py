@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-from players.crewrift.crewborg.native import NativeSession, PlayerRegistration
+from crewborg_native import NativeSession, PlayerRegistration
 
 
 @pytest.fixture

@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from crewborg_native import NativeGeneration, NativeRequest
 
 from crewborg.action import BTN_A, BTN_DOWN, resolve_action
 from crewborg.modes import AccuseMode, AttendMeetingMode, ReportBodyMode
-from crewborg.native import NativeGeneration, NativeRequest
 from crewborg.perception.entities import VoteCandidate, VotingState
 from crewborg.strategy.meeting import (
     DisabledMeetingClient,

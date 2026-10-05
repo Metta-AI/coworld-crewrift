@@ -5,17 +5,17 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from crewborg_native import (
+    NativeGeneration,
+    NativeHttpError,
+    NativeProfile,
+    NativeRequest,
+)
 
 from players.crewrift.crewborg.modes import AttendMeetingMode, FleeMode, ReportBodyMode
 from players.crewrift.crewborg.modes.attend_meeting import (
     DETERMINISTIC_TALLY_WAIT_TICKS,
     MEETING_CHAT,
-)
-from players.crewrift.crewborg.native import (
-    NativeGeneration,
-    NativeHttpError,
-    NativeProfile,
-    NativeRequest,
 )
 from players.crewrift.crewborg.perception.entities import (
     VoteCandidate,
