@@ -38,6 +38,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: Metta-AI/coworld-tools
+          # Match the maintained Crewborg image's PLAYERS_SDK_REF.
+          ref: 3c61631e9806d5a93f04c72c47c859e18cac84b4
           path: .shared-tools
           persist-credentials: false
       - uses: actions/setup-python@v6
