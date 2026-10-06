@@ -25,7 +25,7 @@ cited file before relying on it.**
 > the meeting, skip-votes, then resumes after the meeting.
 > See [`README.md`](./README.md) for a capability summary and
 > [`design.md`](./design.md) for the settled architecture. crewborg sits at
-> `players/players/crewrift/crewborg/` inside the `players` uv workspace.
+> `players/crewborg-aaln/players/crewrift/crewborg/` in this repository.
 
 ---
 
@@ -72,7 +72,7 @@ the SDK's JSON bridge does not fit a binary game (see
 
 ## 1. The Player SDK (`players.player_sdk`)
 
-**Location:** `~/coding/players_checkouts/players/players/player_sdk`
+**Location:** `players/players/player_sdk` in `Metta-AI/coworld-tools`
 **Import root:** `players.player_sdk` (the repo is the `players` package).
 Pure Python, deps `numpy`/`pydantic`/`websockets` (workspace `pyproject.toml`).
 
@@ -224,10 +224,10 @@ limiter and self-corrects from any transient backlog.
 
 Crewborg's contract. Two checkouts matter:
 
-- **Game source (Nim):** `~/coding/games/coworld-crewrift` — the authoritative
+- **Game source (Nim):** `Metta-AI/coworld-crewrift` — the authoritative
   rules, protocol docs, reference bots, map assets. Read this for behavior.
-- **Coworld platform docs:** `~/coding/metta/packages/coworld` *(inside the
-  metta checkout — **read-only**, never write there)* — the generic Coworld
+- **Coworld platform docs:** `src/coworld` in public `Metta-AI/coworld`
+  *(**read-only**, never write there)* — the generic Coworld
   packaging/runner/CLI contract Crewrift conforms to.
 
 ### Concept & objective (`coworld-crewrift/README.md`, `docs/rules.md`)
@@ -241,7 +241,7 @@ Social deduction, 8 players / 2 imposters default, retro pixel art.
 
 ### Loop, mechanics, scoring
 
-> **Citation key** (all paths under `~/coding/games/coworld-crewrift/`, verified
+> **Citation key** (all paths under `Metta-AI/coworld-crewrift/`, verified
 > 2026-05-28). Game source: `sim` = `src/crewrift/sim.nim`, `global` =
 > `src/crewrift/global.nim` (the `/player` renderer), `server` =
 > `src/crewrift/server.nim`, `protocol` = `src/crewrift/common/protocol.nim`.
@@ -560,19 +560,14 @@ under `docs/roles/` and `docs/artifacts/`) and `runner/runner.py` (protocol
 authority). *(The flat `COWORLD_README.md`/`GAME_RUNTIME_README.md` were
 reorganized into `docs/` as of coworld 0.1.13.)*
 
-**Retrieving hosted episodes crewborg played.** The Observatory API records
-every league episode. **Use [`scripts/fetch_episodes.py`](./scripts/fetch_episodes.py)**
-for a crewborg-filtered bulk pull of replays + per-slot traces + metadata: it
-reads raw JSON against the current routes, so it survives the client/server drift
-that periodically breaks the typed CLI. That drift is biting now — as of
-2026-06-02 the official `coworld episodes` / `coworld replays` / `coworld
-episode-logs` commands are **broken** even on the latest CLI (0.1.13): the server
-renamed `/v2/episode-requests*` → `/v2/experience-request*` and the CLI still
-calls the old paths (404). (Earlier instance: coworld 0.1.11's
-`V2EpisodeRequestRow.assignments` `ValidationError`.) When a route 404s, the live
-map is at `<api>/observatory/openapi.json`. The API is reached via the official
-gateway `<softmax-api-server>/observatory` (the `coworld` CLI's route) or directly
-at `https://api.observatory.softmax-research.net` with routes at the host root.
+**Retrieving hosted episodes crewborg played.** Start with the installed CLI's
+`coworld episodes --help`, `coworld replays --help`, and
+`coworld episode-logs --help`. Use the configured public platform endpoint.
+For the bulk workflow, inspect [`scripts/fetch_episodes.py`](./scripts/fetch_episodes.py)
+and confirm its routes against the current OpenAPI document before running it.
+CLI 0.1.13 had route/schema failures in June 2026; that historical incident
+does not establish a failure in today's CLI. Record the installed version,
+request, and response when diagnosing a new mismatch.
 
 ---
 
@@ -612,13 +607,14 @@ Behavior & parsing references:
 ## 4. Build & test (this workspace)
 
 ```sh
-# repo root: ~/coding/players_checkouts/players
-uv sync
-uv run pytest players/crewrift/crewborg/tests      # crewborg tests
-uv run ruff check players/crewrift/crewborg
+# From this repository root, using an isolated Python environment:
+cd players/crewborg-aaln
+python -m pip install -r requirements.txt pytest pytest-asyncio ruff
+python -m pytest players/crewrift/crewborg/tests
+python -m ruff check players/crewrift/crewborg
 ```
 Tests use `pytest-asyncio` (strict mode) and a `docker` marker for image-driven
-tests (root `pyproject.toml`). Cover: action resolver, modes, trace sinks,
+tests (dependencies are in `players/crewborg-aaln/requirements.txt`). Cover: action resolver, modes, trace sinks,
 assembled runtime, and an in-process bridge smoke. For perception,
 test the **scene decoder** against recorded Sprite-v1 message sequences (decode a
 captured stream → assert the resolved objects/labels/coordinates), rather than
@@ -637,18 +633,18 @@ pixel parity.
 | SDK framework reference (invariants) | `players/player_sdk/docs/metta_cogames_framework/README.md` |
 | SDK minimal example to mirror | `players/player_sdk/docs/metta_cogames_framework/examples/toy_grid_agent.py` |
 | Crewborg design decisions | `players/crewrift/crewborg/design.md` |
-| Crewrift Sprite-v1 parser (perception reference) | `~/coding/games/coworld-crewrift/players/notsus/notsus/protocols.nim` |
-| Crewrift rules / mechanics | `~/coding/games/coworld-crewrift/README.md`, `docs/rules.md`, `src/crewrift/sim.nim` |
-| Crewrift wire protocol | `~/coding/games/coworld-crewrift/docs/sprite_v1.md` |
-| Crewrift reference bots + guides | `~/coding/games/coworld-crewrift/players/` |
-| Coworld platform/runner contract | `~/coding/metta/packages/coworld/src/coworld/docs/README.md` + `runner/runner.py` *(read-only)* |
-| Fetch hosted episodes crewborg played | `players/crewrift/crewborg/scripts/fetch_episodes.py` (the typed `coworld episodes`/`replays`/`episode-logs` are 404-broken since the server's `episode-requests`→`experience-request` rename) |
+| Crewrift Sprite-v1 parser (perception reference) | `Metta-AI/coworld-crewrift/players/notsus/notsus/protocols.nim` |
+| Crewrift rules / mechanics | `Metta-AI/coworld-crewrift/README.md`, `docs/rules.md`, `src/crewrift/sim.nim` |
+| Crewrift wire protocol | `Metta-AI/coworld-crewrift/docs/sprite_v1.md` |
+| Crewrift reference bots + guides | `Metta-AI/coworld-crewrift/players/` |
+| Coworld platform/runner contract | `Metta-AI/coworld: src/coworld/docs/README.md` + `runner/runner.py` *(read-only)* |
+| Fetch hosted episodes crewborg played | `players/crewrift/crewborg/scripts/fetch_episodes.py` (verify its routes against current CLI help and OpenAPI before use) |
 | View crewborg trace replays | `players/crewrift/crewborg/viewer/index.html` (load logs captured with `CREWBORG_TRACE=viewer` or `CREWBORG_TRACE=debug`) |
 
-Absolute roots:
-- Player SDK & this workspace: `~/coding/players_checkouts/players` (pkg `players`)
-- Crewrift game source: `~/coding/games/coworld-crewrift`
-- Coworld platform: `~/coding/metta/packages/coworld` *(read-only — metta checkout)*
+Source locations:
+- Player SDK & this workspace: `players/` in `Metta-AI/coworld-tools` (pkg `players`)
+- Crewrift game source: `Metta-AI/coworld-crewrift`
+- Coworld platform: `Metta-AI/coworld`: `src/coworld` *(read-only reference)*
 
 ## Source-of-truth & caveats
 
