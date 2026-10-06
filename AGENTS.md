@@ -7,9 +7,8 @@ Do not implicitly merge or rebase feature work or dirty checkouts. Keep existing
 repository instructions and ownership boundaries in force.
 
 This diagnostic policy applies only to this repository's first-party adapter,
-game and QA tooling. It does not authorize changes to vendor/third-party code,
-Metta, Fabric, Fabric Research (including evidence/checkouts), Polyworld or their
-vendored copies. It is guidance only, not a change to runtime output defaults.
+game and QA tooling. It does not authorize changes to vendor/third-party code
+or other repositories. It is guidance only, not a change to runtime output defaults.
 
 ## Disposable QA Storage
 
