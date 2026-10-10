@@ -9,6 +9,21 @@ or Coworld CLI issues, file against <https://github.com/Metta-AI/coworld/issues>
 Include the command, league/Coworld ids, logs or replay links, and the smallest
 repro instead of silently working around the issue.
 
+The ordinary player uses the native LLM sidecar and requests the game's
+`crewrift.native-evidence.v1` WebSocket controls. Set `COWORLD_LLM_ENDPOINT`
+and `COWORLD_PLAYER_ARTIFACT_UPLOAD_URL` before starting it. The artifact URL
+accepts the hosted private ZIP upload destination or a local `file://` path.
+Direct provider credentials and the former Bedrock transport are removed.
+
+The authenticated welcome determines the actual slot and engine index.
+A terminal acknowledgement, joined model work, and private ZIP delivery share
+one two-second cleanup deadline. Runtime failures record a truncated outcome.
+Artifact timeout or delivery failure prevents qualification.
+
+The numeric `italkalotLibrary` ABI remains a pixel-to-action controller.
+It rejects requested native social inference without an assigned-seat and
+private-artifact contract. That ABI does not qualify LLM training parity.
+
 Run the bot headless:
 
 ```sh

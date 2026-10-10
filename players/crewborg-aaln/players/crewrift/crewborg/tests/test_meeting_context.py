@@ -4,17 +4,31 @@ from __future__ import annotations
 
 import pytest
 
-from players.crewrift.crewborg.perception.entities import VoteCandidate, VoteDot, VotingState
+from players.crewrift.crewborg.perception.entities import (
+    VoteCandidate,
+    VoteDot,
+    VotingState,
+)
 from players.crewrift.crewborg.strategy.meeting import (
     VOTE_SKIP,
     MeetingDecision,
     MeetingDecisionValidationError,
     sanitize_chat,
     serialize_meeting_context,
-    validate_meeting_decision,
     valid_vote_targets,
+    validate_meeting_decision,
 )
-from players.crewrift.crewborg.types import Accusation, Belief, ChatEvent, MeetingRecord, PlayerRecord
+from players.crewrift.crewborg.strategy.meeting.vote_policy import (
+    crewmate_fallback_vote,
+)
+from players.crewrift.crewborg.strategy.suspicion import top_suspect, update_suspicion
+from players.crewrift.crewborg.types import (
+    Accusation,
+    Belief,
+    ChatEvent,
+    MeetingRecord,
+    PlayerRecord,
+)
 
 
 def _belief() -> Belief:
@@ -36,6 +50,42 @@ def _belief() -> Belief:
     belief.chat_log = [ChatEvent(tick=25, speaker_color="red", text="blue sus")]
     belief.suspicion = {"red": 0.91, "green": 0.2}
     return belief
+
+
+def test_probability_ties_have_one_color_order_for_prompt_and_ordinary_fallback() -> None:
+    contexts = []
+    for colors in (("red", "green"), ("green", "red")):
+        belief = _belief()
+        belief.self_role = "crewmate"
+        belief.voting = VotingState(
+            timer_present=True,
+            self_marker_color="blue",
+            candidates=tuple(
+                VoteCandidate(slot=slot, color=color, alive=True)
+                for slot, color in enumerate(("red", "blue", "green"))
+            ),
+        )
+        belief.roster["green"].life_status = "alive"
+        belief.suspicion = dict.fromkeys(colors, 0.95)
+        assert top_suspect(belief) == "green"
+        assert crewmate_fallback_vote(belief) == "green"
+        context = serialize_meeting_context(belief, trigger="meeting_start")
+        assert [row["color"] for row in context["suspicion"]["ranking"]] == ["green", "red"]
+        contexts.append(context)
+    assert contexts[0] == contexts[1]
+
+
+def test_recomputed_suspicion_owns_deterministic_color_order_without_changing_probabilities() -> None:
+    outputs = []
+    for colors in (("red", "green", "blue"), ("blue", "red", "green")):
+        belief = Belief(self_role="crewmate", total_player_count=8, imposter_count=2)
+        belief.roster = {
+            color: PlayerRecord(color=color, life_status="alive") for color in colors
+        }
+        update_suspicion(belief)
+        assert list(belief.suspicion) == ["blue", "green", "red"]
+        outputs.append(belief.suspicion)
+    assert outputs[0] == outputs[1]
 
 
 def test_valid_vote_targets_excludes_self_and_dead_candidates() -> None:

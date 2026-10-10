@@ -7,16 +7,18 @@ import logging
 import os
 from typing import Any, Protocol
 
+from players.player_sdk import StrategyResult
+from players.player_sdk.types import BeliefSnapshot
+
 from crewborg.strategy.commander.context import (
     legal_players,
     legal_rooms,
     serialize_commander_context,
 )
+from crewborg.strategy.commander.llm import CommanderLLMResult
 from crewborg.strategy.commander.schema import sanitize_priorities
 from crewborg.strategy.rule_based import RuleBasedStrategy
 from crewborg.types import ActionState, Belief, CommanderPriorities
-from players.player_sdk import StrategyResult
-from players.player_sdk.types import BeliefSnapshot
 
 FORCE_ENV = "CREWBORG_COMMANDER_FORCE"
 _LOG = logging.getLogger(__name__)
@@ -30,15 +32,29 @@ class _CommanderWorker(Protocol):
 
     def close(self) -> None: ...
 
+    def poll(self) -> None: ...
+
+    def installed(self, result: CommanderLLMResult, value: dict, tick: int) -> None: ...
+
 
 class CommanderStrategy:
     """Delegate mode selection to rules while asynchronously refreshing priorities."""
 
-    def __init__(self, rules: RuleBasedStrategy, worker: _CommanderWorker, *, feature_enabled: bool) -> None:
+    def __init__(
+        self,
+        rules: RuleBasedStrategy,
+        worker: _CommanderWorker,
+        *,
+        feature_enabled: bool,
+    ) -> None:
         self._rules = rules
         self._worker = worker
         self._feature_enabled = feature_enabled
-        self._forced_priorities = _parse_forced_priorities(os.environ.get(FORCE_ENV)) if feature_enabled else None
+        self._forced_priorities = (
+            _parse_forced_priorities(os.environ.get(FORCE_ENV))
+            if feature_enabled
+            else None
+        )
         self._last: CommanderPriorities | None = None
         self._started = False
 
@@ -57,20 +73,32 @@ class CommanderStrategy:
             rooms = set(legal_rooms(belief))
             players = set(legal_players(belief))
             tick = snapshot.tick
-            context = None if self._forced_priorities is not None else serialize_commander_context(
-                belief,
-                active_mode=memory.active_directive.mode,
+            context = (
+                None
+                if self._forced_priorities is not None
+                else serialize_commander_context(
+                    belief,
+                    active_mode=memory.active_directive.mode,
+                )
             )
 
         if self._forced_priorities is not None:
-            self._last = sanitize_priorities(self._forced_priorities, rooms, players, as_of_tick=tick)
+            self._last = sanitize_priorities(
+                self._forced_priorities, rooms, players, as_of_tick=tick
+            )
             inferences: dict[str, Any] = {"commander": self._last.model_dump()}
             return StrategyResult(directive=directive, inferences=inferences)
 
+        assert context is not None
+        context["observation_tick"] = tick
         self._worker.snapshots.publish(context)
+        self._worker.poll()
         raw = self._worker.priorities.take()
         if raw is not None:
-            self._last = sanitize_priorities(raw, rooms, players, as_of_tick=tick)
+            self._last = sanitize_priorities(
+                raw.priorities, rooms, players, as_of_tick=tick
+            )
+            self._worker.installed(raw, self._last.model_dump(mode="json"), tick)
 
         inferences: dict[str, Any] = {}
         if self._last is not None:

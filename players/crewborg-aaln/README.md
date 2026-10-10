@@ -19,7 +19,9 @@ from the [`softmax/players`](https://github.com/Metta-AI/players) monorepo
 | Uploaded | 2026-06-11T07:41:07Z |
 
 Submitted policy container images are private to Observatory runtime and are not
-downloadable via the API. This directory holds the equivalent source tree.
+downloadable via the API. The recorded version above is historical.
+Current builds use this source tree plus
+`../crewborg/crewborg_native.py`, the shared native lifecycle and receipt owner.
 
 ## Runtime flags (v2)
 
@@ -37,20 +39,25 @@ Observatory `attributes.run` was not recorded on v2; later versions use
 ## Run locally
 
 ```sh
+cd players/crewborg-aaln
 pip install -r requirements.txt
-COWORLD_PLAYER_WS_URL='ws://127.0.0.1:8080/player?slot=0&token=' \
+PYTHONPATH=.:../crewborg COWORLD_PLAYER_WS_URL='ws://127.0.0.1:8080/player?slot=0&token=' \
   python -m players.crewrift.crewborg.coworld.policy_player
 ```
 
 ## Build
 
 ```sh
-docker build -t crewborg-aaln:v2 players/crewborg-aaln
+docker build -f players/crewborg-aaln/Dockerfile -t crewborg-aaln:dev players
 ```
 
 ## Tests
 
 ```sh
 cd players/crewborg-aaln
-python -m pytest players/crewrift/crewborg/tests/
+PYTHONPATH=.:../crewborg python -m pytest players/crewrift/crewborg/tests/
 ```
+
+The build context is `players/`, so source bundles for new builds must include both
+Aaln and the shared module. The Dockerfile copies only those runtime inputs.
+Existing uploaded images and their source snapshots remain unchanged.

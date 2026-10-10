@@ -1,5 +1,5 @@
 import
-  std/[algorithm, locks, monotimes, nativesockets, os, strutils, tables, times],
+  std/[algorithm, base64, json, locks, monotimes, nativesockets, os, strutils, tables, times],
   bitworld/client as bitworldClient, bitworld/profile, bitworld/spriteprotocol,
   bitworld/runtime,
   curly, mummy,
@@ -32,6 +32,9 @@ type
     playerAddresses: Table[WebSocket, string]
     playerSlots: Table[WebSocket, int]
     playerTokens: Table[WebSocket, string]
+    nativeEvidence: Table[WebSocket, bool]
+    nativeWelcomed: Table[WebSocket, bool]
+    terminalAcknowledgements: Table[WebSocket, string]
     globalViewers: Table[WebSocket, GlobalViewerState]
     playerViewers: Table[WebSocket, PlayerViewerState]
     rewardViewers: Table[WebSocket, bool]
@@ -146,6 +149,9 @@ proc initAppState() =
   appState.playerAddresses = initTable[WebSocket, string]()
   appState.playerSlots = initTable[WebSocket, int]()
   appState.playerTokens = initTable[WebSocket, string]()
+  appState.nativeEvidence = initTable[WebSocket, bool]()
+  appState.nativeWelcomed = initTable[WebSocket, bool]()
+  appState.terminalAcknowledgements = initTable[WebSocket, string]()
   appState.globalViewers = initTable[WebSocket, GlobalViewerState]()
   appState.playerViewers = initTable[WebSocket, PlayerViewerState]()
   appState.rewardViewers = initTable[WebSocket, bool]()
@@ -195,6 +201,8 @@ proc removePlayerWebSocketState(websocket: WebSocket): int =
   appState.playerAddresses.del(websocket)
   appState.playerSlots.del(websocket)
   appState.playerTokens.del(websocket)
+  appState.nativeEvidence.del(websocket)
+  appState.nativeWelcomed.del(websocket)
 
 proc addressIsKicked(address: string): bool =
   ## Returns true when an address is blocked from this match.
@@ -260,9 +268,10 @@ proc removePlayer(sim: var SimServer, websocket: WebSocket) =
   let removedIndex = removeWebSocketState(websocket)
   if removedIndex >= 0 and removedIndex < sim.players.len:
     sim.removePlayerAt(removedIndex)
-    for ws, value in appState.playerIndices.mpairs:
-      if value > removedIndex:
-        dec value
+    if not sim.usesStableClosedRoster():
+      for ws, value in appState.playerIndices.mpairs:
+        if value > removedIndex:
+          dec value
 
 proc cleanPlayerName(name: string): string =
   ## Returns a protocol-safe player display name.
@@ -484,6 +493,9 @@ proc httpHandler(request: Request) =
     {.gcsafe.}:
       withLock appState.lock:
         accepted = websocket.registerPlayerWebSocket(identity, slot, token)
+        if accepted:
+          appState.nativeEvidence[websocket] = request.queryParams.getOrDefault("native_evidence", "") == "1"
+          appState.nativeWelcomed[websocket] = false
     if not accepted:
       websocket.disconnectWebSocket()
       return
@@ -626,6 +638,12 @@ proc websocketHandler(
   of MessageEvent:
     if message.kind == Ping:
       websocket.send(message.data, Pong)
+    elif message.kind == TextMessage:
+      {.gcsafe.}:
+        withLock appState.lock:
+          if websocket in appState.terminalAcknowledgements and
+              message.data == appState.terminalAcknowledgements[websocket]:
+            appState.terminalAcknowledgements.del(websocket)
     elif message.kind == BinaryMessage:
       {.gcsafe.}:
         withLock appState.lock:
@@ -840,6 +858,37 @@ proc buildRewardPacket(sim: SimServer): string {.measure.} =
         account.disconnectTimeout
       )
 
+proc nativeWelcome(sim: SimServer, websocket: WebSocket, playerIndex: int): string =
+  ## The engine chooses both the configured slot and the independent player index.
+  if playerIndex < 0 or playerIndex >= sim.players.len:
+    return ""
+  var enabled, welcomed: bool
+  {.gcsafe.}:
+    withLock appState.lock:
+      enabled = appState.nativeEvidence.getOrDefault(websocket, false)
+      welcomed = appState.nativeWelcomed.getOrDefault(websocket, false)
+      if enabled and not welcomed:
+        appState.nativeWelcomed[websocket] = true
+  if not enabled or welcomed:
+    return ""
+  let slot = sim.players[playerIndex].joinOrder
+  let authenticated = slot >= 0 and slot < sim.config.slots.len and
+    sim.config.slots[slot].token.len > 0
+  $(%*{"kind": "native_welcome", "protocol": "crewrift.native-evidence.v1",
+    "player_slot": slot, "engine_player_index": playerIndex,
+    "configured_seat": authenticated, "tick": sim.tickCount})
+
+proc nativeTerminal(sim: SimServer, websocket: WebSocket): string =
+  var enabled: bool
+  {.gcsafe.}:
+    withLock appState.lock:
+      enabled = appState.nativeEvidence.getOrDefault(websocket, false)
+  if enabled:
+    $(%*{"kind": "native_terminal", "protocol": "crewrift.native-evidence.v1",
+      "tick": sim.tickCount, "results": parseJson(sim.playerResultsJson())})
+  else:
+    ""
+
 proc runServerLoop*(
   host = DefaultHost,
   port = DefaultPort,
@@ -850,6 +899,18 @@ proc runServerLoop*(
   runtimeConfig = RuntimeConfig()
 ) =
   initAppState()
+  let trajectoryUri = getEnv("COGAME_SAVE_TRAJECTORY_URI")
+  let capturePrivate = trajectoryUri.len > 0
+  var trajectory: File
+  if capturePrivate:
+    if not trajectoryUri.startsWith("file://"):
+      raise newException(ValueError, "Private trajectory requires a local file URI")
+    let path = trajectoryUri[7 .. ^1]
+    trajectory = open(path, fmWrite)
+    setFilePermissions(path, {fpUserRead, fpUserWrite})
+  defer:
+    if capturePrivate:
+      trajectory.close()
   if saveReplayPath.len > 0 and loadReplayPath.len > 0:
     raise newException(ReplayError, "Cannot save and load a replay together")
   var replayLoaded = loadReplayPath.len > 0
@@ -979,9 +1040,15 @@ proc runServerLoop*(
                 sim.recordGameAbandon(playerIndex)
                 replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
-                  replayWriter.lastMasks.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    replayWriter.lastMasks[playerIndex] = 0
+                  else:
+                    replayWriter.lastMasks.delete(playerIndex)
                 if playerIndex < prevInputs.len:
-                  prevInputs.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    prevInputs[playerIndex] = InputState()
+                  else:
+                    prevInputs.delete(playerIndex)
           sim.removePlayer(websocket)
         appState.closedSockets.setLen(0)
         if not replayLoaded and appState.kickRequests.len > 0:
@@ -1007,9 +1074,15 @@ proc runServerLoop*(
                   # removal from the first leave's reconnect-grace transition.
                   replayWriter.writeLeave(tickTime(sim.tickCount), playerIndex)
                 if playerIndex < replayWriter.lastMasks.len:
-                  replayWriter.lastMasks.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    replayWriter.lastMasks[playerIndex] = 0
+                  else:
+                    replayWriter.lastMasks.delete(playerIndex)
                 if playerIndex < prevInputs.len:
-                  prevInputs.delete(playerIndex)
+                  if sim.usesStableClosedRoster():
+                    prevInputs[playerIndex] = InputState()
+                  else:
+                    prevInputs.delete(playerIndex)
             sim.removePlayer(websocket)
             socketsToClose.add(websocket)
         if not replayLoaded and sim.shouldAbortFiniteMatch():
@@ -1020,7 +1093,8 @@ proc runServerLoop*(
             )
           sim.finishGame(Crewmate, timeLimitReached = true)
           gamesPlayed = max(gamesPlayed, config.maxGames)
-        elif not replayLoaded and sim.phase != Lobby and sim.players.len == 0:
+        elif not replayLoaded and sim.phase notin {Lobby, GameOver} and
+            sim.admittedPlayerCount() == 0:
           sim.resetToLobby()
           prevInputs = @[]
           replayWriter.lastMasks = @[]
@@ -1086,10 +1160,8 @@ proc runServerLoop*(
                 appState.playerIndices[websocket] = -1
             pendingPlayers.sort(comparePendingPlayerJoins)
             for join in pendingPlayers:
-              # Admit any pending socket whose resolved slot is free. The slot is
-              # decoupled from the players-seq index, so out-of-order/concurrent
-              # connects no longer have to wait for strictly sequential slots,
-              # which previously stranded validly-connected sockets in pending.
+              # Closed rosters already own their configured engine indices;
+              # socket arrival only changes each reserved seat's admission.
               try:
                 appState.playerIndices[join.websocket] = sim.addPlayer(
                   join.address,
@@ -1106,7 +1178,7 @@ proc runServerLoop*(
                 tickTime(sim.tickCount),
                 appState.playerIndices[join.websocket],
                 join.address,
-                join.requestedSlot,
+                sim.players[appState.playerIndices[join.websocket]].joinOrder,
                 join.token
               )
               while replayWriter.lastMasks.len < sim.players.len:
@@ -1180,6 +1252,11 @@ proc runServerLoop*(
             pressedMask
           )
           appState.lastAppliedMasks[websocket] = appliedMask
+          if capturePrivate:
+            trajectory.writeLine($(%*{"kind": "accepted_input_mask", "tick": sim.tickCount,
+              "player_slot": sim.players[playerIndex].joinOrder,
+              "engine_player_index": playerIndex, "applied_mask": appliedMask,
+              "pressed_mask": pressedMask, "held_mask": currentMask}))
         if not replayLoaded:
           for websocket, message in appState.chatMessages.pairs:
             let playerIndex = appState.playerIndices.getOrDefault(
@@ -1193,6 +1270,10 @@ proc runServerLoop*(
                 message
               )
             sim.addVotingChat(playerIndex, message)
+            if capturePrivate and playerIndex >= 0:
+              trajectory.writeLine($(%*{"kind": "engine_chat_submission", "tick": sim.tickCount,
+                "engine_player_index": playerIndex, "player_slot": sim.players[playerIndex].joinOrder,
+                "text": message, "phase": $sim.phase}))
           appState.chatMessages.clear()
         for websocket, state in appState.globalViewers.pairs:
           globalViewers.add(websocket)
@@ -1294,6 +1375,14 @@ proc runServerLoop*(
             if sockets[i] in appState.playerViewers:
               appState.playerViewers[sockets[i]] = nextState
         let frameBlob = blobFromBytes(framePacket)
+        let welcome = sim.nativeWelcome(sockets[i], playerIndices[i])
+        if welcome.len > 0:
+          sockets[i].send(welcome, TextMessage)
+          if capturePrivate:
+            trajectory.writeLine(welcome)
+        if capturePrivate:
+          trajectory.writeLine($(%*{"kind": "engine_frame", "tick": sim.tickCount,
+            "engine_player_index": playerIndices[i], "bytes_b64": encode(frameBlob)}))
         sockets[i].send(frameBlob, BinaryMessage)
       for websocket in rewardViewers:
         websocket.send(rewardPacket, TextMessage)
@@ -1328,6 +1417,9 @@ proc runServerLoop*(
         let phaseBeforeStep = sim.phase
         stepPrevInputs.clearPressedInputMasks(stepPressedInputMasks)
         sim.step(stepInputs, stepPrevInputs)
+        if capturePrivate:
+          trajectory.writeLine($(%*{"kind": "engine_effect", "tick": sim.tickCount,
+            "game_hash": $sim.gameHash(), "phase": $sim.phase}))
         lastStepInputs = stepInputs
         stepPrevInputs = stepInputs
         stepPressedInputMasks.resetInputMasks()
@@ -1384,6 +1476,14 @@ proc runServerLoop*(
           if sockets[i] in appState.playerViewers:
             appState.playerViewers[sockets[i]] = nextState
       let frameBlob = blobFromBytes(framePacket)
+      let welcome = sim.nativeWelcome(sockets[i], playerIndices[i])
+      if welcome.len > 0:
+        sockets[i].send(welcome, TextMessage)
+        if capturePrivate:
+          trajectory.writeLine(welcome)
+      if capturePrivate:
+        trajectory.writeLine($(%*{"kind": "engine_frame", "tick": sim.tickCount,
+          "engine_player_index": playerIndices[i], "bytes_b64": encode(frameBlob)}))
       try:
         sockets[i].send(frameBlob, BinaryMessage)
       except:
@@ -1441,22 +1541,51 @@ proc runServerLoop*(
       finishProfileTrace()
 
     if quitAfterFrame:
+      let terminal = %*{"kind": "engine_terminal", "tick": sim.tickCount,
+        "results": parseJson(sim.playerResultsJson()), "source_revision": getEnv("COWORLD_SOURCE_REVISION"),
+        "image_digest": getEnv("COWORLD_GAME_IMAGE_DIGEST"), "episode_id": getEnv("COWORLD_EPISODE_ID")}
+      let terminalDeadline = getMonoTime() + initDuration(seconds = 2)
+      for websocket in sockets:
+        let packet = sim.nativeTerminal(websocket)
+        if packet.len > 0:
+          {.gcsafe.}:
+            withLock appState.lock:
+              appState.terminalAcknowledgements[websocket] =
+                $(%*{"kind": "native_terminal_ack", "tick": sim.tickCount})
+          websocket.send(packet, TextMessage)
+      var terminalDeliveryJoined = false
+      while getMonoTime() < terminalDeadline:
+        {.gcsafe.}:
+          withLock appState.lock:
+            terminalDeliveryJoined = appState.terminalAcknowledgements.len == 0
+        if terminalDeliveryJoined:
+          break
+        sleep(1)
+      if capturePrivate:
+        trajectory.writeLine($(%*{"kind": "engine_terminal_delivery",
+          "tick": sim.tickCount, "joined": terminalDeliveryJoined}))
+        trajectory.flushFile()
       if saveReplayPath.len > 0:
         echo "Writing replay file: ", saveReplayPath
       replayWriter.closeReplayWriter()
+      httpServer.close()
+      joinThread(serverThread)
+      if not terminalDeliveryJoined:
+        raise newException(IOError, "Owned terminal delivery did not join")
       if saveReplayPath.len > 0 and fileExists(saveReplayPath):
         echo "Replay written: ", saveReplayPath,
           " (", getFileSize(saveReplayPath), " bytes)"
         runtimeConfig.writeReplay(readFile(saveReplayPath))
-      if runtimeConfig.resultsUri.len > 0:
+      if terminalDeliveryJoined and runtimeConfig.resultsUri.len > 0:
         let scoresJson = sim.playerResultsJson() & "\n"
         runtimeConfig.writeResults(scoresJson)
-      elif saveScoresPath.len > 0:
+      elif terminalDeliveryJoined and saveScoresPath.len > 0:
         writeFile(saveScoresPath, sim.playerResultsJson() & "\n")
         echo "Scores written: ", saveScoresPath,
           " (", getFileSize(saveScoresPath), " bytes)"
-      httpServer.close()
-      joinThread(serverThread)
+      if capturePrivate:
+        trajectory.writeLine($terminal)
+        trajectory.flushFile()
       break
 
     runFrameLimiter(

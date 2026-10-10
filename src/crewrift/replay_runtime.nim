@@ -11,7 +11,7 @@ proc initReplayRuntime*(
   gameEventLoggingEnabled: bool
 ): tuple[sim: SimServer, replay: ReplayPlayer] =
   ## Initializes the simulation and transport state shared by replay viewers.
-  result.sim = initSimServer(data.replayGameConfig())
+  result.sim = data.initReplaySimulation()
   result.sim.gameEventLoggingEnabled = gameEventLoggingEnabled
   result.replay = initReplayPlayer(data)
   result.replay.looping = looping

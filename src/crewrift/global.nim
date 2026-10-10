@@ -470,7 +470,7 @@ proc applyGlobalViewerMessage*(
       discard
     of SpriteClientReadyMessage:
       discard
-    of SpriteClientDebugSpriteMessage:
+    of SpriteClientDebugSpriteMessage, SpriteClientSpritesOffMessage:
       discard
 
 proc applyPlayerViewerMessage*(
@@ -492,7 +492,7 @@ proc applyPlayerViewerMessage*(
       pressedMask = pressedMask or (item.mask and not inputMask)
       inputMask = item.mask
     of SpriteClientMouseMoveMessage, SpriteClientMouseButtonMessage,
-        SpriteClientReadyMessage:
+        SpriteClientReadyMessage, SpriteClientSpritesOffMessage:
       discard
 
 proc isSolid(sprite: Sprite, x, y: int, flipH: bool): bool =
@@ -1185,7 +1185,7 @@ proc interstitialTextItems(
   ## Returns separate text sprites for one interstitial player screen.
   case sim.phase
   of Lobby:
-    let needed = max(0, sim.config.minPlayers - sim.players.len)
+    let needed = max(0, sim.requiredLobbyPlayers() - sim.lobbyPlayerCount())
     if needed > 0:
       result.addTextItem(sim.centeredTextX("WAITING"), 4, ["WAITING"])
       result.addTextItem(sim.centeredTextX("NEED MORE!"), 14, ["NEED MORE!"])

@@ -1,10 +1,10 @@
 import
   std/[algorithm, exitprocs, json, monotimes, options, os,
     parseopt, random, strutils, times],
-  bitworld/[pixelfonts, spriteprotocol, server],
+  bitworld/[pixelfonts, spriteprotocol, server, native_stop, native_websocket],
   pixie,
   ../../src/crewrift/sim,
-  notsus/bedrocks as bedrockAi,
+  notsus/native as nativeAi,
   notsus/protocols,
   notsus/socials,
   notsus/navigation
@@ -15,15 +15,12 @@ else:
 
   template measure() {.pragma.}
 when not defined(italkalotLibrary):
-  import whisky
   when not defined(botHeadless):
     import windy, ../../src/crewrift/common/scales
     import silky except measure
 const
   VotingPrompt = staticRead("prompt.md")
   InitialConnectWindowMs = 60_000
-  ReconnectWindowMs = 60_000
-  ReconnectAttemptMs = 1_000
   PlayerScreenX = ScreenWidth div 2
   PlayerScreenY = ScreenHeight div 2
   PlayerWorldOffX = PlayerScreenX
@@ -392,6 +389,9 @@ type
     y: int
     text: string
 
+  ControllerEvidenceMode = enum
+    cemNumeric, cemNative
+
   Bot = ref object
     sim: SimServer
     playerSprite: Sprite
@@ -401,6 +401,7 @@ type
     killButtonSprite: Sprite
     ghostIconSprite: Sprite
     rng: Rand
+    evidenceMode: ControllerEvidenceMode
     role: BotRole
     isGhost: bool
     ghostIconFrames: int
@@ -481,7 +482,7 @@ type
     packetWaitLogMs: int
     lastLoggedRoom: string
     visibleRoomNames: array[PlayerColorCount, string]
-    bedrockConfigLogged: bool
+    nativeConfigLogged: bool
     lastMask: uint8
     lastThought: string
     pendingChat: string
@@ -612,12 +613,6 @@ type
     key: string
     count: int
 
-proc reconnectWindowMs(everConnected: bool): int =
-  ## Returns the allowed connection window for the current run state.
-  if everConnected:
-    ReconnectWindowMs
-  else:
-    InitialConnectWindowMs
 
 proc gameDir(): string =
   ## Returns the Crewrift game directory.
@@ -1295,6 +1290,14 @@ proc votingEvidenceText(bot: Bot): string
 
 proc votingLlmSnapshotKey(bot: Bot): string
 
+proc drawControllerRandom(bot: var Bot, maximum: int): int =
+  ## Retain the original RNG operation and its actual draw for controller replay.
+  result = bot.rng.rand(maximum)
+  if bot.evidenceMode == cemNative:
+    nativeAi.privateRecord(%*{"kind": "controller_rng_draw", "maximum": maximum,
+      "value": result, "frame_tick": bot.frameTick,
+      "engine_tick": (if nativeAi.seat.observed: %bot.serverTick else: newJNull())})
+
 proc randomVoteDelay(bot: var Bot): int
 
 proc passable(bot: Bot, x, y: int): bool
@@ -1305,8 +1308,11 @@ proc isGameOverText(text: string): bool =
   ## Returns true when interstitial text means the round has ended.
   text == "CREW WINS" or text == "IMPS WIN" or text == "DRAW"
 
-proc clearVotingState(bot: var Bot) =
-  ## Clears the parsed voting screen state.
+proc clearVotingState(bot: var Bot, preserveRequest: bool) =
+  ## Clears phase state only after its owned request joins.
+  if not preserveRequest and bot.voteLlmRequestActive:
+    doAssert nativeAi.cancelTalkToAI(getMonoTime() + initDuration(seconds = 2)),
+      "Superseded native request missed its original cleanup budget"
   bot.voting = false
   bot.votePlayerCount = 0
   bot.voteCursor = VoteUnknown
@@ -2029,7 +2035,7 @@ proc resetRoundState(bot: var Bot) =
   bot.runawayBackoffUntilTick = -1
   bot.escapeLoopIndex = -1
   bot.escapeLoopPointIndex = -1
-  bot.clearVotingState()
+  bot.clearVotingState(false)
   for i in 0 ..< bot.lastSeenTicks.len:
     bot.lastSeenTicks[i] = 0
     bot.playerSeenX[i] = 0
@@ -2329,19 +2335,19 @@ proc updateLocation(bot: var Bot) {.measure.} =
       discard
     elif protocolTextReady:
       if bot.voting:
-        bot.clearVotingState()
+        bot.clearVotingState(false)
       if bot.interstitialText == "CREWMATE" and bot.role == RoleUnknown:
         bot.role = RoleCrewmate
       elif bot.interstitialText == "IMPS":
         bot.role = RoleImposter
     elif bot.spriteDetectionsReady:
       if bot.voting:
-        bot.clearVotingState()
+        bot.clearVotingState(false)
     return
   bot.interstitialText = ""
   bot.lastGameOverText = ""
   if bot.voting:
-    bot.clearVotingState()
+    bot.clearVotingState(false)
     bot.lastBodyReportX = low(int)
     bot.lastBodyReportY = low(int)
     bot.bodySusColor = VoteUnknown
@@ -2693,7 +2699,7 @@ proc applyProtocolVotingState(
     previousVoteCredits[i] = VoteUnknown
   if hadVoting:
     previousVoteCredits = bot.voteCreditedTargets
-  bot.clearVotingState()
+  bot.clearVotingState(previousLlmRequestActive)
   bot.voting = true
   bot.votePlayerCount = playerCount
   bot.voteStartTick = startTick
@@ -3450,9 +3456,9 @@ proc selfVotingDead(bot: Bot): bool =
 proc randomVoteDelay(bot: var Bot): int =
   ## Returns this meeting's randomized vote delay in ticks.
   if bot.role != RoleImposter:
-    return bot.rng.rand(VoteCrewmateMaxDelayTicks)
+    return bot.drawControllerRandom(VoteCrewmateMaxDelayTicks)
   VoteListenBaseTicks - VoteListenJitterTicks +
-    bot.rng.rand(VoteListenJitterTicks * 2)
+    bot.drawControllerRandom(VoteListenJitterTicks * 2)
 
 proc addBodyMatch(
   matches: var seq[BodyMatch],
@@ -4578,8 +4584,8 @@ proc chooseGhostWanderGoal(bot: var Bot) =
   ## Chooses a random ghost wander point near the emergency button.
   let center = bot.buttonCenter()
   var
-    dx = bot.rng.rand(GhostWanderRadius * 2) - GhostWanderRadius
-    dy = bot.rng.rand(GhostWanderRadius * 2) - GhostWanderRadius
+    dx = bot.drawControllerRandom(GhostWanderRadius * 2) - GhostWanderRadius
+    dy = bot.drawControllerRandom(GhostWanderRadius * 2) - GhostWanderRadius
   if abs(dx) + abs(dy) <= GhostWanderArrivalRadius:
     dx = GhostWanderRadius div 2
   bot.ghostWanderGoalX = clamp(center.x + dx, 0, MapWidth - CollisionW)
@@ -4603,7 +4609,7 @@ proc randomFakeTargetIndex(bot: var Bot): int =
   let count = bot.fakeTargetCount()
   if count == 0:
     return -1
-  bot.rng.rand(count - 1)
+  bot.drawControllerRandom(count - 1)
 
 proc fakeTargetCenter(
   bot: Bot,
@@ -5494,50 +5500,20 @@ proc printVotingEvidence(bot: var Bot) =
     return
   bot.voteEvidenceLogged = true
   let evidence = bot.votingEvidenceText()
-  if evidence.len > 0:
-    bot.logBlock("notsus voting evidence", evidence)
+  when not defined(italkalotLibrary):
+    if evidence.len > 0:
+      nativeAi.privateRecord(%*{"kind": "private_voting_observation",
+        "observation_tick": bot.serverTick, "text": evidence})
 
-proc configureVotingBedrock(bot: var Bot): bool =
-  ## Copies voting Bedrock env settings into the shared adapter.
-  let
-    model = getEnv(
-      "BEDROCK_CLAUDE_MODEL_ID",
-      getEnv("BEDROCK_MODEL")
-    ).strip()
-    region = getEnv(
-      "AWS_REGION",
-      getEnv("AWS_DEFAULT_REGION")
-    ).strip()
-    credentialSource = bedrockAi.credentialSignalText()
-  if not bot.bedrockConfigLogged:
-    if credentialSource.len > 0:
-      bot.logEvent(
-        "notsus bedrock credentials enabled: source=" &
-          credentialSource
-      )
-    else:
-      bot.logEvent(
-        "notsus bedrock credentials missing: expected " &
-          "USE_BEDROCK or AWS credential env"
-      )
-    bot.logEvent(
-      "notsus bedrock config: model=" &
-        (if model.len > 0: model else: "default") &
-        " region=" & (if region.len > 0: region else: "default") &
-        " runtime=" & bedrockAi.runtimeText()
-    )
-    bot.logEvent(
-      "notsus bedrock metadata keys: " &
-        bedrockAi.requestMetadataKeys()
-    )
-    bot.bedrockConfigLogged = true
-  if not bedrockAi.hasAwsCredentialSignal():
-    return false
-  if model.len > 0:
-    bedrockAi.bedrockModel = model
-  if region.len > 0:
-    bedrockAi.bedrockRegion = region
-  true
+proc configureVotingNative(bot: var Bot) =
+  ## Native admission requires the actual engine-assigned seat first.
+  if nativeAi.policyProfile().origin == nativeAi.NativeOrigin:
+    doAssert getEnv("COWORLD_LLM_ENDPOINT").len > 0,
+      "COWORLD_LLM_ENDPOINT is required for native Notsus"
+  doAssert nativeAi.seat.observed, "Native model policy lacks engine admission"
+  if not bot.nativeConfigLogged:
+    bot.logEvent("notsus social policy configured")
+    bot.nativeConfigLogged = true
 
 proc cleanLlmChatMessage(text: string): string =
   ## Cleans one model chat message into short in-game chat.
@@ -5823,7 +5799,7 @@ proc validVotingTargetNames(bot: Bot): string =
     result = "none"
 
 proc votingPromptText(bot: Bot): string =
-  ## Builds the current voting prompt sent to Bedrock.
+  ## Builds the current voting prompt sent through the native endpoint.
   "Current voting observation JSON:\n" &
     $bot.votingObservationJson() &
     "\n\nLegal vote target color names for discussion only: " &
@@ -5850,20 +5826,6 @@ proc votingLlmSnapshotKey(bot: Bot): string =
     bot.externalVoteChatText() & "|" &
     bot.votingEvidenceText()
 
-proc logVotingLlmPrompt(bot: Bot) =
-  ## Logs the current and previous private voting evidence.
-  let currentSus = bot.votingEvidenceText()
-  bot.logBlock(
-    "notsus voting sus current",
-    if currentSus.len > 0: currentSus else: "none"
-  )
-  bot.logBlock(
-    "notsus voting sus previous",
-    if bot.voteLlmPreviousSusText.len > 0:
-      bot.voteLlmPreviousSusText
-    else:
-      "none"
-  )
 
 proc updateVotingLlmSnapshots(
   bot: var Bot,
@@ -5891,6 +5853,9 @@ proc updateVotingLlmSnapshots(
     bot.voteLlmPromptKey = ""
     return
   if bot.selfVotingDead():
+    if bot.voteLlmRequestActive:
+      doAssert nativeAi.cancelTalkToAI(getMonoTime() + initDuration(seconds = 2)),
+        "Dead-seat request missed cleanup budget"
     bot.voteLlmNeedsDecision = false
     bot.pendingChat = ""
     bot.voteLlmAction = VoteLlmAction(
@@ -5907,20 +5872,15 @@ proc updateVotingLlmSnapshots(
   if bot.votingLlmSnapshotKey() != bot.voteLlmPromptKey:
     bot.voteLlmNeedsDecision = true
 
-proc logSendingToLlm(
-  bot: Bot,
-  messages: openArray[bedrockAi.ConversationMessage]
-) =
-  ## Logs the full prompt sent to the voting LLM.
-  bot.logEvent("notsus llm prompt message count: " & $messages.len)
-  for message in messages:
-    bot.logBlock("notsus llm prompt " & message.role, message.content)
 
 proc clearVotingLlmDecision(
   bot: var Bot,
   needsDecision: bool
 ) =
-  ## Clears the pending voting LLM decision state.
+  ## Clears the pending voting LLM decision only after owned cancellation.
+  if bot.voteLlmRequestActive:
+    doAssert nativeAi.cancelTalkToAI(getMonoTime() + initDuration(seconds = 2)),
+      "Cancelled social decision missed cleanup budget"
   bot.voteLlmAction = VoteLlmAction(
     kind: VoteLlmNone,
     targetColor: VoteUnknown
@@ -5984,31 +5944,22 @@ proc votingLlmRequestTag(bot: Bot): string =
   "vote-" & $bot.frameTick & "-" & $bot.voteLlmSayCount
 
 proc startVotingLlm(bot: var Bot): bool =
-  ## Starts a nonblocking Bedrock social chat update.
+  ## Starts one owned native social-controller update.
   if bot.skipDeadVotingLlm():
     return false
   let snapshotKey = bot.votingLlmSnapshotKey()
-  bot.logVotingLlmPrompt()
-  if not bot.configureVotingBedrock():
-    bot.logEvent("notsus voting llm skipped: Bedrock is not enabled")
-    bot.logEvent(
-      "upload with --use-bedrock or run locally with AWS credentials"
-    )
-    return false
+  bot.configureVotingNative()
   bot.voteLlmLastCallTick = bot.frameTick
   var messages = @[
-    bedrockAi.ConversationMessage(role: "system", content: VotingPrompt),
-    bedrockAi.ConversationMessage(
+    nativeAi.ConversationMessage(role: "system", content: VotingPrompt),
+    nativeAi.ConversationMessage(
       role: "user",
       content: bot.votingPromptText()
     )
   ]
-  bot.logSendingToLlm(messages)
   let tag = bot.votingLlmRequestTag()
-  bedrockAi.startTalkToAI(messages, tag)
-  if bedrockAi.lastErrorText().len > 0:
-    bot.logEvent("notsus bedrock error: " & bedrockAi.lastErrorText())
-    return false
+  nativeAi.startTalkToAI(messages, tag, bot.serverTick,
+    getMonoTime() + initDuration(seconds = 5), nativeAi.policyProfile())
   bot.voteLlmRequestActive = true
   bot.voteLlmRequestTag = tag
   bot.voteLlmRequestSnapshotKey = snapshotKey
@@ -6021,11 +5972,25 @@ proc startVotingLlm(bot: var Bot): bool =
   bot.logEvent("notsus voting llm started: tag=" & tag)
   true
 
+proc recordVotingInstallation(
+  bot: Bot,
+  response: nativeAi.NativeAsyncResult,
+  parsed: SocialLlmResult,
+  installed: JsonNode
+) =
+  ## Records controller state after claims and the actual chat decision are applied.
+  nativeAi.privateRecord(%*{"kind": "social_controller_installation",
+    "tag": response.tag, "generation_id": response.generationId,
+    "observation_tick": response.observationTick, "installation_tick": bot.serverTick,
+    "parsed_social": parsed, "installed_claims": installed,
+    "pending_chat": bot.pendingChat, "chat_action": bot.voteLlmAction.kind,
+    "chat_reason": bot.voteLlmAction.reason})
+
 proc finishVotingLlm(
   bot: var Bot,
-  response: bedrockAi.BedrockAsyncResult
+  response: nativeAi.NativeAsyncResult
 ): bool =
-  ## Applies a completed Bedrock social chat response.
+  ## Applies a completed native social-controller response.
   if not response.ready:
     return false
   if not bot.voteLlmRequestActive:
@@ -6047,13 +6012,15 @@ proc finishVotingLlm(
   bot.voteLlmWaiting = false
   let needsFreshDecision = bot.votingLlmSnapshotKey() != snapshotKey
   if response.usage.len > 0:
-    bot.logEvent("notsus bedrock usage: " & response.usage)
+    bot.logEvent("notsus native usage: " & response.usage)
   if response.error.len > 0:
-    bot.logEvent("notsus bedrock error: " & response.error)
+    bot.logEvent("notsus native error: " & response.error)
     bot.clearVotingLlmDecision(true)
     return true
   let reply = response.reply
-  bot.logBlock("notsus voting llm raw", reply)
+  nativeAi.privateRecord(%*{"kind": "social_parser_input", "tag": response.tag,
+    "generation_id": response.generationId, "observation_tick": response.observationTick,
+    "parser_tick": bot.serverTick, "response": reply})
   let parsed = parseSocialLlmResult(reply)
   if not parsed.ok:
     bot.voteLlmNeedsDecision = needsFreshDecision
@@ -6063,8 +6030,10 @@ proc finishVotingLlm(
     bot.logEvent("notsus voting llm no social output")
     return false
   var applied = 0
+  var installed = newJArray()
   for claim in parsed.social.claims:
     if bot.rememberSocialClaim(claim):
+      installed.add(%claim)
       inc applied
   bot.logEvent(
     "notsus voting llm social parsed: claims=" &
@@ -6085,8 +6054,9 @@ proc finishVotingLlm(
       bot.pendingChat = ""
       bot.voteLlmWaiting = false
       bot.logEvent(
-        "notsus voting llm duplicate chat suppressed: " & message
+        "notsus voting llm duplicate chat suppressed"
       )
+      bot.recordVotingInstallation(response, parsed.social, installed)
       return true
     bot.voteLlmAction = VoteLlmAction(
       kind: VoteLlmSay,
@@ -6095,10 +6065,7 @@ proc finishVotingLlm(
       reason: "social broadcast"
     )
     if bot.votingChatLeaksSecrets(bot.voteLlmAction.message):
-      bot.logEvent(
-        "notsus voting llm sanitized secret chat: " &
-          bot.voteLlmAction.message
-      )
+      bot.logEvent("notsus voting llm sanitized secret chat")
       bot.voteLlmAction.message = bot.safeVotingChatMessage()
       bot.voteLlmAction.reason = "secret chat sanitized"
     bot.pendingChat = bot.voteLlmAction.message
@@ -6113,16 +6080,23 @@ proc finishVotingLlm(
     bot.pendingChat = ""
     bot.voteLlmWaiting = false
     bot.logEvent("notsus voting llm social: claims only")
+  bot.recordVotingInstallation(response, parsed.social, installed)
   true
 
 proc pollVotingLlm(bot: var Bot) =
-  ## Polls Curly for one completed voting LLM request.
-  let response = bedrockAi.pollTalkToAI()
+  ## Polls one joined native request before applying its ordinary social parser.
+  let response = nativeAi.pollTalkToAI()
   if response.ready:
     discard bot.finishVotingLlm(response)
 
 proc refreshVotingLlmDecision(bot: var Bot, listenedTicks: int) =
   ## Refreshes social chat when the current snapshot needs one.
+  when defined(italkalotLibrary):
+    # Numeric controller admission has no native slot/artifact contract.
+    doAssert nativeAi.policyProfile().origin == nativeAi.NativeOrigin and
+      getEnv("COWORLD_LLM_ENDPOINT").len == 0,
+      "native_social_unsupported_numeric_abi: no native/teacher assigned seat/artifact context"
+    return
   bot.pollVotingLlm()
   if bot.voteLlmRequestActive:
     return
@@ -7390,7 +7364,7 @@ proc botGameDir(): string =
       return candidate
   gameDir()
 
-proc initBot(mapPath = ""): Bot {.measure.} =
+proc initBot(evidenceMode: ControllerEvidenceMode, mapPath = ""): Bot {.measure.} =
   ## Builds a bot and loads the runtime data required by its build mode.
   setCurrentDir(botGameDir())
   result = Bot()
@@ -7406,7 +7380,12 @@ proc initBot(mapPath = ""): Bot {.measure.} =
     result.taskSprite = sheet.sheetSprite(4, 0)
     result.ghostSprite = sheet.sheetSprite(6, 0)
     result.ghostIconSprite = sheet.sheetSprite(7, 0)
-  result.rng = initRand(getTime().toUnix() xor int64(getCurrentProcessId()))
+  let seed = getTime().toUnix() xor int64(getCurrentProcessId())
+  result.rng = initRand(seed)
+  result.evidenceMode = evidenceMode
+  if evidenceMode == cemNative:
+    nativeAi.privateRecord(%*{"kind": "controller_rng_seed", "seed": seed,
+      "algorithm": "nim.std.random.Rand", "compiler": NimVersion})
   result.packed = newSeq[uint8](ProtocolBytes)
   result.unpacked = newSeq[uint8](ScreenWidth * ScreenHeight)
   result.mapTiles = newSeq[TileKnowledge](MapWidth * MapHeight)
@@ -7467,7 +7446,7 @@ proc initBot(mapPath = ""): Bot {.measure.} =
     result.vanishedVentIndex[i] = -1
     result.vanishedVentTick[i] = -1
   result.clearMeetingCallState()
-  result.clearVotingState()
+  result.clearVotingState(false)
   result.intent = "waiting for first frame"
 
 when defined(italkalotLibrary):
@@ -7539,7 +7518,7 @@ when defined(italkalotLibrary):
     let count = max(1, int(numAgents))
     var policy = ITalkALotPolicy(bots: newSeq[Bot](count))
     for i in 0 ..< count:
-      policy.bots[i] = initBot()
+      policy.bots[i] = initBot(cemNumeric)
     ITalkALotPolicies.add(policy)
     cint(ITalkALotPolicies.len - 1)
 
@@ -7574,7 +7553,7 @@ when defined(italkalotLibrary):
       let oldLen = policy.bots.len
       policy.bots.setLen(int(numAgents))
       for i in oldLen ..< policy.bots.len:
-        policy.bots[i] = initBot()
+        policy.bots[i] = initBot(cemNumeric)
 
     for row in 0 ..< int(numAgentIds):
       let agentId = int(agentIds[row])
@@ -8136,33 +8115,18 @@ when not defined(italkalotLibrary):
     ## Returns true when a websocket player token is configured.
     token.strip().len > 0 or url.urlHasQueryParam("token")
 
-  proc printBedrockStartupStatus() =
-    ## Prints a redacted Bedrock startup diagnostic.
-    echo "notsus bedrock runtime: ", bedrockAi.runtimeText()
-    let signal = bedrockAi.credentialSignalText()
-    if signal.len == 0:
-      echo "NOTSUS BEDROCK CREDENTIALS MISSING: no AWS credential signal; ",
-        "voting LLM chat will not connect."
-      flushFile(stdout)
-      return
-    echo "notsus bedrock credential signal: source=", signal
-    if bedrockAi.sidecarConfigured():
-      try:
-        echo "notsus bedrock sidecar health: ",
-          bedrockAi.sidecarHealthText()
-      except CatchableError as e:
-        echo "notsus bedrock sidecar health pending: ", e.msg
-    try:
-      echo "notsus bedrock credentials resolved: ",
-        bedrockAi.resolvedCredentialText()
-    except CatchableError as e:
-      echo "NOTSUS BEDROCK CREDENTIAL ERROR: ", e.msg
-    try:
-      echo "notsus bedrock metadata keys: ",
-        bedrockAi.requestMetadataKeys()
-    except CatchableError as e:
-      echo "NOTSUS BEDROCK METADATA ERROR: ", e.msg
-    flushFile(stdout)
+  proc printPolicyStartupStatus() =
+    ## No private prompts, bodies, credentials, or received identity headers are public.
+    let profile = nativeAi.policyProfile()
+    if profile.origin == nativeAi.NativeOrigin:
+      doAssert getEnv("COWORLD_LLM_ENDPOINT").len > 0,
+        "COWORLD_LLM_ENDPOINT is required for native Notsus"
+    doAssert getEnv("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL").len > 0,
+      "native_social_unsupported_artifact_context: private artifact destination is required"
+    if profile.origin == nativeAi.NativeOrigin:
+      echo "notsus transport: native_messages"
+    else:
+      echo "notsus policy: scripted_teacher"
 
   proc runBot(
     host = DefaultHost,
@@ -8182,18 +8146,22 @@ when not defined(italkalotLibrary):
     ## missing path is filled in with WebSocketPath.
     if not gui:
       startProfileTrace()
-    var bot = initBot(mapPath)
     let endpoint =
       if url.len > 0: ensureWsPath(url, WebSocketPath)
       else: "ws://" & host & ":" & $port & WebSocketPath
-    let connectUrl = playerConnectUrl(endpoint, name, token, slot)
+    let ordinaryUrl = playerConnectUrl(endpoint, name, token, slot)
+    let connectUrl = ordinaryUrl & (if ordinaryUrl.contains("?"): "&" else: "?") & "native_evidence=1"
+    installNativeStopHandlers()
+    nativeAi.initializeNative(getTempDir() / ("notsus-native-" & $getCurrentProcessId() & ".jsonl"))
+    var bot = initBot(cemNative, mapPath)
     let displayUrl = connectUrl.redactedTokenUrl()
     let client = initProtocolClient()
+    client.expectedSlot = slot
 
-    proc closeConnection(ws: var WebSocket) =
+    proc closeConnection(ws: var NativeWebSocket) =
       ## Closes a websocket if one is currently open.
       if not ws.isNil:
-        ws.close()
+        ws.closeNativeWebSocket()
         ws = nil
 
     proc receiveTimeout(): int =
@@ -8210,19 +8178,25 @@ when not defined(italkalotLibrary):
       connected = false
       notifiedFailure = false
       everConnected = false
-      disconnectStart = getMonoTime()
 
     while viewer.viewerOpen():
-      var ws: WebSocket
+      var ws: NativeWebSocket
       try:
         if everConnected or notifiedFailure:
           echo "trying to reconnect to ", displayUrl
-        ws = newWebSocket(connectUrl)
+        let connection = connectNativeWebSocket(connectUrl,
+          getMonoTime() + initDuration(milliseconds = InitialConnectWindowMs),
+          16 * 1024 * 1024)
+        doAssert connection.kind == wsReady, "Native engine connection failed"
+        ws = connection.socket
         echo "connected to ", displayUrl, " protocol=sprite"
         flushFile(stdout)
         notifiedFailure = false
         var
           lastMask = 0xff'u8
+        nativeAi.privateRecord(%*{"kind": "controller_connection_reset",
+          "unprocessed_sequence_start": client.consumedSequence + 1,
+          "received_sequence_end": client.receivedSequence})
         client.reset()
         bot.resetProtocolMap()
         bot.frameBufferLen = 0
@@ -8234,11 +8208,11 @@ when not defined(italkalotLibrary):
         connected = true
         everConnected = true
 
-        while viewer.viewerOpen():
+        while viewer.viewerOpen() and not interruptionRequested():
           if gui:
             viewer.pumpViewer(bot, connected, connectUrl)
             if not viewer.viewerOpen():
-              ws.close()
+              ws.closeConnection()
               break
           var receivedFrame = false
           if gui:
@@ -8258,9 +8232,17 @@ when not defined(italkalotLibrary):
                 bot.unpacked,
                 receiveTimeout()
               )
+          if client.nativeTerminal.kind != JNull:
+            nativeAi.privateRecord(%*{"kind": "controller_terminal_drain",
+              "frame_batch": (if receivedFrame: %client.frameBatch else: newJNull()),
+              "frame_processed": false})
+            break
           if not receivedFrame:
             bot.notePacketTimeout()
             continue
+          nativeAi.privateRecord(%*{"kind": "controller_frame_admitted",
+            "frame_batch": client.frameBatch, "frame_tick_before": bot.frameTick,
+            "frame_advance": client.frameAdvance})
           bot.frameTick += client.frameAdvance
           bot.frameBufferLen = client.frameBufferLen
           bot.framesDropped = client.framesDropped
@@ -8280,10 +8262,13 @@ when not defined(italkalotLibrary):
             profileBlock "update protocol detections":
               bot.updateProtocolDetections(client)
           if exitOnGameOver and bot.interstitialText.isGameOverText():
+            nativeAi.privateRecord(%*{"kind": "controller_frame_processed",
+              "frame_batch": client.frameBatch, "frame_tick": bot.frameTick,
+              "observation_tick": bot.serverTick, "decision_evaluated": false,
+              "reason": "game_over_interstitial"})
             echo "game over: ", bot.interstitialText, "; exiting"
             flushFile(stdout)
-            ws.closeConnection()
-            return
+            continue
           bot.clearPacketWait()
           var nextMask = 0'u8
           if gui:
@@ -8294,68 +8279,59 @@ when not defined(italkalotLibrary):
           if not gui and profileShouldDump(bot.frameTick):
             finishProfileTrace()
           bot.lastMask = nextMask
+          nativeAi.privateRecord(%*{"kind": "controller_frame_processed",
+            "frame_batch": client.frameBatch, "frame_tick": bot.frameTick,
+            "observation_tick": bot.serverTick, "decision_evaluated": true,
+            "selected_mask": nextMask})
           if nextMask != lastMask:
             if gui:
-              ws.send(inputBlob(nextMask), BinaryMessage)
+              doAssert ws.sendNativeBinary(inputBlob(nextMask), getMonoTime() +
+                  initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
+                  "Native engine write did not join"
             else:
               profileBlock "send input":
-                ws.send(inputBlob(nextMask), BinaryMessage)
+                doAssert ws.sendNativeBinary(inputBlob(nextMask), getMonoTime() +
+                  initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
+                  "Native engine write did not join"
+            nativeAi.privateRecord(%*{"kind": "engine_input_write_joined",
+              "frame_batch": client.frameBatch,
+              "observation_tick": bot.serverTick, "mask": nextMask})
             lastMask = nextMask
           if bot.pendingChatReady():
+            nativeAi.privateRecord(%*{"kind": "engine_chat_write_started",
+              "observation_tick": bot.serverTick, "text": bot.pendingChat})
             if gui:
-              ws.send(chatBlob(bot.pendingChat), BinaryMessage)
+              doAssert ws.sendNativeBinary(chatBlob(bot.pendingChat), getMonoTime() +
+                  initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
+                  "Native engine write did not join"
               bot.markPendingChatSent()
             else:
               profileBlock "send chat":
-                ws.send(chatBlob(bot.pendingChat), BinaryMessage)
+                doAssert ws.sendNativeBinary(chatBlob(bot.pendingChat), getMonoTime() +
+                  initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
+                  "Native engine write did not join"
                 bot.markPendingChatSent()
           if bot.readyMessageReady():
             if gui:
-              ws.send(readyBlob(), BinaryMessage)
+              doAssert ws.sendNativeBinary(readyBlob(), getMonoTime() +
+                  initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
+                  "Native engine write did not join"
             else:
               profileBlock "send ready":
-                ws.send(readyBlob(), BinaryMessage)
+                doAssert ws.sendNativeBinary(readyBlob(), getMonoTime() +
+                  initDuration(milliseconds = BotReceiveTimeoutMs)).kind == wsReady,
+                  "Native engine write did not join"
       except CatchableError as e:
+        nativeAi.privateRecord(%*{"kind": "runtime_failure", "error_kind": $e.name})
+        client.nativeTerminal = newJNull()
+        echo "Native player runtime failed: ", e.name
+        raise newException(IOError, "Native player runtime failed")
+      finally:
+        let deadline = nativeAi.beginFinalization()
         ws.closeConnection()
-        if connected:
-          echo "connection lost: ", e.msg,
-            " frameTick=", bot.frameTick,
-            " serverTick=", bot.serverTick,
-            " role=", bot.role.roleName(),
-            " voting=", bot.voting,
-            " interstitial=", bot.interstitial,
-            " text=", (
-              if bot.interstitialText.len > 0:
-                bot.interstitialText
-              elif bot.protocolInterstitialText.len > 0:
-                bot.protocolInterstitialText
-              else:
-                "none"
-            ),
-            " framesDropped=", bot.framesDropped,
-            " skipped=", bot.skippedFrames
-          flushFile(stdout)
-          if exitOnDisconnect:
-            break
-          disconnectStart = getMonoTime()
-        elif not notifiedFailure:
-          echo "connection failed: ", e.msg
-          flushFile(stdout)
-          notifiedFailure = true
-        connected = false
-        let windowMs = reconnectWindowMs(everConnected)
-        if (getMonoTime() - disconnectStart).inMilliseconds >= windowMs:
-          echo "can't connect after ", windowMs div 1000, "s; exiting"
-          break
-        if gui:
-          let reconnectStart = getMonoTime()
-          while viewer.viewerOpen() and
-              (getMonoTime() - reconnectStart).inMilliseconds <
-              ReconnectAttemptMs:
-            viewer.pumpViewer(bot, connected, connectUrl)
-            sleep(10)
-        else:
-          sleep(ReconnectAttemptMs)
+        let complete = nativeAi.finishNative(client.nativeTerminal, true, deadline)
+        doAssert complete, "Native player ended without complete joined private evidence"
+      return
 
 when isMainModule and not defined(italkalotLibrary):
   type
@@ -8522,7 +8498,7 @@ when isMainModule and not defined(italkalotLibrary):
   let target = config.connectUrl()
   echo "starting notsus -> ", target.redactedTokenUrl(), " protocol=sprite"
   config.requirePlayerToken(target)
-  printBedrockStartupStatus()
+  printPolicyStartupStatus()
   addExitProc(finishProfileTrace)
   runBot(
     config.address,

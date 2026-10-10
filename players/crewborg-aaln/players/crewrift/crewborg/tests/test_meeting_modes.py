@@ -2,27 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+from crewborg_native import (
+    NativeGeneration,
+    NativeHttpError,
+    NativeProfile,
+    NativeRequest,
+)
+
 from players.crewrift.crewborg.modes import AttendMeetingMode, FleeMode, ReportBodyMode
 from players.crewrift.crewborg.modes.attend_meeting import (
     DETERMINISTIC_TALLY_WAIT_TICKS,
     MEETING_CHAT,
 )
-from players.crewrift.crewborg.perception.entities import VoteCandidate, VoteDot, VotingState
+from players.crewrift.crewborg.perception.entities import (
+    VoteCandidate,
+    VoteDot,
+    VotingState,
+)
 from players.crewrift.crewborg.strategy.meeting import (
     MeetingDecision,
     MeetingLLMResult,
     MeetingParams,
     read_meeting_params_from_env,
 )
-from players.crewrift.crewborg.strategy.meeting.llm import (
-    DEFAULT_BEDROCK_MODEL,
-    DEFAULT_MEETING_MODEL,
-    DEFAULT_OPENROUTER_MODEL,
-    MeetingLLMConfig,
-    OpenRouterMeetingClient,
-    build_meeting_client,
+from players.crewrift.crewborg.strategy.meeting.llm import DisabledMeetingClient
+from players.crewrift.crewborg.types import (
+    Accusation,
+    ActionState,
+    Belief,
+    BodyEntry,
+    ChatEvent,
+    PlayerRecord,
 )
-from players.crewrift.crewborg.types import Accusation, ActionState, Belief, BodyEntry, ChatEvent, PlayerRecord
 from players.player_sdk import EventEmitter, ListTraceSink
 
 
@@ -30,40 +44,75 @@ class _FakeMeetingClient:
     enabled = True
     disabled_reason = None
 
-    def __init__(self, decisions: list[MeetingDecision]) -> None:
+    def __init__(
+        self, decisions: list[MeetingDecision], *, timeout_seconds: float | None = None
+    ) -> None:
         self.decisions = list(decisions)
+        self.timeout_seconds = timeout_seconds
         self.calls: list[tuple[str, dict]] = []
 
-    def decide(self, context: dict, *, trigger: str) -> MeetingLLMResult:
+    def decide(self, context: dict, *, trigger: str) -> asyncio.Task[MeetingLLMResult]:
         self.calls.append((trigger, context))
-        return MeetingLLMResult(
-            decision=self.decisions.pop(0),
-            model="fake-haiku",
-            latency_ms=1.5,
+        decision = self.decisions.pop(0)
+        request = NativeRequest(
+            model="fixture/meeting", messages=[], max_tokens=1, temperature=0
+        )
+        generation = NativeGeneration(
+            origin="native",
+            phase="meeting",
+            observation_tick=context["meeting"]["tick"],
+            player_slot=None,
+            request=request,
+            prompt=[],
+            decoder={},
+            latency_ms=1,
         )
 
+        async def finish():
+            return MeetingLLMResult(decision=decision, generation=generation)
 
-class _FailingMeetingClient:
-    """An ``enabled`` client whose every call raises, like an ungated/404 model."""
+        return asyncio.create_task(finish())
 
-    enabled = True
-    disabled_reason = None
+    def joined(self):
+        return True
 
-    def __init__(self, exc: Exception) -> None:
+    def cancel(self, deadline):
+        pass
+
+    def installed(self, result, decision, intent, tick):
+        pass
+
+
+async def _settled_decision(mode, belief, state):
+    initial = mode.decide(belief, state)
+    if mode._pending_call is None:
+        return initial
+    await asyncio.gather(mode._pending_call[1], return_exceptions=True)
+    return mode.decide(belief, state)
+
+
+class _FailingMeetingClient(_FakeMeetingClient):
+    def __init__(self, exc):
+        super().__init__([])
         self.exc = exc
         self.calls = 0
 
-    def decide(self, context: dict, *, trigger: str) -> MeetingLLMResult:
+    def decide(self, context, *, trigger):
         self.calls += 1
-        raise self.exc
 
+        async def fail():
+            raise self.exc
 
-class _NotFoundError(Exception):
-    status_code = 404
+        return asyncio.create_task(fail())
 
 
 def _meeting_belief(*, tick: int = 0, start_tick: int = 0) -> Belief:
-    belief = Belief(phase="Voting", phase_start_tick=start_tick, last_tick=tick, total_player_count=2)
+    belief = Belief(
+        phase="Voting",
+        phase_start_tick=start_tick,
+        last_tick=tick,
+        total_player_count=2,
+    )
     belief.voting = VotingState(
         timer_present=True,
         self_marker_color="blue",
@@ -73,8 +122,12 @@ def _meeting_belief(*, tick: int = 0, start_tick: int = 0) -> Belief:
         ),
         cursor_slot=0,
     )
-    belief.roster["red"] = PlayerRecord(color="red", life_status="alive", last_seen_tick=1)
-    belief.roster["blue"] = PlayerRecord(color="blue", life_status="alive", last_seen_tick=1)
+    belief.roster["red"] = PlayerRecord(
+        color="red", life_status="alive", last_seen_tick=1
+    )
+    belief.roster["blue"] = PlayerRecord(
+        color="blue", life_status="alive", last_seen_tick=1
+    )
     belief.suspicion = {"red": 0.95}
     return belief
 
@@ -83,7 +136,7 @@ def test_attend_meeting_chats_once_then_waits_then_votes_at_deadline() -> None:
     # With no read, the deterministic path chats, then *waits* for the live
     # tally (skip pile-on) instead of locking in an early skip; the deadline
     # auto-submit still guarantees the vote.
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     first = mode.decide(Belief(phase="Voting"), ActionState())
     assert first.kind == "chat" and first.text
 
@@ -92,11 +145,13 @@ def test_attend_meeting_chats_once_then_waits_then_votes_at_deadline() -> None:
 
     at_deadline = mode.decide(Belief(phase="Voting", last_tick=193), ActionState())
     assert at_deadline.kind == "vote"
-    assert mode.decide(Belief(phase="Voting", last_tick=194), ActionState()).kind == "vote"
+    assert (
+        mode.decide(Belief(phase="Voting", last_tick=194), ActionState()).kind == "vote"
+    )
 
 
 def test_attend_meeting_votes_the_top_suspect_when_confident() -> None:
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     belief = Belief(phase="Voting")
     belief.suspicion = {"red": 0.95, "blue": 0.2}  # red over the vote bar
     mode.decide(belief, ActionState())  # chat opener
@@ -105,65 +160,89 @@ def test_attend_meeting_votes_the_top_suspect_when_confident() -> None:
 
 
 def test_attend_meeting_skips_when_no_one_is_suspicious_enough() -> None:
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     belief = Belief(phase="Voting")
     belief.suspicion = {"red": 0.4, "blue": 0.2}  # nobody over the vote bar
     mode.decide(belief, ActionState())  # chat opener
-    assert mode.decide(belief, ActionState()).kind == "idle"  # wait, don't lock a skip early
+    assert (
+        mode.decide(belief, ActionState()).kind == "idle"
+    )  # wait, don't lock a skip early
     belief.last_tick = 193  # deadline auto-submit with no corroborated tally -> skip
     vote = mode.decide(belief, ActionState())
     assert vote.kind == "vote" and vote.target_color is None
 
 
-def test_attend_meeting_llm_sends_multiple_chats_after_new_chat_and_cooldown() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_llm_sends_multiple_chats_after_new_chat_and_cooldown() -> (
+    None
+):
     client = _FakeMeetingClient(
         [
-            MeetingDecision(action="send_chat", chat_text="red, where were you?", vote_target="red"),
-            MeetingDecision(action="send_chat", chat_text="that route does not clear red"),
+            MeetingDecision(
+                action="send_chat", chat_text="red, where were you?", vote_target="red"
+            ),
+            MeetingDecision(
+                action="send_chat", chat_text="that route does not clear red"
+            ),
         ]
     )
     mode = AttendMeetingMode(llm_client=client)
 
     opener_belief = _meeting_belief(tick=0)
     opener_belief.vote_timer_ticks = 1200  # a long learned timer keeps the deadline far
-    first = mode.decide(opener_belief, ActionState())
+    first = await _settled_decision(mode, opener_belief, ActionState())
     assert first.kind == "chat"
     assert first.text == "red, where were you?"
 
     belief = _meeting_belief(tick=101)
     belief.vote_timer_ticks = 1200
     belief.chat_log = [ChatEvent(tick=20, speaker_color="red", text="i was nav")]
-    second = mode.decide(belief, ActionState())
+    second = await _settled_decision(mode, belief, ActionState())
     assert second.kind == "chat"
     assert second.text == "that route does not clear red"
     assert [trigger for trigger, _ in client.calls] == ["meeting_start", "new_chat"]
 
 
-def test_attend_meeting_llm_tentative_vote_auto_submits_near_deadline() -> None:
-    client = _FakeMeetingClient([MeetingDecision(action="set_tentative_vote", vote_target="red")])
+@pytest.mark.asyncio
+async def test_attend_meeting_llm_tentative_vote_auto_submits_near_deadline() -> None:
+    client = _FakeMeetingClient(
+        [MeetingDecision(action="set_tentative_vote", vote_target="red")]
+    )
     mode = AttendMeetingMode(llm_client=client)
 
-    assert mode.decide(_meeting_belief(tick=0), ActionState()).kind == "idle"
+    assert (
+        await _settled_decision(mode, _meeting_belief(tick=0), ActionState())
+    ).kind == "idle"
 
-    vote = mode.decide(_meeting_belief(tick=193), ActionState())
+    vote = await _settled_decision(mode, _meeting_belief(tick=193), ActionState())
     assert vote.kind == "vote"
     assert vote.target_color == "red"
 
 
-def test_attend_meeting_llm_can_submit_vote_early() -> None:
-    client = _FakeMeetingClient([MeetingDecision(action="submit_vote", vote_target="red")])
+@pytest.mark.asyncio
+async def test_attend_meeting_llm_can_submit_vote_early() -> None:
+    client = _FakeMeetingClient(
+        [MeetingDecision(action="submit_vote", vote_target="red")]
+    )
     mode = AttendMeetingMode(llm_client=client)
 
-    vote = mode.decide(_meeting_belief(tick=0), ActionState())
+    vote = await _settled_decision(mode, _meeting_belief(tick=0), ActionState())
     assert vote.kind == "vote"
     assert vote.target_color == "red"
 
 
-def test_attend_meeting_invalid_llm_decision_falls_back_to_canned_chat() -> None:
-    client = _FakeMeetingClient([MeetingDecision(action="send_chat", chat_text="vote green", vote_target="green")])
+@pytest.mark.asyncio
+async def test_attend_meeting_invalid_llm_decision_falls_back_to_canned_chat() -> None:
+    client = _FakeMeetingClient(
+        [
+            MeetingDecision(
+                action="send_chat", chat_text="vote green", vote_target="green"
+            )
+        ]
+    )
     mode = AttendMeetingMode(llm_client=client)
 
-    intent = mode.decide(_meeting_belief(tick=0), ActionState())
+    intent = await _settled_decision(mode, _meeting_belief(tick=0), ActionState())
     assert intent.kind == "chat"
     # The deterministic opener announces the confirmed-witness-level read (red at
     # 0.95 ≥ ANNOUNCE_MIN_PROBABILITY) with evidence wording so credibility-gated
@@ -171,59 +250,77 @@ def test_attend_meeting_invalid_llm_decision_falls_back_to_canned_chat() -> None
     assert intent.text == "saw red, red sus, vote red"
 
 
-def test_attend_meeting_votes_when_enabled_llm_permanently_fails() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_votes_when_enabled_llm_permanently_fails() -> None:
     # A 404/ungated model that reports enabled must not cost us our vote: the
     # mode latches onto the deterministic chat->vote fallback after the first
     # permanent error rather than idling out the meeting without voting.
-    client = _FailingMeetingClient(_NotFoundError("model use case not submitted"))
+    client = _FailingMeetingClient(NativeHttpError(404))
     mode = AttendMeetingMode(llm_client=client)
 
-    first = mode.decide(_meeting_belief(tick=0), ActionState())
+    first = await _settled_decision(mode, _meeting_belief(tick=0), ActionState())
     assert first.kind == "chat"  # meeting_start failed -> deterministic opener
     assert mode._llm_disabled_for_episode is True
 
-    second = mode.decide(_meeting_belief(tick=1), ActionState())
+    second = await _settled_decision(mode, _meeting_belief(tick=1), ActionState())
     assert second.kind == "vote"
     assert second.target_color == "red"  # the top suspect
 
 
-def test_attend_meeting_keeps_voting_in_later_meetings_after_llm_failure() -> None:
-    client = _FailingMeetingClient(_NotFoundError("ungated"))
+@pytest.mark.asyncio
+async def test_attend_meeting_keeps_voting_in_later_meetings_after_llm_failure() -> (
+    None
+):
+    client = _FailingMeetingClient(NativeHttpError(404))
     mode = AttendMeetingMode(llm_client=client)
 
-    mode.decide(_meeting_belief(tick=0), ActionState())  # meeting 1 opener (+ latch)
-    mode.decide(_meeting_belief(tick=1), ActionState())  # meeting 1 vote
+    await _settled_decision(
+        mode, _meeting_belief(tick=0), ActionState()
+    )  # meeting 1 opener (+ latch)
+    await _settled_decision(
+        mode, _meeting_belief(tick=1), ActionState()
+    )  # meeting 1 vote
 
     # A new meeting (new phase_start_tick) stays on the deterministic fallback
     # without ever calling the broken client again.
     calls_after_meeting_one = client.calls
-    opener = mode.decide(_meeting_belief(tick=300, start_tick=300), ActionState())
+    opener = await _settled_decision(
+        mode, _meeting_belief(tick=300, start_tick=300), ActionState()
+    )
     assert opener.kind == "chat"
-    vote = mode.decide(_meeting_belief(tick=301, start_tick=300), ActionState())
+    vote = await _settled_decision(
+        mode, _meeting_belief(tick=301, start_tick=300), ActionState()
+    )
     assert vote.kind == "vote" and vote.target_color == "red"
     assert client.calls == calls_after_meeting_one  # no further LLM calls
 
 
-def test_attend_meeting_votes_after_repeated_transient_llm_failures() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_votes_after_repeated_transient_llm_failures() -> None:
     # A transient error (no status_code) latches only after the failure
     # threshold, but still ends in a vote rather than an unvoted meeting.
     client = _FailingMeetingClient(RuntimeError("timeout"))
     mode = AttendMeetingMode(llm_client=client)
 
-    first = mode.decide(_meeting_belief(tick=0), ActionState())  # failure #1 -> chat
+    first = await _settled_decision(
+        mode, _meeting_belief(tick=0), ActionState()
+    )  # failure #1 -> chat
     assert first.kind == "chat"
     assert mode._llm_disabled_for_episode is False
 
     belief = _meeting_belief(tick=13)
     belief.chat_log = [ChatEvent(tick=5, speaker_color="red", text="i was nav")]
-    mode.decide(belief, ActionState())  # new_chat trigger -> failure #2 -> latched
+    await _settled_decision(
+        mode, belief, ActionState()
+    )  # new_chat trigger -> failure #2 -> latched
     assert mode._llm_disabled_for_episode is True
 
-    vote = mode.decide(_meeting_belief(tick=14), ActionState())
+    vote = await _settled_decision(mode, _meeting_belief(tick=14), ActionState())
     assert vote.kind == "vote" and vote.target_color == "red"
 
 
-def test_attend_meeting_auto_submits_when_llm_always_waits() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_auto_submits_when_llm_always_waits() -> None:
     # An LLM that never commits (always "wait") must still end in a vote: the
     # deadline backstop submits regardless of what the model keeps choosing.
     client = _FakeMeetingClient([MeetingDecision(action="wait") for _ in range(32)])
@@ -234,27 +331,32 @@ def test_attend_meeting_auto_submits_when_llm_always_waits() -> None:
     # i.e. from tick 24 on.
     for tick in range(0, 24, 12):
         belief = _meeting_belief(tick=tick)
-        assert mode.decide(belief, ActionState()).kind == "idle"
+        assert (await _settled_decision(mode, belief, ActionState())).kind == "idle"
 
-    vote = mode.decide(_meeting_belief(tick=25), ActionState())  # remaining 119 <= 120
+    vote = await _settled_decision(
+        mode, _meeting_belief(tick=25), ActionState()
+    )  # remaining 119 <= 120
     assert vote.kind == "vote"
     assert vote.target_color == "red"  # the top suspect
 
 
-def test_attend_meeting_deadline_gates_a_low_posterior_vote_to_skip() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_deadline_gates_a_low_posterior_vote_to_skip() -> None:
     # The deadline auto-submit is a backstop, not a read (v8 0.1.52 eval:
     # deadline votes ran on weaker reads): a crewmate's forced vote below the
     # posterior bar becomes a skip instead of risking a wrong ejection.
-    client = _FakeMeetingClient([MeetingDecision(action="set_tentative_vote", vote_target="red")])
+    client = _FakeMeetingClient(
+        [MeetingDecision(action="set_tentative_vote", vote_target="red")]
+    )
     mode = AttendMeetingMode(llm_client=client)
 
     weak = _meeting_belief(tick=0)
     weak.suspicion = {"red": 0.3}
-    assert mode.decide(weak, ActionState()).kind == "idle"
+    assert (await _settled_decision(mode, weak, ActionState())).kind == "idle"
 
     at_deadline = _meeting_belief(tick=193)
     at_deadline.suspicion = {"red": 0.3}
-    vote = mode.decide(at_deadline, ActionState())
+    vote = await _settled_decision(mode, at_deadline, ActionState())
     assert vote.kind == "vote"
     assert vote.target_color is None  # gated to skip
 
@@ -262,7 +364,7 @@ def test_attend_meeting_deadline_gates_a_low_posterior_vote_to_skip() -> None:
 def test_attend_meeting_imposter_deadline_join_is_not_posterior_gated() -> None:
     # The imposter's deadline plurality-join (the free-parity ejection channel)
     # is deliberately posterior-free.
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     belief = _meeting_belief(tick=193)
     belief.self_role = "imposter"
     belief.suspicion = {}
@@ -281,7 +383,8 @@ def test_attend_meeting_imposter_deadline_join_is_not_posterior_gated() -> None:
     assert vote.target_color == "red"  # joins the plurality despite no read
 
 
-def test_attend_meeting_auto_submits_with_chat_pending_at_deadline() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_auto_submits_with_chat_pending_at_deadline() -> None:
     # A chat stuck behind the cooldown must not delay the vote past the deadline.
     client = _FakeMeetingClient(
         [
@@ -291,26 +394,33 @@ def test_attend_meeting_auto_submits_with_chat_pending_at_deadline() -> None:
     )
     mode = AttendMeetingMode(llm_client=client)
 
-    assert mode.decide(_meeting_belief(tick=0), ActionState()).kind == "chat"
+    assert (
+        await _settled_decision(mode, _meeting_belief(tick=0), ActionState())
+    ).kind == "chat"
 
     belief = _meeting_belief(tick=20)
     belief.chat_log = [ChatEvent(tick=10, speaker_color="red", text="hello")]
-    pending = mode.decide(belief, ActionState())  # cooldown not ready: chat parks
+    pending = await _settled_decision(
+        mode, belief, ActionState()
+    )  # cooldown not ready: chat parks
     assert pending.kind == "idle"
     assert mode._pending_chat_text == "second message too soon"
 
-    vote = mode.decide(_meeting_belief(tick=170), ActionState())  # past the deadline
+    vote = await _settled_decision(
+        mode, _meeting_belief(tick=170), ActionState()
+    )  # past the deadline
     assert vote.kind == "vote"
     assert vote.target_color == "red"
 
 
-def test_attend_meeting_auto_submits_on_failing_llm_at_deadline() -> None:
+@pytest.mark.asyncio
+async def test_attend_meeting_auto_submits_on_failing_llm_at_deadline() -> None:
     # Even before the failure latch trips, the deadline backstop runs ahead of any
     # LLM call, so a raising client cannot cost us the vote.
     client = _FailingMeetingClient(RuntimeError("timeout"))
     mode = AttendMeetingMode(llm_client=client)
 
-    vote = mode.decide(_meeting_belief(tick=170), ActionState())
+    vote = await _settled_decision(mode, _meeting_belief(tick=170), ActionState())
     assert vote.kind == "vote"
     assert vote.target_color == "red"
     assert client.calls == 0  # the backstop never reached the LLM
@@ -319,7 +429,9 @@ def test_attend_meeting_auto_submits_on_failing_llm_at_deadline() -> None:
 def test_attend_meeting_deterministic_path_auto_submits_at_deadline() -> None:
     # The deterministic (LLM-disabled) path also gets the backstop: joining a
     # meeting late skips the canned opener and votes immediately.
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     vote = mode.decide(_meeting_belief(tick=170), ActionState())
     assert vote.kind == "vote"
     assert vote.target_color == "red"
@@ -328,7 +440,9 @@ def test_attend_meeting_deterministic_path_auto_submits_at_deadline() -> None:
 def test_attend_meeting_votes_with_empty_candidate_grid() -> None:
     # An undecoded candidate grid must still produce a vote intent (the action
     # resolver falls back to skip / last-resort confirm from there).
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = Belief(phase="Voting", last_tick=170, phase_start_tick=0)
     vote = mode.decide(belief, ActionState())
     assert vote.kind == "vote"
@@ -339,7 +453,9 @@ def test_attend_meeting_deadline_accounts_for_the_meeting_call_head_start() -> N
     # before Voting): with the learned 1200-tick timer the auto-submit must fire
     # by 1200 - 96 (head start) - 120 (walk margin) = 984 ticks into Voting —
     # NOT at 1128, which left ~12 ticks and timed the vote out.
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = _meeting_belief(tick=0)
     belief.vote_timer_ticks = 1200
     belief.suspicion = {}  # no read: the deterministic path waits
@@ -353,10 +469,14 @@ def test_attend_meeting_deadline_accounts_for_the_meeting_call_head_start() -> N
     assert mode.decide(belief, ActionState()).kind == "vote"
 
 
-def test_attend_meeting_no_read_submits_after_the_tally_wait_not_the_full_timer() -> None:
+def test_attend_meeting_no_read_submits_after_the_tally_wait_not_the_full_timer() -> (
+    None
+):
     # Long learned timer: an uninformed crewmate must not drag the meeting out
     # to the deadline — it submits once the tally window has passed.
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = _meeting_belief(tick=0)
     belief.vote_timer_ticks = 1200
     belief.suspicion = {}
@@ -366,14 +486,18 @@ def test_attend_meeting_no_read_submits_after_the_tally_wait_not_the_full_timer(
     assert mode.decide(belief, ActionState()).kind == "idle"
     belief.last_tick = 301
     vote = mode.decide(belief, ActionState())
-    assert vote.kind == "vote" and vote.target_color is None  # skip: no corroborated tally
+    assert (
+        vote.kind == "vote" and vote.target_color is None
+    )  # skip: no corroborated tally
 
 
 def test_attend_meeting_emits_meeting_vote_selected_once_per_meeting() -> None:
     # The vote intent must persist across the multi-tick cursor walk, but the
     # trace event fires exactly once (it used to re-emit every Voting tick).
     sink = ListTraceSink()
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     mode.emit = EventEmitter(trace_sink=sink)
     belief = _meeting_belief(tick=0)
 
@@ -395,7 +519,9 @@ def test_attend_meeting_emits_meeting_vote_selected_once_per_meeting() -> None:
 def test_attend_meeting_keeps_the_submitted_vote_stable_until_confirmed() -> None:
     # Once submitted, the same vote intent (same target, same reason) returns
     # every tick — an intent change would reset the action layer's cursor walk.
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = _meeting_belief(tick=0)
     mode.decide(belief, ActionState())  # opener chat
     first = mode.decide(belief, ActionState())
@@ -409,16 +535,22 @@ def test_attend_meeting_keeps_the_submitted_vote_stable_until_confirmed() -> Non
     assert mode.decide(belief, confirmed) == first
 
 
-def test_attend_meeting_votes_a_sub_announce_read_silently_after_the_tally_wait() -> None:
+def test_attend_meeting_votes_a_sub_announce_read_silently_after_the_tally_wait() -> (
+    None
+):
     # Over the vote bar but under the announce bar: neutral opener (no
     # accusation chat — announce-then-die is real), wait the tally window, then
     # vote the read silently.
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = _meeting_belief(tick=0)
     belief.total_player_count = 8
     belief.imposter_count = 2
     for color in ("green", "yellow", "pink", "lime", "orange", "white"):
-        belief.roster[color] = PlayerRecord(color=color, life_status="alive", last_seen_tick=1)
+        belief.roster[color] = PlayerRecord(
+            color=color, life_status="alive", last_seen_tick=1
+        )
     belief.vote_timer_ticks = 1200  # keep the deadline auto-submit far away
     belief.suspicion = {"red": 0.8}  # ≥ comfortable vote bar (0.75), < announce (0.9)
 
@@ -439,7 +571,9 @@ def test_attend_meeting_skip_piles_onto_a_corroborated_accusation_at_deadline() 
     # We (blue) have no read; red (slot 0) was voted AND chat-accused by green
     # (slot 2) this meeting. The deadline auto-submit joins the conviction
     # instead of skipping.
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = _meeting_belief(tick=0)
     belief.voting = belief.voting.model_copy(
         update={
@@ -451,7 +585,9 @@ def test_attend_meeting_skip_piles_onto_a_corroborated_accusation_at_deadline() 
             "dots": (VoteDot(voter=2, target=0),),
         }
     )
-    belief.roster["green"] = PlayerRecord(color="green", life_status="alive", last_seen_tick=1)
+    belief.roster["green"] = PlayerRecord(
+        color="green", life_status="alive", last_seen_tick=1
+    )
     belief.suspicion = {"red": 0.28, "green": 0.28}  # nobody over the vote bar
     belief.accusations.append(
         Accusation(
@@ -476,7 +612,9 @@ def test_attend_meeting_skip_piles_onto_a_corroborated_accusation_at_deadline() 
 def test_attend_meeting_imposter_waits_then_joins_the_crew_plurality() -> None:
     # The imposter's blend-in vote: neutral opener, wait, then join the crew
     # plurality on a non-teammate at the deadline (never its own early accusation).
-    mode = AttendMeetingMode(MeetingParams(use_llm=False))
+    mode = AttendMeetingMode(
+        MeetingParams(use_llm=False), llm_client=DisabledMeetingClient()
+    )
     belief = _meeting_belief(tick=0)
     belief.self_role = "imposter"
     belief.voting = belief.voting.model_copy(
@@ -488,7 +626,9 @@ def test_attend_meeting_imposter_waits_then_joins_the_crew_plurality() -> None:
             ),
         }
     )
-    belief.roster["green"] = PlayerRecord(color="green", life_status="alive", last_seen_tick=1)
+    belief.roster["green"] = PlayerRecord(
+        color="green", life_status="alive", last_seen_tick=1
+    )
 
     belief.vote_timer_ticks = 1200  # a learned long timer keeps the deadline far
 
@@ -511,185 +651,38 @@ def test_attend_meeting_imposter_waits_then_joins_the_crew_plurality() -> None:
     assert vote.kind == "vote" and vote.target_color == "red"
 
 
-def test_read_meeting_params_from_env_enables_llm_only_with_key() -> None:
-    enabled = read_meeting_params_from_env({"CREWBORG_LLM_MEETINGS": "1", "ANTHROPIC_API_KEY": "secret"})
-    assert enabled.use_llm is True
-
-    missing_key = read_meeting_params_from_env({"CREWBORG_LLM_MEETINGS": "1"})
-    assert missing_key.use_llm is False
-
-
-def test_read_meeting_params_from_env_parses_tuning_and_trace() -> None:
+def test_native_meeting_parameters_require_endpoint_and_preserve_platform_model_decoder():
     params = read_meeting_params_from_env(
         {
-            "CREWBORG_LLM_MEETINGS": "yes",
-            "ANTHROPIC_API_KEY": "secret",
-            "CREWBORG_LLM_MODEL": "claude-test",
-            "CREWBORG_LLM_MAX_TOKENS": "123",
-            "CREWBORG_LLM_TEMPERATURE": "0.7",
-            "CREWBORG_LLM_TIMEOUT_SECONDS": "9.5",
-            "CREWBORG_TRACE": "debug",
-        }
+            "COWORLD_LLM_ENDPOINT": "http://fixture",
+            "COWORLD_LLM_MODEL": "checkpoint/exact",
+            "COWORLD_LLM_TEMPERATURE": "0",
+        },
+        policy_profile=NativeProfile(origin="native"),
     )
-
-    assert params == MeetingParams(
-        use_llm=True,
-        model="claude-test",
-        max_tokens=123,
-        temperature=0.7,
-        timeout_seconds=9.5,
-        trace_raw=True,
-        api_key="secret",
+    assert (
+        params.use_llm
+        and params.model == "checkpoint/exact"
+        and params.temperature == 0
     )
-
-
-def test_attend_meeting_builds_client_from_params() -> None:
-    disabled = AttendMeetingMode(MeetingParams(use_llm=False))
-    assert disabled._llm_client.enabled is False
-
-    enabled = AttendMeetingMode(MeetingParams(use_llm=True, model="claude-test"))
-    assert enabled._llm_client.enabled is True
-    assert enabled._llm_client.config.model == "claude-test"
-
-
-def test_bedrock_flag_enables_llm_without_anthropic_key() -> None:
-    # Bedrock authenticates through AWS, so no ANTHROPIC_API_KEY is required, and
-    # the flag implies meetings are on without a separate CREWBORG_LLM_MEETINGS.
-    params = read_meeting_params_from_env({"USE_BEDROCK": "1"})
-    assert params.use_llm is True
-    assert params.use_bedrock is True
-    assert params.model == DEFAULT_BEDROCK_MODEL
-
-
-def test_bedrock_flag_aliases_are_accepted() -> None:
-    for flag in (
-        "USE_BEDROCK",
-        "CREWBORG_USE_BEDROCK",
-        "CLAUDE_CODE_USE_BEDROCK",
-    ):
-        params = read_meeting_params_from_env({flag: "true"})
-        assert params.use_bedrock is True, flag
-
-
-def test_bedrock_sidecar_endpoint_is_propagated_to_client(monkeypatch) -> None:
-    import anthropic
-
-    captured: dict = {}
-
-    class FakeBedrock:
-        def __init__(self, **kwargs) -> None:
-            captured.update(kwargs)
-
-    monkeypatch.setattr(anthropic, "Anthropic", FakeBedrock)
-    endpoint = "http://localhost:4000"
-    params = read_meeting_params_from_env({"COWORLD_LLM_ENDPOINT": endpoint})
-    client = build_meeting_client(params)
-
-    assert params.base_url == endpoint
-    assert client.config.base_url == endpoint
-    assert client._anthropic_client().__class__ is FakeBedrock
-    assert captured["base_url"] == endpoint
-
-
-def test_explicit_model_overrides_bedrock_default() -> None:
-    params = read_meeting_params_from_env({"USE_BEDROCK": "1", "CREWBORG_LLM_MODEL": "custom-profile"})
-    assert params.model == "custom-profile"
-
-
-def test_direct_path_keeps_anthropic_key_requirement() -> None:
-    # Without Bedrock, the direct Anthropic backend still needs a key, and the
-    # direct model default is used.
-    params = read_meeting_params_from_env({"CREWBORG_LLM_MEETINGS": "1", "ANTHROPIC_API_KEY": "secret"})
-    assert params.use_bedrock is False
-    assert params.model == DEFAULT_MEETING_MODEL
-
-
-def test_build_meeting_client_propagates_bedrock_flag() -> None:
-    client = build_meeting_client(MeetingParams(use_llm=True, provider="bedrock", model="profile"))
-    assert client.enabled is True
-    assert client.config.use_bedrock is True
-    assert client.config.model == "profile"
-
-
-def test_openrouter_provider_enables_llm_with_key() -> None:
-    # A present OPENROUTER_API_KEY selects the OpenRouter backend and implies
-    # meetings are on (no separate CREWBORG_LLM_MEETINGS flag needed).
-    params = read_meeting_params_from_env({"OPENROUTER_API_KEY": "sk-or-secret"})
-    assert params.use_llm is True
-    assert params.provider == "openrouter"
-    assert params.model == DEFAULT_OPENROUTER_MODEL
-    assert params.api_key == "sk-or-secret"
-
-
-def test_openrouter_requires_api_key() -> None:
-    # The provider flag alone, without a key, has no viable backend.
-    params = read_meeting_params_from_env({"CREWBORG_LLM_PROVIDER": "openrouter"})
-    assert params.provider == "openrouter"
-    assert params.use_llm is False
-
-
-def test_explicit_provider_overrides_implicit_signals() -> None:
-    # An explicit provider wins even when a Bedrock flag is also set.
-    params = read_meeting_params_from_env(
-        {"CREWBORG_LLM_PROVIDER": "openrouter", "OPENROUTER_API_KEY": "k", "USE_BEDROCK": "1"}
-    )
-    assert params.provider == "openrouter"
-
-
-def test_build_meeting_client_selects_openrouter() -> None:
-    client = build_meeting_client(
-        MeetingParams(use_llm=True, provider="openrouter", model="anthropic/claude-haiku-4.5", api_key="k")
-    )
-    assert isinstance(client, OpenRouterMeetingClient)
-    assert client.config.api_key == "k"
-    assert client.config.model == "anthropic/claude-haiku-4.5"
-
-
-def test_openrouter_client_decides_via_openai_compatible_api() -> None:
-    # A stubbed OpenAI-compatible client: the OpenRouter adapter must build a
-    # chat.completions request and parse the JSON decision out of the message.
-    captured: dict = {}
-
-    class _FakeChoiceMessage:
-        content = '{"schema_version": 1, "action": "submit_vote", "vote_target": "red", "reason": "sus"}'
-
-    class _FakeChoice:
-        message = _FakeChoiceMessage()
-
-    class _FakeUsage:
-        def model_dump(self, mode: str = "json") -> dict:
-            return {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
-
-    class _FakeResponse:
-        choices = [_FakeChoice()]
-        usage = _FakeUsage()
-
-    class _FakeCompletions:
-        def create(self, **kwargs):
-            captured.update(kwargs)
-            return _FakeResponse()
-
-    class _FakeChat:
-        completions = _FakeCompletions()
-
-    class _FakeOpenAIClient:
-        chat = _FakeChat()
-
-    config = MeetingLLMConfig(provider="openrouter", model="anthropic/claude-haiku-4.5", api_key="k")
-    client = OpenRouterMeetingClient(config, client=_FakeOpenAIClient())
-    result = client.decide({"self": {"role": "crewmate"}}, trigger="meeting_start")
-
-    assert result.decision.action == "submit_vote"
-    assert result.decision.vote_target == "red"
-    assert captured["model"] == "anthropic/claude-haiku-4.5"
-    # System + user messages are sent (OpenAI chat format).
-    assert [m["role"] for m in captured["messages"]] == ["system", "user"]
+    with pytest.raises(KeyError):
+        read_meeting_params_from_env(
+            {"CREWBORG_LLM_MEETINGS": "1", "ANTHROPIC_API_KEY": "unused"},
+            policy_profile=NativeProfile(origin="native"),
+        )
+    assert not read_meeting_params_from_env(
+        {"ANTHROPIC_API_KEY": "unused"}, policy_profile=NativeProfile(origin="native")
+    ).use_llm
 
 
 def test_report_body_targets_nearest_visible_body() -> None:
     belief = Belief(self_world_x=100, self_world_y=100, visible_body_ids={2001, 2005})
-    belief.bodies[2001] = BodyEntry(object_id=2001, color="red", world_x=400, world_y=400, first_seen_tick=1)
-    belief.bodies[2005] = BodyEntry(object_id=2005, color="blue", world_x=110, world_y=100, first_seen_tick=1)
+    belief.bodies[2001] = BodyEntry(
+        object_id=2001, color="red", world_x=400, world_y=400, first_seen_tick=1
+    )
+    belief.bodies[2005] = BodyEntry(
+        object_id=2005, color="blue", world_x=110, world_y=100, first_seen_tick=1
+    )
     intent = ReportBodyMode().decide(belief, ActionState())
     assert intent.kind == "report" and intent.target_id == 2005  # the nearer body
 
@@ -701,7 +694,12 @@ def test_report_body_idles_with_no_body_in_view() -> None:
 def test_flee_targets_believed_imposter_and_is_dormant_when_empty() -> None:
     belief = Belief(self_world_x=100, self_world_y=100)
     belief.roster["red"] = PlayerRecord(
-        object_id=1004, color="red", facing="left", world_x=120, world_y=100, last_seen_tick=1,
+        object_id=1004,
+        color="red",
+        facing="left",
+        world_x=120,
+        world_y=100,
+        last_seen_tick=1,
         life_status="alive",
     )
     # Empty evidence stub ⇒ dormant.
