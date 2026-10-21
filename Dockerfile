@@ -34,6 +34,7 @@ ARG NimFlags="-d:release -d:useMalloc --opt:speed --stackTrace:on"
 ARG NimCommand="c"
 ARG NimMain="src/crewrift.nim"
 RUN nim $NimCommand \
+  --parallelBuild:1 \
   $NimFlags \
   --nimcache:/tmp/crewrift-nimcache \
   --out:crewrift \

@@ -5,14 +5,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      network: host
   player:
     image: coworld-crewrift-notsus:latest
     platform: linux/amd64
     build:
       context: .
       dockerfile: players/notsus/Dockerfile
-      network: host
   commissioner:
     image: coworld-crewrift-commissioner:latest
     platform: linux/amd64
