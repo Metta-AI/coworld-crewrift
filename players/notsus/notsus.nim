@@ -8158,10 +8158,11 @@ when not defined(italkalotLibrary):
     let client = initProtocolClient()
     client.expectedSlot = slot
 
-    proc closeConnection(ws: var NativeWebSocket) =
-      ## Closes a websocket if one is currently open.
+    proc closeConnection(ws: var NativeWebSocket, deadline: MonoTime): bool =
       if not ws.isNil:
-        ws.closeNativeWebSocket()
+        let closed = ws.finishNativeWebSocket(deadline)
+        nativeAi.privateRecord(%*{"kind": "engine_socket_closed", "status": $closed.kind})
+        result = closed.kind == wsReady
         ws = nil
 
     proc receiveTimeout(): int =
@@ -8186,7 +8187,7 @@ when not defined(italkalotLibrary):
           echo "trying to reconnect to ", displayUrl
         let connection = connectNativeWebSocket(connectUrl,
           getMonoTime() + initDuration(milliseconds = InitialConnectWindowMs),
-          16 * 1024 * 1024)
+          16 * 1024 * 1024, some(ReceiveObserver(nativeAi.recordReceivedWire)))
         doAssert connection.kind == wsReady, "Native engine connection failed"
         ws = connection.socket
         echo "connected to ", displayUrl, " protocol=sprite"
@@ -8212,7 +8213,6 @@ when not defined(italkalotLibrary):
           if gui:
             viewer.pumpViewer(bot, connected, connectUrl)
             if not viewer.viewerOpen():
-              ws.closeConnection()
               break
           var receivedFrame = false
           if gui:
@@ -8328,8 +8328,9 @@ when not defined(italkalotLibrary):
         raise newException(IOError, "Native player runtime failed")
       finally:
         let deadline = nativeAi.beginFinalization()
-        ws.closeConnection()
-        let complete = nativeAi.finishNative(client.nativeTerminal, true, deadline)
+        discard nativeAi.cancelTalkToAI(deadline)
+        let socketJoined = ws.closeConnection(deadline)
+        let complete = nativeAi.finishNative(client.nativeTerminal, socketJoined, deadline)
         doAssert complete, "Native player ended without complete joined private evidence"
       return
 

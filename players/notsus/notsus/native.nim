@@ -40,6 +40,7 @@ var
   generation: JsonNode
   journal: File
   journalPath: string
+  receivedWireBytes: int64
   outcome: JsonNode
   finalDeadline: Option[MonoTime]
   teacherPending: Option[NativeAsyncResult]
@@ -55,6 +56,12 @@ proc privateRecord*(event: JsonNode) =
   doAssert not sealed, "Private native records are sealed"
   journal.writeLine($event)
   journal.flushFile()
+
+proc recordReceivedWire*(data: string) =
+  ## Record received chunks before frame parsing, including partial STOP data.
+  privateRecord(%*{"kind": "engine_received_wire", "offset": receivedWireBytes,
+    "bytes_b64": encode(data)})
+  receivedWireBytes += data.len.int64
 
 proc initializeNative*(path: string) =
   doAssert not active and not sealed

@@ -16,9 +16,11 @@ accepts the hosted private ZIP upload destination or a local `file://` path.
 Direct provider credentials and the former Bedrock transport are removed.
 
 The authenticated welcome determines the actual slot and engine index.
-A terminal acknowledgement, joined model work, and private ZIP delivery share
+A terminal acknowledgement, joined model work, WebSocket close handshake, and private ZIP delivery share
 one two-second cleanup deadline. Runtime failures record a truncated outcome.
-Artifact timeout or delivery failure prevents qualification.
+Artifact timeout or delivery failure prevents qualification. Raw received chunks,
+including incomplete frames at STOP, are recorded before parsing in the private journal.
+The server joins acknowledged native sockets before stopping its transport.
 
 The numeric `italkalotLibrary` ABI remains a pixel-to-action controller.
 It rejects requested native social inference without an assigned-seat and

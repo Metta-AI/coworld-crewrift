@@ -1,6 +1,7 @@
 import
   std/[json, locks, os, strutils],
   bitworld/runtime,
+  crewrift/inputs,
   mummy,
   protocol,
   report
@@ -73,7 +74,7 @@ proc handleReportRequest(websocket: WebSocket, request: ReportRequest) =
           return
 
         let
-          bytes = readCogameUri(uri, source)
+          bytes = readCogameUri(uri, source, readGameInput)
           payload = replayBytesToPayload(bytes)
         websocket.sendJson(
           buildReportOutput(request.requestId, request.target, payload)

@@ -1,6 +1,7 @@
 import
   std/os,
   bitworld/runtime,
+  crewrift/inputs,
   crewrift/sim,
   crewrift/server
 
@@ -28,7 +29,7 @@ proc echoStartupConfig(
 
 when isMainModule:
   let
-    runtimeConfig = readRuntimeConfig()
+    runtimeConfig = readRuntimeConfig(readGameInput)
     localReplayPath =
       if runtimeConfig.replayUri.len > 0:
         getTempDir() / ("crewrift-replay-" & $getCurrentProcessId() &

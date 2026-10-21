@@ -3,7 +3,7 @@ import
   bitworld/client as bitworldClient, bitworld/profile, bitworld/spriteprotocol,
   bitworld/runtime,
   curly, mummy,
-  sim, global, replays, replay_runtime
+  sim, global, replays, replay_runtime, inputs
 
 when defined(posix):
   from std/posix import SHUT_RDWR, shutdown
@@ -105,7 +105,7 @@ let replayDownloadPool = newCurlPool(1)
 
 proc loadReplayUri(uri: string): ReplayData =
   ## Loads a replay from a local file URI or HTTP(S) URL.
-  parseReplayBytes(readCogameUri(uri, CogameLoadReplayUriEnv))
+  parseReplayBytes(readCogameUri(uri, CogameLoadReplayUriEnv, readGameInput))
 
 proc readableReplayUri(uri: string): bool =
   ## Returns true when a replay URI can be opened by this server.
@@ -1545,9 +1545,11 @@ proc runServerLoop*(
         "results": parseJson(sim.playerResultsJson()), "source_revision": getEnv("COWORLD_SOURCE_REVISION"),
         "image_digest": getEnv("COWORLD_GAME_IMAGE_DIGEST"), "episode_id": getEnv("COWORLD_EPISODE_ID")}
       let terminalDeadline = getMonoTime() + initDuration(seconds = 2)
+      var terminalSockets: seq[WebSocket]
       for websocket in sockets:
         let packet = sim.nativeTerminal(websocket)
         if packet.len > 0:
+          terminalSockets.add(websocket)
           {.gcsafe.}:
             withLock appState.lock:
               appState.terminalAcknowledgements[websocket] =
@@ -1558,6 +1560,9 @@ proc runServerLoop*(
         {.gcsafe.}:
           withLock appState.lock:
             terminalDeliveryJoined = appState.terminalAcknowledgements.len == 0
+            for websocket in terminalSockets:
+              if websocket notin appState.closedSockets:
+                terminalDeliveryJoined = false
         if terminalDeliveryJoined:
           break
         sleep(1)
