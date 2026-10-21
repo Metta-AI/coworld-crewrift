@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from time import monotonic
+
+import httpx
+from crewborg_native import NativeHttpError
 
 from players.crewrift.crewborg.strategy.meeting import (
     CHAT_MAX_CHARS,
@@ -10,8 +14,8 @@ from players.crewrift.crewborg.strategy.meeting import (
     MeetingDecision,
     MeetingDecisionValidationError,
     MeetingLLMClient,
+    MeetingLLMResult,
     MeetingParams,
-    build_meeting_client,
     serialize_meeting_context,
     valid_vote_targets,
     validate_meeting_decision,
@@ -28,7 +32,7 @@ from players.crewrift.crewborg.strategy.meeting.vote_policy import (
     skip_pileon_swap,
 )
 from players.crewrift.crewborg.types import ActionState, Belief, ChatEvent, Intent
-from players.player_sdk import Mode
+from players.player_sdk import Mode, ModeDirective
 
 # Deterministic fallback: preserve the pre-LLM behavior unless explicitly enabled.
 MEETING_CHAT = "no read, skipping"
@@ -65,9 +69,12 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
     name = "attend_meeting"
     params_type = MeetingParams
 
-    def __init__(self, params: MeetingParams | None = None, *, llm_client: MeetingLLMClient | None = None) -> None:
+    def __init__(
+        self, params: MeetingParams | None = None, *, llm_client: MeetingLLMClient
+    ) -> None:
         super().__init__(params or MeetingParams())
-        self._llm_client = llm_client if llm_client is not None else build_meeting_client(self.params)
+        self._llm_client = llm_client
+        self._pending_call: tuple[str, asyncio.Future[MeetingLLMResult]] | None = None
         self._meeting_id: int | None = None
         self._deterministic_chatted = False
         self._disabled_traced = False
@@ -108,8 +115,12 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         # failing-but-enabled client — so a pending chat or an exception can never
         # delay the vote past the timer (the no-vote penalty is -10).
         if self._should_auto_submit(belief):
+            self._llm_client.cancel(monotonic() + 2)
+            self._pending_call = None
             return self._submit_vote_intent(
-                belief, reason="meeting deadline: auto-submit tentative vote", deadline=True
+                belief,
+                reason="meeting deadline: auto-submit tentative vote",
+                deadline=True,
             )
 
         if not self._llm_client.enabled:
@@ -121,12 +132,30 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             return self._decide_deterministic(belief, trace_disabled=False)
 
         if self._pending_chat_text is not None and self._chat_cooldown_ready(belief):
-            return self._send_chat_intent(belief, self._pending_chat_text, reason="sending pending LLM chat")
+            return self._send_chat_intent(
+                belief, self._pending_chat_text, reason="sending pending LLM chat"
+            )
 
+        if self._pending_call is not None:
+            trigger, pending = self._pending_call
+            if not pending.done():
+                return Intent(kind="idle", reason="meeting inference pending")
+            self._pending_call = None
+            result = self._call_llm(pending, trigger=trigger)
+            if result is None:
+                return self._decide_after_llm_failure(belief, trigger)
+            decision = self._validate_decision(belief, result.decision)
+            if decision is None:
+                return self._decide_after_llm_failure(belief, trigger)
+            self._trace_decision(trigger, decision, result)
+            intent = self._apply_decision(belief, decision)
+            self._llm_client.installed(result, decision, intent, belief.last_tick)
+            return intent
+        if not self._llm_client.joined():
+            return Intent(kind="idle", reason="prior meeting request cleanup pending")
         trigger = self._next_llm_trigger(belief)
         if trigger is None:
             return Intent(kind="idle", reason="waiting during meeting")
-
         context = serialize_meeting_context(
             belief,
             trigger=trigger,
@@ -134,15 +163,30 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             sent_chat_texts=self._sent_chat_texts,
             last_chat_tick=self._last_chat_tick,
         )
-        self.emit.event("meeting_context_serialized", {"trigger": trigger, "context": context})
-        result = self._call_llm(context, trigger=trigger)
-        if result is None:
-            return self._decide_after_llm_failure(belief, trigger)
-        decision = self._validate_decision(belief, result.decision)
-        if decision is None:
-            return self._decide_after_llm_failure(belief, trigger)
-        self._trace_decision(trigger, decision, result)
-        return self._apply_decision(belief, decision)
+        self._last_llm_call_tick = int(context["meeting"]["tick"])
+        self._last_external_chat_signature = tuple(
+            (event["tick"], event["speaker_color"], event["text"])
+            for event in context["chat"]["messages"]
+            if not event["self"]
+        )
+        if trigger == "deadline":
+            self._deadline_prompted = True
+        if trigger == "chat_cooldown_ready":
+            self._last_cooldown_prompt_chat_tick = self._last_chat_tick
+        self._pending_call = (
+            trigger,
+            self._llm_client.decide(context, trigger=trigger),
+        )
+        self.emit.event(
+            "meeting_llm_started", {"trigger": trigger, "tick": belief.last_tick}
+        )
+        return Intent(kind="idle", reason="meeting inference pending")
+
+    def on_exit(
+        self, belief: Belief, action_state: ActionState, next_directive: ModeDirective
+    ) -> None:
+        self._llm_client.cancel(monotonic() + 2)
+        self._pending_call = None
 
     # --- deterministic fallback ------------------------------------------
 
@@ -152,7 +196,7 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             self.emit.event(
                 "meeting_llm_fallback",
                 {"reason": "llm_disabled", "detail": self._llm_client.disabled_reason},
-        )
+            )
         vote = fallback_vote(belief)
         announce = should_announce(belief, vote)
         if not self._deterministic_chatted:
@@ -180,14 +224,22 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         # same join converted 5× in 22 v3 imposter episodes. The deadline
         # submit resolves against the meeting's final tally.
         if belief.self_role == "imposter":
-            return Intent(kind="idle", reason="imposter: holding vote for the final tally")
+            return Intent(
+                kind="idle", reason="imposter: holding vote for the final tally"
+            )
         if self._tally_wait_elapsed(belief):
             if vote != VOTE_SKIP:
-                return self._submit_vote_intent(belief, reason="silent vote after tally wait")
-            return self._submit_vote_intent(belief, reason="deterministic vote after tally wait")
+                return self._submit_vote_intent(
+                    belief, reason="silent vote after tally wait"
+                )
+            return self._submit_vote_intent(
+                belief, reason="deterministic vote after tally wait"
+            )
         return Intent(kind="idle", reason="waiting for the tally before voting")
 
-    def _deterministic_chat_text(self, belief: Belief, vote: str, *, announce: bool) -> str:
+    def _deterministic_chat_text(
+        self, belief: Belief, vote: str, *, announce: bool
+    ) -> str:
         """The opener: announce only a confirmed-witness-level read.
 
         The accusation text is parsed by every crewborg's social layer
@@ -207,7 +259,10 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
 
     def _next_llm_trigger(self, belief: Belief) -> str | None:
         tick = belief.last_tick
-        if self._last_llm_call_tick is not None and tick - self._last_llm_call_tick < LLM_MIN_CALL_INTERVAL_TICKS:
+        if (
+            self._last_llm_call_tick is not None
+            and tick - self._last_llm_call_tick < LLM_MIN_CALL_INTERVAL_TICKS
+        ):
             return None
         if self._last_llm_call_tick is None:
             return "meeting_start"
@@ -223,31 +278,38 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         ):
             return "chat_cooldown_ready"
 
-        if self._remaining_ticks(belief) <= DEADLINE_LLM_REMAINING_TICKS and not self._deadline_prompted:
+        if (
+            self._remaining_ticks(belief) <= DEADLINE_LLM_REMAINING_TICKS
+            and not self._deadline_prompted
+        ):
             return "deadline"
         return None
 
-    def _call_llm(self, context: dict[str, Any], *, trigger: str) -> Any | None:
-        self._last_llm_call_tick = int(context["meeting"]["tick"])
-        self._last_external_chat_signature = tuple(
-            (event["tick"], event["speaker_color"], event["text"])
-            for event in context["chat"]["messages"]
-            if not event["self"]
-        )
-        if trigger == "deadline":
-            self._deadline_prompted = True
-        if trigger == "chat_cooldown_ready":
-            self._last_cooldown_prompt_chat_tick = self._last_chat_tick
+    def _call_llm(
+        self, pending: asyncio.Future[MeetingLLMResult], *, trigger: str
+    ) -> MeetingLLMResult | None:
         try:
-            result = self._llm_client.decide(context, trigger=trigger)
-        except Exception as exc:
+            result = pending.result()
+        except (httpx.HTTPError, ValueError, RuntimeError, TimeoutError) as exc:
             self._note_llm_failure(exc, trigger=trigger)
             self.emit.event(
                 "meeting_llm_fallback",
-                {"reason": "llm_call_failed", "trigger": trigger, "error": repr(exc)},
+                {
+                    "reason": "llm_call_failed",
+                    "trigger": trigger,
+                    "error_kind": type(exc).__name__,
+                },
             )
             return None
-        self.emit.histogram("meeting_llm.latency_ms", result.latency_ms, tags={"model": result.model, "trigger": trigger})
+        self.emit.histogram(
+            "meeting_llm.latency_ms",
+            result.latency_ms,
+            tags={
+                "policy_identity": result.policy_identity,
+                "origin": result.generation.origin,
+                "trigger": trigger,
+            },
+        )
         return result
 
     def _note_llm_failure(self, exc: Exception, *, trigger: str) -> None:
@@ -263,7 +325,7 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         if self._llm_disabled_for_episode:
             return
         self._llm_failure_count += 1
-        status = getattr(exc, "status_code", None)
+        status = exc.status_code if isinstance(exc, NativeHttpError) else None
         permanent = status in PERMANENT_LLM_STATUS_CODES
         if permanent or self._llm_failure_count >= LLM_FAILURE_DISABLE_THRESHOLD:
             self._llm_disabled_for_episode = True
@@ -277,7 +339,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
                 },
             )
 
-    def _validate_decision(self, belief: Belief, decision: MeetingDecision) -> MeetingDecision | None:
+    def _validate_decision(
+        self, belief: Belief, decision: MeetingDecision
+    ) -> MeetingDecision | None:
         try:
             return validate_meeting_decision(
                 decision,
@@ -288,26 +352,28 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         except MeetingDecisionValidationError as exc:
             self.emit.event(
                 "meeting_llm_fallback",
-                {"reason": "invalid_meeting_decision", "error": str(exc), "decision": decision.model_dump(mode="json")},
+                {
+                    "reason": "invalid_meeting_decision",
+                    "error": str(exc),
+                    "decision": decision.model_dump(mode="json"),
+                },
             )
             return None
 
-    def _trace_decision(self, trigger: str, decision: MeetingDecision, result: Any) -> None:
+    def _trace_decision(
+        self, trigger: str, decision: MeetingDecision, result: MeetingLLMResult
+    ) -> None:
         self.emit.event(
             "meeting_llm_decision",
             {
                 "trigger": trigger,
-                "model": result.model,
-                "latency_ms": round(result.latency_ms, 2),
-                "usage": result.usage,
+                "generation_id": str(result.generation.generation_id),
+                "policy_identity": result.policy_identity,
+                "origin": result.generation.origin,
+                "latency_ms": result.latency_ms,
                 "decision": decision.model_dump(mode="json"),
             },
         )
-        if result.raw_request is not None or result.raw_response is not None:
-            self.emit.event(
-                "meeting_llm_debug",
-                {"request": result.raw_request, "response": result.raw_response},
-            )
 
     # --- decision application --------------------------------------------
 
@@ -316,16 +382,27 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             self._tentative_vote = decision.vote_target
             self.emit.event(
                 "meeting_tentative_vote",
-                {"target": self._tentative_vote, "reason": decision.reason, "confidence": decision.confidence},
+                {
+                    "target": self._tentative_vote,
+                    "reason": decision.reason,
+                    "confidence": decision.confidence,
+                },
             )
 
         if decision.action == "send_chat":
             assert decision.chat_text is not None
             if decision.chat_text in self._sent_chat_texts:
-                self.emit.event("meeting_llm_fallback", {"reason": "duplicate_chat_suppressed", "text": decision.chat_text})
+                self.emit.event(
+                    "meeting_llm_fallback",
+                    {"reason": "duplicate_chat_suppressed", "text": decision.chat_text},
+                )
                 return Intent(kind="idle", reason="duplicate LLM chat suppressed")
             if self._chat_cooldown_ready(belief):
-                return self._send_chat_intent(belief, decision.chat_text, reason=decision.reason or "LLM meeting chat")
+                return self._send_chat_intent(
+                    belief,
+                    decision.chat_text,
+                    reason=decision.reason or "LLM meeting chat",
+                )
             self._pending_chat_text = decision.chat_text[:CHAT_MAX_CHARS]
             self.emit.event(
                 "meeting_llm_fallback",
@@ -334,10 +411,14 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             return Intent(kind="idle", reason="waiting for chat cooldown")
 
         if decision.action == "submit_vote":
-            return self._submit_vote_intent(belief, reason=decision.reason or "LLM submitted vote")
+            return self._submit_vote_intent(
+                belief, reason=decision.reason or "LLM submitted vote"
+            )
 
         if decision.action == "set_tentative_vote":
-            return Intent(kind="idle", reason=decision.reason or "LLM set tentative vote")
+            return Intent(
+                kind="idle", reason=decision.reason or "LLM set tentative vote"
+            )
 
         return Intent(kind="idle", reason=decision.reason or "LLM waits")
 
@@ -348,15 +429,22 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         self.emit.event("meeting_chat_selected", {"text": text, "reason": reason})
         return Intent(kind="chat", text=text, reason=reason)
 
-    def _submit_vote_intent(self, belief: Belief, *, reason: str, deadline: bool = False) -> Intent:
+    def _submit_vote_intent(
+        self, belief: Belief, *, reason: str, deadline: bool = False
+    ) -> Intent:
         # Resolve and latch once per meeting: the same vote intent (same target,
         # same reason) must be returned every tick of the cursor walk (an intent
         # change resets the walk), and ``meeting_vote_selected`` fires exactly
         # once — the same latch pattern as the ``vote_cast`` fix in events.py.
         if self._submitted_vote_target is None:
-            self._submitted_vote_target = self._resolved_vote_target(belief, deadline=deadline)
+            self._submitted_vote_target = self._resolved_vote_target(
+                belief, deadline=deadline
+            )
             self._submitted_vote_reason = reason
-            self.emit.event("meeting_vote_selected", {"target": self._submitted_vote_target, "reason": reason})
+            self.emit.event(
+                "meeting_vote_selected",
+                {"target": self._submitted_vote_target, "reason": reason},
+            )
         self._vote_submitted = True
         vote_target = self._submitted_vote_target
         vote_reason = self._submitted_vote_reason or reason
@@ -366,7 +454,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
 
     def _decide_after_llm_failure(self, belief: Belief, trigger: str) -> Intent:
         if trigger == "deadline":
-            return self._submit_vote_intent(belief, reason=f"LLM fallback after {trigger}", deadline=True)
+            return self._submit_vote_intent(
+                belief, reason=f"LLM fallback after {trigger}", deadline=True
+            )
         if trigger == "meeting_start":
             return self._decide_deterministic(belief, trace_disabled=False)
         return Intent(kind="idle", reason=f"LLM fallback after {trigger}")
@@ -377,6 +467,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         meeting_id = belief.phase_start_tick
         if meeting_id == self._meeting_id:
             return
+        if self._pending_call is not None:
+            self._llm_client.cancel(monotonic() + 2)
+            self._pending_call = None
         self._meeting_id = meeting_id
         self._deterministic_chatted = False
         self._disabled_traced = False
@@ -392,7 +485,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         self._submitted_vote_target = None
         self._submitted_vote_reason = None
 
-    def _external_chat_signature(self, belief: Belief) -> tuple[tuple[int, str | None, str], ...]:
+    def _external_chat_signature(
+        self, belief: Belief
+    ) -> tuple[tuple[int, str | None, str], ...]:
         self_color = belief.voting.self_marker_color
         return tuple(
             (event.tick, event.speaker_color, event.text)
@@ -406,7 +501,10 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return event.text not in self._sent_chat_texts
 
     def _chat_cooldown_ready(self, belief: Belief) -> bool:
-        return self._last_chat_tick is None or belief.last_tick - self._last_chat_tick >= CHAT_COOLDOWN_TICKS
+        return (
+            self._last_chat_tick is None
+            or belief.last_tick - self._last_chat_tick >= CHAT_COOLDOWN_TICKS
+        )
 
     def _remaining_ticks(self, belief: Belief) -> int:
         # The meeting length is learned from the GAME INFO interstitial when
@@ -418,14 +516,21 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         return max(0, timer - max(0, belief.last_tick - belief.phase_start_tick))
 
     def _should_auto_submit(self, belief: Belief) -> bool:
-        return not self._vote_submitted and self._remaining_ticks(belief) <= AUTO_SUBMIT_REMAINING_TICKS
+        return (
+            not self._vote_submitted
+            and self._remaining_ticks(belief) <= AUTO_SUBMIT_REMAINING_TICKS
+        )
 
     def _tally_wait_elapsed(self, belief: Belief) -> bool:
-        return belief.last_tick - belief.phase_start_tick >= DETERMINISTIC_TALLY_WAIT_TICKS
+        return (
+            belief.last_tick - belief.phase_start_tick >= DETERMINISTIC_TALLY_WAIT_TICKS
+        )
 
     def _resolved_vote_target(self, belief: Belief, *, deadline: bool = False) -> str:
         tentative = self._tentative_vote
-        if tentative is not None and (tentative == VOTE_SKIP or tentative in valid_vote_targets(belief)):
+        if tentative is not None and (
+            tentative == VOTE_SKIP or tentative in valid_vote_targets(belief)
+        ):
             target = tentative
         else:
             target = self._fallback_vote_target(belief)
@@ -433,7 +538,9 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
         # the plurality when it lands on a plausible target (design §10.2). A
         # deterministic submit after the tally wait is final — treat it as the
         # deadline so the swaps apply (the live tally is as formed as it gets).
-        remaining = 0 if self._tally_wait_elapsed(belief) else self._remaining_ticks(belief)
+        remaining = (
+            0 if self._tally_wait_elapsed(belief) else self._remaining_ticks(belief)
+        )
         swapped = anti_split_swap(belief, target, remaining)
         if swapped != target:
             self.emit.event("meeting_anti_split_swap", {"from": target, "to": swapped})
@@ -449,7 +556,11 @@ class AttendMeetingMode(Mode[Belief, ActionState, Intent]):
             if gated != swapped:
                 self.emit.event(
                     "meeting_deadline_posterior_gate",
-                    {"from": swapped, "to": gated, "posterior": belief.suspicion.get(swapped, 0.0)},
+                    {
+                        "from": swapped,
+                        "to": gated,
+                        "posterior": belief.suspicion.get(swapped, 0.0),
+                    },
                 )
             swapped = gated
         # A skip near the deadline joins a corroborated accusation (a voter who

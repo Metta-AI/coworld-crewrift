@@ -22,7 +22,7 @@ class MeetingDecisionValidationError(ValueError):
 class MeetingDecision(BaseModel):
     """One fast-path meeting decision produced by the LLM."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     schema_version: Literal[1] = SCHEMA_VERSION
     action: MeetingAction
@@ -68,7 +68,11 @@ def validate_meeting_decision(
     vote_target = normalize_vote_target(decision.vote_target)
 
     if vote_target is None and decision.action == "submit_vote":
-        vote_target = normalize_vote_target(current_tentative) or normalize_vote_target(fallback_vote) or VOTE_SKIP
+        vote_target = (
+            normalize_vote_target(current_tentative)
+            or normalize_vote_target(fallback_vote)
+            or VOTE_SKIP
+        )
 
     if vote_target is not None:
         _validate_vote_target(vote_target, alive_vote_targets)
@@ -76,14 +80,19 @@ def validate_meeting_decision(
     if decision.action == "set_tentative_vote" and vote_target is None:
         raise MeetingDecisionValidationError("set_tentative_vote requires vote_target")
     if decision.action == "send_chat" and not chat_text:
-        raise MeetingDecisionValidationError("send_chat requires non-empty printable chat_text")
+        raise MeetingDecisionValidationError(
+            "send_chat requires non-empty printable chat_text"
+        )
 
-    return decision.model_copy(update={"chat_text": chat_text or None, "vote_target": vote_target})
+    return decision.model_copy(
+        update={"chat_text": chat_text or None, "vote_target": vote_target}
+    )
 
 
 def _validate_vote_target(target: str, alive_vote_targets: set[str]) -> None:
     if target == VOTE_SKIP:
         return
     if target not in alive_vote_targets:
-        legal = ", ".join(sorted(alive_vote_targets | {VOTE_SKIP}))
-        raise MeetingDecisionValidationError(f"illegal vote_target {target!r}; legal targets: {legal}")
+        raise MeetingDecisionValidationError(
+            "Meeting vote target is outside the current legal targets"
+        )

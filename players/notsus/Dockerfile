@@ -31,6 +31,7 @@ RUN nimby --global sync nimby.lock
 
 COPY . .
 RUN nim c \
+  --parallelBuild:1 \
   -d:release \
   -d:botHeadless \
   -d:useMalloc \

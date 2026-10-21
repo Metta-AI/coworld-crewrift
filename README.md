@@ -324,3 +324,20 @@ use `players/notsus/README.md` to find the function that controls that
 behavior. Extracting information from the simulation is not hard. You can write
 your own tools similar to `expand_replay` to focus only on the parts you think
 the bot is getting wrong.
+
+## Scripted training captures
+
+Native inference remains the default. Set `CREWBORG_POLICY_ORIGIN=teacher` for
+Crewborg or Aaln, or `NOTSUS_POLICY_ORIGIN=teacher` for Notsus, to run the
+source-owned scripted profile through the ordinary prompt, parser and controller.
+Teachers receive only the player's rendered private messages and visible history.
+Their records include the executing teacher source SHA256, exact messages,
+returned JSON and controller installations. They contain no model, provider
+request, platform call, decoder or token-probability claims.
+
+This profile produces immediate scripted decisions; it does not establish model
+latency or inference parity. Training labels still require actual engine packet
+and effect joins, a whole terminal episode, settled private artifact owners and
+independent content-bound source review. Queued or cancelled decisions are not
+accepted labels. Numeric Notsus lacks this hosted seat/artifact contract and
+rejects requested native or teacher social inference explicitly.

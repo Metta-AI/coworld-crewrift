@@ -453,6 +453,10 @@
       "type": "player",
       "description": "Sprite-protocol Crewrift bot used for local smoke episodes.",
       "image": "{{PLAYER_IMAGE}}",
+      "env": {
+        "COWORLD_LLM_ENABLED": "true",
+        "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5"
+      },
       "run": [
         "/bin/notsus",
         "--exit-on-disconnect",

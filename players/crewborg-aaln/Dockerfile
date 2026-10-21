@@ -1,6 +1,7 @@
-# crewborg-rohit:v5 — Crewrift policy with hosted Bedrock meetings enabled.
+# crewborg-rohit:v5 — Crewrift policy with native sidecar meetings enabled.
 #
-# Self-contained build: vendored players/player_sdk + players/crewrift/crewborg.
+# Context: players/. Copies Aaln plus the Base-owned native module.
+# Vendored players/player_sdk and game-specific controllers remain Aaln-owned.
 # Scripted baseline with LLM meetings on and no hunter fork.
 FROM --platform=linux/amd64 python:3.12-slim
 
@@ -16,9 +17,10 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /srv/crewborg-aaln
 
-COPY requirements.txt ./
+COPY crewborg-aaln/requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-COPY players ./players
+COPY crewborg-aaln/players ./players
+COPY crewborg/crewborg_native.py ./crewborg_native.py
 
 CMD ["python", "-m", "players.crewrift.crewborg.coworld.policy_player"]

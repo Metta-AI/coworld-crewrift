@@ -6,7 +6,11 @@ from collections import Counter
 from typing import Any
 
 from players.crewrift.crewborg.perception.entities import SKIP_VOTE_TARGET
-from players.crewrift.crewborg.strategy.meeting.schema import CHAT_MAX_CHARS, SCHEMA_VERSION, VOTE_SKIP
+from players.crewrift.crewborg.strategy.meeting.schema import (
+    CHAT_MAX_CHARS,
+    SCHEMA_VERSION,
+    VOTE_SKIP,
+)
 from players.crewrift.crewborg.strategy.meeting.vote_policy import (
     alive_count,
     anti_split_swap,
@@ -18,7 +22,10 @@ from players.crewrift.crewborg.strategy.meeting.vote_policy import (
 from players.crewrift.crewborg.strategy.meeting.vote_policy import (
     fallback_vote as _policy_fallback_vote,
 )
-from players.crewrift.crewborg.strategy.suspicion import _imposter_count, _prior_imposter_p
+from players.crewrift.crewborg.strategy.suspicion import (
+    _imposter_count,
+    _prior_imposter_p,
+)
 from players.crewrift.crewborg.types import Belief, PlayerEvent, PlayerRecord
 
 # Conservative fallback meeting length. The live value is learned from the
@@ -240,18 +247,18 @@ def _event_payload(belief: Belief, event: PlayerEvent) -> dict[str, Any]:
         "min_dist": event.min_dist,
     }
     if belief.map is not None and event.region_index is not None:
-        payload["region_name"] = _region_name(belief, event)
+        payload["region_name"] = _region_name(belief, event, event.region_index)
     return payload
 
 
-def _region_name(belief: Belief, event: PlayerEvent) -> str | None:
+def _region_name(belief: Belief, event: PlayerEvent, region_index: int) -> str | None:
     assert belief.map is not None
-    if event.kind == "room" and 0 <= event.region_index < len(belief.map.rooms):
-        return belief.map.rooms[event.region_index].name
-    if event.kind == "task" and 0 <= event.region_index < len(belief.map.tasks):
-        return belief.map.tasks[event.region_index].name
-    if event.kind == "vent" and 0 <= event.region_index < len(belief.map.vents):
-        vent = belief.map.vents[event.region_index]
+    if event.kind == "room" and 0 <= region_index < len(belief.map.rooms):
+        return belief.map.rooms[region_index].name
+    if event.kind == "task" and 0 <= region_index < len(belief.map.tasks):
+        return belief.map.tasks[region_index].name
+    if event.kind == "vent" and 0 <= region_index < len(belief.map.vents):
+        vent = belief.map.vents[region_index]
         return f"vent {vent.group}:{vent.group_index}"
     return None
 
@@ -264,7 +271,7 @@ def _suspicion_payload(belief: Belief, fallback_vote: str) -> dict[str, Any]:
         "believed": sorted(belief.believed_imposters),
         "ranking": [
             {"color": color, "p": _rounded(p)}
-            for color, p in sorted(belief.suspicion.items(), key=lambda item: item[1], reverse=True)
+            for color, p in sorted(belief.suspicion.items(), key=lambda item: (-item[1], item[0]))
         ],
         "would_vote": fallback_vote,
     }

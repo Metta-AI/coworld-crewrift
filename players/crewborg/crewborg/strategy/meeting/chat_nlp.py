@@ -15,8 +15,10 @@ unset it (``=0``) and we never import spaCy or load the model, and chat parsing 
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
+from time import monotonic
 from typing import Any
 
 _ENV_FLAG = "CREWBORG_CHAT_NLP"
@@ -41,8 +43,20 @@ def ensure_loading() -> None:
     with _lock:
         if _thread is not None or _model is not None or _failed:
             return
-        _thread = threading.Thread(target=_load, name="crewborg-spacy-load", daemon=True)
+        _thread = threading.Thread(
+            target=_load, name="crewborg-spacy-load", daemon=True
+        )
         _thread.start()
+
+
+async def join_loading(deadline: float) -> bool:
+    """Wait for the owned loader within the caller's unchanged shutdown budget."""
+    while _thread is not None and _thread.is_alive():
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(0.01, remaining))
+    return True
 
 
 def get_model() -> Any | None:
@@ -71,6 +85,6 @@ def _load() -> None:
         nlp = spacy.load("en_core_web_sm", disable=["ner"])
         with _lock:
             _model = nlp
-    except Exception:  # missing model / import error — degrade to no chat signal
+    except Exception:  # noqa: BLE001 - preserve the existing offline-model loader boundary.
         with _lock:
             _failed = True

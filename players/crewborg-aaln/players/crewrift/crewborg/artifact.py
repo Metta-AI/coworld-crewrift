@@ -1,36 +1,9 @@
-"""Episode debug artifact: record traces/metrics into SQLite and surface it at episode end.
+"""Record private episode traces and metrics in an owned SQLite file.
 
-Instead of streaming every trace event to stderr, crewborg records the full
-unfiltered event/metric stream into an in-memory SQLite database and, at episode
-end, makes it retrievable two ways:
-
-1. **Binary artifact (forward path).** If a per-slot upload URL is set
-   (``COWORLD_PLAYER_ARTIFACT_UPLOAD_URL``), upload one ``.zip`` (``trace.db`` +
-   ``summary.json``) — exactly one object per slot, max 200 MB, ``PUT`` with
-   ``Content-Type: application/zip``, presigned so no auth header. Works locally
-   (``file://`` via ``coworld run-episode``) and is forward-compatible if/when the
-   platform injects a per-player upload URL.
-
-2. **Captured-log metadata (works on TODAY's hosted platform).** The deployed
-   coworld runner (verified against the installed coworld 0.1.20:
-   ``runner/kubernetes_runner.py`` injects only ``COWORLD_PLAYER_WS_URL`` +
-   ``COGAMES_ENGINE_WS_URL`` into the player pod, and there is no
-   ``COWORLD_PLAYER_ARTIFACT_UPLOAD_URL`` anywhere in the package) provides **no
-   per-player binary upload channel** — the only per-player output it collects is
-   the container's captured ``stdout``/``stderr`` (uploaded as
-   ``policy_agent_{slot}.log`` via the runner-side ``POLICY_LOG_URLS`` and embedded
-   in ``DEBUG_URI``'s debug archive; both are runner env, not player env). So we
-   ALWAYS emit the ``summary.json`` metadata as a clearly-marked block to stderr,
-   guaranteeing the artifact's *value* (row counts, tick range, top events, zip
-   size) lands in the captured policy-log even when no binary channel exists.
-
-SQLite over parquet because it is stdlib (the crewborg image installs only the
-base ``players`` deps — no ``pyarrow``/``requests``), serializes to bytes without
-touching disk (:meth:`sqlite3.Connection.serialize`), and stays queryable with
-any sqlite client. The upload uses :mod:`urllib` for the same no-new-deps reason.
-
-A missing env var or failed upload is never fatal: the artifact is best-effort
-debug data and a missing artifact never fails an otherwise successful episode.
+The ordinary Coworld bridge closes the writer before querying the report and
+streaming the sealed database into the private player ZIP. SQLite's stored schema
+and ZIP member names remain unchanged. Offline byte export is separate from the
+bounded hosted finalization path.
 """
 
 from __future__ import annotations
@@ -46,10 +19,13 @@ import urllib.request
 import zipfile
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from players.player_sdk.trace import MetricSample, TraceEvent
+
+from .compression_cache import ImmutableCompressionCache
 
 ARTIFACT_URL_ENV = "COWORLD_PLAYER_ARTIFACT_UPLOAD_URL"
 
@@ -317,8 +293,7 @@ def _report_heatmap(conn: sqlite3.Connection) -> dict[str, Any]:
         row = min(REPORT_HEATMAP_ROWS - 1, max(0, int(self_y * REPORT_HEATMAP_ROWS / REPORT_MAP_HEIGHT)))
         grid[row][col] += 1
         total += 1
-        if grid[row][col] > peak:
-            peak = grid[row][col]
+        peak = max(peak, grid[row][col])
     return {
         "cols": REPORT_HEATMAP_COLS,
         "rows": REPORT_HEATMAP_ROWS,
@@ -786,18 +761,22 @@ def _downsample(rows: list[Any], limit: int) -> list[Any]:
 
 
 class SqliteEpisodeRecorder:
-    """Trace *and* metrics sink that accumulates the episode into in-memory SQLite.
+    """Trace and metrics sink backed by an owned SQLite file.
 
     Satisfies both SDK sink protocols (``record`` / ``counter`` / ``histogram`` /
     ``gauge``). Writes are lock-guarded so the sink stays safe if a strategy
     runner ever records off the inner-loop thread.
     """
 
-    def __init__(self) -> None:
-        self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+    def __init__(self, database_path: Path) -> None:
+        self.database_path = database_path
+        descriptor = os.open(database_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(descriptor)
+        self._conn = sqlite3.connect(database_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._lock = threading.Lock()
         self._closed = False
+        self.compression_cache = ImmutableCompressionCache(database_path, self._lock)
         self._trace_rows = 0
         self._metric_rows = 0
         self._position_rows = 0
@@ -945,41 +924,40 @@ class SqliteEpisodeRecorder:
         """
 
         summary = self.summary()
+        deadline = time.monotonic() + 2
+        if not self.close(deadline):
+            raise RuntimeError("Stored artifact compression owner did not join")
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            database_bytes = self.database_bytes()
-            archive.writestr("trace.db", database_bytes)
+            compressor = self.compression_cache.write_zip(archive, "trace.db", deadline)
+            if not compressor.source_complete:
+                raise TimeoutError("Stored artifact assembly exceeded its cleanup deadline")
             archive.writestr("summary.json", json.dumps(summary, indent=2))
             archive.writestr("README.md", ARTIFACT_README)
             try:
-                report = self._report_html(summary, database_bytes)
+                report = self._report_html(summary)
             except Exception as error:  # noqa: BLE001 — report must never fail the artifact.
                 _log(f"failed to build report.html (zip still produced without it): {error!r}")
             else:
                 archive.writestr("report.html", report)
         return buffer.getvalue()
 
-    def _report_html(self, summary: dict[str, Any], database_bytes: bytes) -> str:
-        """Render report.html from a throwaway read-only copy of the serialized DB.
+    def _report_html(self, summary: dict[str, Any]) -> str:
+        """Query the closed episode file without copying it into memory."""
 
-        Reads from a fresh in-memory connection deserialized from ``database_bytes``
-        rather than ``self._conn`` so the report's queries never contend with the
-        live recorder lock or its writes.
-        """
-
-        conn = sqlite3.connect(":memory:")
+        conn = sqlite3.connect(f"{self.database_path.as_uri()}?mode=ro", uri=True)
         try:
-            conn.deserialize(database_bytes)
             return build_report_html(summary, conn)
         finally:
             conn.close()
 
-    def close(self) -> None:
+    def close(self, deadline: float) -> bool:
         with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._conn.close()
+            if not self._closed:
+                self._conn.commit()
+                self._closed = True
+                self._conn.close()
+        return self.compression_cache.stop(deadline)
 
 
 def upload_episode_artifact(recorder: SqliteEpisodeRecorder) -> bool:
@@ -1029,6 +1007,7 @@ def upload_episode_artifact(recorder: SqliteEpisodeRecorder) -> bool:
     if payload is None:
         return False  # Zip assembly already failed and was logged above.
 
+    zip_size = len(payload)
     display = _display_url(url)
     is_file = urlparse(url).scheme == "file"
     if zip_size > MAX_ARTIFACT_BYTES:

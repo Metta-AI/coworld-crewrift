@@ -1,223 +1,205 @@
-"""LLM client seam for gameplay commander priority decisions."""
+"""Native commander requests are owned by the player's asynchronous session."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, NamedTuple, Protocol
+from time import monotonic
+from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict
+from crewborg_native import (
+    NativeModel,
+    NativeRequest,
+    NativeSession,
+    PolicyGeneration,
+    PolicyProfile,
+    ScriptedProfile,
+    decision_json,
+)
+from pydantic import Field, JsonValue
 
+from crewborg.scripted import scripted_generation
 from crewborg.strategy.commander.prompts import PROMPT_DIR_ENV, system_prompt_for_role
 
-DEFAULT_COMMANDER_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_COMMANDER_MODEL = "anthropic/claude-haiku-4.5"
 
 
-@dataclass(frozen=True)
-class CommanderLLMConfig:
+class CommanderLLMConfig(NativeModel):
     model: str = DEFAULT_COMMANDER_MODEL
-    use_bedrock: bool = False
-    max_tokens: int = 512
-    temperature: float = 0.2
-    timeout_seconds: float = 3.0
-    trace_raw: bool = False
+    max_tokens: int = Field(default=512, gt=0)
+    temperature: float = Field(default=0.2, ge=0, le=2)
+    timeout_seconds: float = Field(default=3, gt=0)
     prompt_dir: str | None = None
 
 
-class CommanderLLMResult(BaseModel):
-    """Raw commander priorities plus call metadata for tracing."""
+class CommanderLLMResult(NativeModel):
+    priorities: dict[str, JsonValue]
+    generation: PolicyGeneration
 
-    model_config = ConfigDict(extra="forbid")
+    @property
+    def policy_identity(self) -> str:
+        if self.generation.origin == "teacher":
+            return "scripted/" + self.generation.teacher_authority_sha256
+        return self.generation.request.model
 
-    priorities: dict[str, Any]
-    model: str
-    latency_ms: float
-    usage: dict[str, Any] | None = None
-    raw_request: dict[str, Any] | None = None
-    raw_response: str | None = None
+    @property
+    def latency_ms(self) -> int:
+        if self.generation.origin == "teacher":
+            return self.generation.duration_ms
+        assert self.generation.latency_ms is not None
+        return self.generation.latency_ms
 
 
 class CommanderLLMClient(Protocol):
-    enabled: bool
-    disabled_reason: str | None
+    @property
+    def enabled(self) -> bool: ...
 
-    def decide(self, context: dict[str, Any]) -> CommanderLLMResult: ...
+    @property
+    def disabled_reason(self) -> str | None: ...
+
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]: ...
 
 
 @dataclass(frozen=True)
 class DisabledCommanderClient:
-    disabled_reason: str = "disabled"
+    disabled_reason: str | None = "disabled"
     enabled: bool = False
 
-    def decide(self, context: dict[str, Any]) -> CommanderLLMResult:
-        del context
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]:
         raise RuntimeError(self.disabled_reason)
 
 
-class AnthropicCommanderClient:
-    """Anthropic Messages API adapter, kept behind the commander-client protocol."""
+def render_commander_messages(
+    context: dict, *, prompt_dir: str | None
+) -> list[dict[str, str]]:
+    prompt = {
+        "context": context,
+        "response_schema": {
+            "schema_version": 1,
+            "target_room": "legal room name or null",
+            "target_task": "integer task index or null",
+            "posture": "stick | isolate | neutral",
+            "hunt_room": "legal room name or null",
+            "target_player": "legal player color or null",
+            "avoid_room": "legal room name or null",
+            "allow_witnessed_kill": "boolean, DANGER",
+            "skip_evade": "boolean, DANGER",
+            "danger_reason": "required string when any DANGER field is true; otherwise null",
+            "reason": "short rationale",
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": system_prompt_for_role(
+                context["self"]["role"], prompt_dir=prompt_dir
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(prompt, sort_keys=True, separators=(",", ":")),
+        },
+    ]
 
+
+class NativeCommanderClient:
     enabled = True
     disabled_reason = None
 
-    def __init__(
-        self,
-        config: CommanderLLMConfig,
-        *,
-        client: Any,
-        call_json: Callable[..., Any],
-        extract_json_object: Callable[[str], str],
-    ) -> None:
+    def __init__(self, config: CommanderLLMConfig, session: NativeSession):
         self.config = config
-        self._client = client
-        self._call_json = call_json
-        self._extract_json_object = extract_json_object
+        self.session = session
 
-    @property
-    def timeout_seconds(self) -> float:
-        return self.config.timeout_seconds
-
-    def decide(self, context: dict[str, Any]) -> CommanderLLMResult:
-        request = {
-            "context": context,
-            "response_schema": {
-                "schema_version": 1,
-                "target_room": "legal room name or null",
-                "target_task": "integer task index or null",
-                "posture": "stick | isolate | neutral",
-                "hunt_room": "legal room name or null",
-                "target_player": "legal player color or null",
-                "avoid_room": "legal room name or null",
-                "allow_witnessed_kill": "boolean, DANGER",
-                "skip_evade": "boolean, DANGER",
-                "danger_reason": "required string when any DANGER field is true; otherwise null",
-                "reason": "short rationale",
-            },
-        }
-        user_content = json.dumps(request, sort_keys=True, separators=(",", ":"))
-        call = self._call_json(
-            self._client,
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]:
+        request = NativeRequest(
             model=self.config.model,
-            system=system_prompt_for_role(context.get("self", {}).get("role"), prompt_dir=self.config.prompt_dir),
-            user=user_content,
+            messages=render_commander_messages(
+                context, prompt_dir=self.config.prompt_dir
+            ),
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
-        priorities = json.loads(self._extract_json_object(call.text))
-        return CommanderLLMResult(
-            priorities=priorities,
-            model=call.model,
-            latency_ms=call.latency_ms,
-            usage=call.usage,
-            raw_request=request if self.config.trace_raw else None,
-            raw_response=call.text if self.config.trace_raw else None,
+        prepared = self.session.prepare(
+            request,
+            phase="commander",
+            observation_tick=context["observation_tick"],
+            deadline=monotonic() + self.config.timeout_seconds,
         )
 
+        async def finish() -> CommanderLLMResult:
+            generation = await self.session.complete(prepared)
+            assert generation.completion_text is not None
+            priorities = json.loads(decision_json(generation.completion_text))
+            generation.parsed_action = priorities
+            self.session.record(generation)
+            return CommanderLLMResult(priorities=priorities, generation=generation)
 
-def build_commander_client_from_env(env: dict[str, str] | None = None) -> CommanderLLMClient:
-    env = os.environ if env is None else env
-    if not _truthy(env.get("CREWBORG_LLM_COMMANDER", "")):
-        return DisabledCommanderClient("CREWBORG_LLM_COMMANDER is not enabled")
-    try:
-        helpers = _load_sdk_helpers()
-        native = _sidecar_llm(env)
-        use_bedrock = helpers.bedrock_enabled(env) and not native
-        if not native and not use_bedrock and not env.get("ANTHROPIC_API_KEY"):
-            return DisabledCommanderClient("no LLM backend configured")
-        trace_raw = _truthy(env.get("CREWBORG_LLM_TRACE_RAW", ""))
-        trace_raw = trace_raw or env.get("CREWBORG_TRACE", "").strip().lower() == "debug"
-        timeout_seconds = _env_float(env, "CREWBORG_LLM_TIMEOUT_SECONDS", 3.0)
-        config = CommanderLLMConfig(
-            model=helpers.resolve_model(
-                use_bedrock=use_bedrock,
-                direct_model=helpers.default_direct_model,
-                bedrock_model=helpers.default_bedrock_model,
-                explicit=(env.get("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
-                          if native else env.get("CREWBORG_LLM_MODEL")),
-            ),
-            use_bedrock=use_bedrock,
-            max_tokens=_env_int(env, "CREWBORG_LLM_MAX_TOKENS", 512),
-            temperature=_env_float(env, "CREWBORG_LLM_TEMPERATURE", 0.2),
-            timeout_seconds=timeout_seconds,
-            trace_raw=trace_raw,
-            prompt_dir=env.get(PROMPT_DIR_ENV) or None,
+        return self.session.start(prepared, finish())
+
+
+class ScriptedCommanderClient(NativeCommanderClient):
+    def __init__(
+        self,
+        config: CommanderLLMConfig,
+        session: NativeSession,
+        profile: ScriptedProfile,
+    ):
+        super().__init__(config, session)
+        self.profile = profile
+
+    def decide(self, context: dict) -> asyncio.Future[CommanderLLMResult]:
+        generation = scripted_generation(
+            self.profile,
+            self.session,
+            "commander",
+            render_commander_messages(context, prompt_dir=self.config.prompt_dir),
         )
-        client = helpers.select_client(use_bedrock=use_bedrock, timeout=timeout_seconds)
-        return AnthropicCommanderClient(
-            config,
-            client=client,
-            call_json=helpers.call_json,
-            extract_json_object=helpers.extract_json_object,
+        priorities = json.loads(decision_json(generation.completion_text))
+        generation.parsed_action = priorities
+        self.session.record(generation)
+        result = asyncio.get_running_loop().create_future()
+        result.set_result(
+            CommanderLLMResult(priorities=priorities, generation=generation)
         )
-    except Exception as exc:
-        return DisabledCommanderClient(f"commander LLM client construction failed: {exc!r}")
-
-
-build_commander_client = build_commander_client_from_env
-
-
-def commander_feature_enabled(env: dict[str, str] | None = None) -> bool:
-    env = os.environ if env is None else env
-    return _truthy(env.get("CREWBORG_LLM_COMMANDER", ""))
-
-
-class _SDKHelpers(NamedTuple):
-    bedrock_enabled: Callable[..., bool]
-    select_client: Callable[..., Any]
-    resolve_model: Callable[..., str]
-    call_json: Callable[..., Any]
-    extract_json_object: Callable[[str], str]
-    default_bedrock_model: str
-    default_direct_model: str
-
-
-def _load_sdk_helpers() -> _SDKHelpers:
-    from players.player_sdk import (
-        DEFAULT_BEDROCK_MODEL,
-        DEFAULT_DIRECT_MODEL,
-        bedrock_enabled,
-        call_json,
-        extract_json_object,
-        resolve_model,
-        select_client,
-    )
-
-    return _SDKHelpers(
-        bedrock_enabled=bedrock_enabled,
-        select_client=select_client,
-        resolve_model=resolve_model,
-        call_json=call_json,
-        extract_json_object=extract_json_object,
-        default_bedrock_model=DEFAULT_BEDROCK_MODEL,
-        default_direct_model=DEFAULT_DIRECT_MODEL,
-    )
-
-
-def _env_int(env: dict[str, str], name: str, default: int) -> int:
-    try:
-        return int(env.get(name, default))
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_float(env: dict[str, str], name: str, default: float) -> float:
-    try:
-        return float(env.get(name, default))
-    except (TypeError, ValueError):
-        return default
-
-
-#: The loopback Bedrock proxy endpoint the runner injects in sidecar mode (it strips
-#: USE_BEDROCK). Its presence means Bedrock IS available via the sidecar.
-LLM_SIDECAR_ENDPOINT_ENV = "COWORLD_LLM_ENDPOINT"
-
-
-def _sidecar_llm(env: dict[str, str]) -> bool:
-    """Whether the native Coworld LLM endpoint is present."""
-
-    return bool(env.get(LLM_SIDECAR_ENDPOINT_ENV, "").strip())
+        return result
 
 
 def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def commander_feature_enabled(env: Mapping[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    return _truthy(env.get("CREWBORG_LLM_COMMANDER", ""))
+
+
+def build_commander_client_from_env(
+    session: NativeSession,
+    env: Mapping[str, str] | None = None,
+    *,
+    policy_profile: PolicyProfile,
+) -> CommanderLLMClient:
+    env = os.environ if env is None else env
+    if not commander_feature_enabled(env):
+        return DisabledCommanderClient("CREWBORG_LLM_COMMANDER is not enabled")
+    if policy_profile.origin == "native" and not env["COWORLD_LLM_ENDPOINT"]:
+        raise ValueError("Native commander endpoint must be nonempty")
+    config = CommanderLLMConfig(
+        model=env.get(
+            "COWORLD_LLM_MODEL", env.get("CREWBORG_LLM_MODEL", DEFAULT_COMMANDER_MODEL)
+        ),
+        max_tokens=int(env.get("CREWBORG_LLM_MAX_TOKENS", "512")),
+        temperature=float(
+            env.get(
+                "COWORLD_LLM_TEMPERATURE", env.get("CREWBORG_LLM_TEMPERATURE", "0.2")
+            )
+        ),
+        timeout_seconds=float(env.get("CREWBORG_LLM_TIMEOUT_SECONDS", "3")),
+        prompt_dir=env.get(PROMPT_DIR_ENV),
+    )
+    if policy_profile.origin == "teacher":
+        return ScriptedCommanderClient(config, session, policy_profile)
+    return NativeCommanderClient(config, session)

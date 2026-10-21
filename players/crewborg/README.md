@@ -121,3 +121,7 @@ Hosted language calls use `COWORLD_LLM_ENDPOINT` and native Messages requests.
 `--use-llm --llm-model anthropic/claude-haiku-4.5`. Each platform player pod
 uses its own seat attribution. Local provider configuration remains available
 for local runs.
+
+`crewborg_native.py` owns the native lifecycle and receipt models shared with Aaln.
+Both player Dockerfiles copy this module; game-specific controllers and SDK
+packaging remain separate. Base builds still use this directory as their context.

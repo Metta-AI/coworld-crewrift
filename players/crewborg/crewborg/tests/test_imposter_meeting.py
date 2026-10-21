@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from players.player_sdk import EventEmitter, ListMetricsSink, ListTraceSink
+
 from crewborg.modes import AttendMeetingMode
 from crewborg.perception.entities import VoteCandidate, VoteDot, VotingState
+from crewborg.strategy.meeting import DisabledMeetingClient
 from crewborg.strategy.meeting.accusation import build_accusation, fabricate_accusation
 from crewborg.strategy.meeting.imposter import (
     alive_imposter_count,
@@ -12,7 +15,6 @@ from crewborg.strategy.meeting.imposter import (
     votes_against,
 )
 from crewborg.types import ActionState, Belief, PlayerEvent, PlayerRecord
-from players.player_sdk import EventEmitter, ListMetricsSink, ListTraceSink
 
 
 def _voting(self_color="orange", **kwargs) -> VotingState:
@@ -28,14 +30,25 @@ def _voting(self_color="orange", **kwargs) -> VotingState:
     )
 
 
-def _parity_voting(self_color="orange", teammate="green", crew=("red", "blue", "yellow"), **kwargs):
+def _parity_voting(
+    self_color="orange", teammate="green", crew=("red", "blue", "yellow"), **kwargs
+):
     """A census at the parity-closing board: us + one live teammate + ``crew`` crewmates,
     all alive (default 5 alive = 3 crew / 2 imposters, exactly one removal short)."""
 
-    cells = [VoteCandidate(slot=0, color=self_color, alive=True),
-             VoteCandidate(slot=1, color=teammate, alive=True)]
-    cells += [VoteCandidate(slot=2 + i, color=c, alive=True) for i, c in enumerate(crew)]
-    return VotingState(timer_present=True, self_marker_color=self_color, candidates=tuple(cells), **kwargs)
+    cells = [
+        VoteCandidate(slot=0, color=self_color, alive=True),
+        VoteCandidate(slot=1, color=teammate, alive=True),
+    ]
+    cells += [
+        VoteCandidate(slot=2 + i, color=c, alive=True) for i, c in enumerate(crew)
+    ]
+    return VotingState(
+        timer_present=True,
+        self_marker_color=self_color,
+        candidates=tuple(cells),
+        **kwargs,
+    )
 
 
 # --- vote tally read --------------------------------------------------------
@@ -52,7 +65,9 @@ def test_votes_against_counts_by_color_excluding_self_and_skip() -> None:
             VoteDot(voter=2, target=-2),  # yellow skip: excluded
         ),
     )
-    assert votes_against(belief) == {"blue": 2}  # our own ballot and the skip don't count
+    assert votes_against(belief) == {
+        "blue": 2
+    }  # our own ballot and the skip don't count
 
 
 # --- bandwagon target -------------------------------------------------------
@@ -66,7 +81,9 @@ def test_bandwagon_picks_the_most_voted_non_teammate() -> None:
 
 def test_bandwagon_never_targets_a_teammate() -> None:
     belief = Belief(self_role="imposter", teammate_colors={"blue"})
-    belief.voting = _voting(dots=(VoteDot(voter=2, target=1),))  # yellow -> blue (our teammate)
+    belief.voting = _voting(
+        dots=(VoteDot(voter=2, target=1),)
+    )  # yellow -> blue (our teammate)
     assert bandwagon_target(belief) is None
 
 
@@ -87,7 +104,9 @@ def test_chat_accusers_make_a_crewmate_eligible() -> None:
 
 def test_fabrication_names_a_real_body_when_one_exists() -> None:
     belief = Belief(self_role="imposter")
-    belief.roster["red"] = PlayerRecord(color="red", life_status="dead", death_seen_tick=40)
+    belief.roster["red"] = PlayerRecord(
+        color="red", life_status="dead", death_seen_tick=40
+    )
     line = fabricate_accusation(belief, "blue")
     assert line == "blue sus: next to red's body, lurking on a vent"
     assert "kill" not in line  # never a bold, falsifiable witnessed claim
@@ -101,16 +120,21 @@ def test_fabrication_falls_back_to_a_tail_claim_without_a_body() -> None:
 
 def test_fabrication_never_names_a_teammate_body() -> None:
     belief = Belief(self_role="imposter", teammate_colors={"red"})
-    belief.roster["red"] = PlayerRecord(color="red", life_status="dead", death_seen_tick=40)
+    belief.roster["red"] = PlayerRecord(
+        color="red", life_status="dead", death_seen_tick=40
+    )
     line = fabricate_accusation(belief, "blue")
-    assert line == "blue sus: they were tailing me, lurking on a vent"  # red (teammate) not cited
+    assert (
+        line == "blue sus: they were tailing me, lurking on a vent"
+    )  # red (teammate) not cited
 
 
 def test_fabricated_and_real_accusations_share_the_format() -> None:
     # Identical surface format is the anti-tell — both "<color> sus: a, b".
     real_belief = Belief(self_role="crewmate")
     real_belief.roster["red"] = PlayerRecord(
-        color="red", life_status="alive",
+        color="red",
+        life_status="alive",
         events=[PlayerEvent(kind="vent", start_tick=1, end_tick=20, region_index=0)],
     )
     real = build_accusation(real_belief, "red")
@@ -123,45 +147,54 @@ def test_fabricated_and_real_accusations_share_the_format() -> None:
 
 
 def test_imposter_proactively_accuses_a_sus_crewmate_with_real_evidence() -> None:
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     belief = Belief(phase="Voting", self_role="imposter", teammate_colors={"green"})
     belief.roster["red"] = PlayerRecord(
-        color="red", life_status="alive",
+        color="red",
+        life_status="alive",
         events=[PlayerEvent(kind="vent", start_tick=1, end_tick=20, region_index=0)],
     )
     belief.suspicion = {"red": 0.85}  # red a clear leading non-teammate suspect
 
     chat = mode.decide(belief, ActionState())
-    assert chat.kind == "chat" and chat.text == "red sus: lurking on a vent"  # real evidence
+    assert (
+        chat.kind == "chat" and chat.text == "red sus: lurking on a vent"
+    )  # real evidence
     vote = mode.decide(belief, ActionState())
     assert vote.kind == "vote" and vote.target_color == "red"
 
 
 def test_imposter_bandwagons_with_fabrication_when_it_has_no_real_lead() -> None:
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     belief = Belief(phase="Voting", self_role="imposter", teammate_colors={"green"})
     belief.suspicion = {"red": 0.3, "blue": 0.3}  # flat — no real deflection
     belief.voting = _voting(dots=(VoteDot(voter=2, target=1),))  # yellow voted blue
     belief.roster["blue"] = PlayerRecord(color="blue", life_status="alive")
 
     chat = mode.decide(belief, ActionState())
-    assert chat.kind == "chat" and chat.text.startswith("blue sus:")  # fabricated, same format
+    assert chat.kind == "chat" and chat.text.startswith(
+        "blue sus:"
+    )  # fabricated, same format
     vote = mode.decide(belief, ActionState())
     assert vote.kind == "vote" and vote.target_color == "blue"
 
 
 def test_imposter_stays_quiet_when_only_a_teammate_takes_heat() -> None:
-    mode = AttendMeetingMode()
-    belief = Belief(phase="Voting", self_role="imposter", teammate_colors={"blue"}, last_tick=0)
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
+    belief = Belief(
+        phase="Voting", self_role="imposter", teammate_colors={"blue"}, last_tick=0
+    )
     belief.suspicion = {"red": 0.3}
-    belief.voting = _voting(dots=(VoteDot(voter=2, target=1),))  # yellow voted blue (teammate)
+    belief.voting = _voting(
+        dots=(VoteDot(voter=2, target=1),)
+    )  # yellow voted blue (teammate)
 
     assert mode.decide(belief, ActionState()).kind == "idle"  # don't help eject our own
 
 
 def test_meeting_decision_trace_captures_the_bandwagon_and_its_heat() -> None:
     sink = ListTraceSink()
-    mode = AttendMeetingMode()
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
     mode.emit = EventEmitter(sink, ListMetricsSink())
     belief = Belief(phase="Voting", self_role="imposter", teammate_colors={"green"})
     belief.suspicion = {"red": 0.3, "blue": 0.3}  # no real lead
@@ -180,8 +213,10 @@ def test_meeting_decision_trace_captures_the_bandwagon_and_its_heat() -> None:
 
 
 def test_imposter_skips_at_the_deadline_when_no_crewmate_takes_heat() -> None:
-    mode = AttendMeetingMode()
-    belief = Belief(phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0)
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
+    belief = Belief(
+        phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0
+    )
     belief.voting = _voting()
 
     assert mode.decide(belief, ActionState()).kind == "idle"  # early: wait
@@ -217,7 +252,9 @@ def test_parity_push_prefers_a_crewmate_already_drawing_votes() -> None:
 
 def test_parity_push_never_targets_a_teammate_even_when_the_team_draws_heat() -> None:
     belief = Belief(self_role="imposter", teammate_colors={"green"})
-    belief.voting = _parity_voting(dots=(VoteDot(voter=2, target=1),))  # red -> green (teammate)
+    belief.voting = _parity_voting(
+        dots=(VoteDot(voter=2, target=1),)
+    )  # red -> green (teammate)
     assert parity_closing_vote_target(belief) == "red"  # teammate excluded; cold pick
 
 
@@ -231,13 +268,17 @@ def test_parity_push_is_silent_without_a_known_live_teammate() -> None:
 
 def test_parity_push_does_not_fire_two_removals_from_parity() -> None:
     belief = Belief(self_role="imposter", teammate_colors={"green"})
-    belief.voting = _parity_voting(crew=("red", "blue", "yellow", "pink"))  # 4 crew / 2 imp
+    belief.voting = _parity_voting(
+        crew=("red", "blue", "yellow", "pink")
+    )  # 4 crew / 2 imp
     assert parity_closing_vote_target(belief) is None
 
 
 def test_imposter_parity_pushes_instead_of_skipping_one_removal_short() -> None:
-    mode = AttendMeetingMode()
-    belief = Belief(phase="Voting", self_role="imposter", teammate_colors={"green"}, last_tick=0)
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
+    belief = Belief(
+        phase="Voting", self_role="imposter", teammate_colors={"green"}, last_tick=0
+    )
     belief.suspicion = {"red": 0.3, "blue": 0.3, "yellow": 0.3}  # flat — no real lead
     belief.voting = _parity_voting()  # 3 crew / 2 imp, no heat → would otherwise skip
     belief.roster["red"] = PlayerRecord(color="red", life_status="alive")
@@ -249,12 +290,18 @@ def test_imposter_parity_pushes_instead_of_skipping_one_removal_short() -> None:
 
 
 def test_imposter_without_a_known_teammate_still_skips_a_flat_endgame() -> None:
-    mode = AttendMeetingMode()
-    belief = Belief(phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0)
+    mode = AttendMeetingMode(llm_client=DisabledMeetingClient())
+    belief = Belief(
+        phase="Voting", self_role="imposter", phase_start_tick=0, last_tick=0
+    )
     belief.suspicion = {"red": 0.3, "blue": 0.3, "yellow": 0.3}
-    belief.voting = _parity_voting(teammate="green")  # green present but not known as ours
+    belief.voting = _parity_voting(
+        teammate="green"
+    )  # green present but not known as ours
 
-    assert mode.decide(belief, ActionState()).kind == "idle"  # no push without a known team
+    assert (
+        mode.decide(belief, ActionState()).kind == "idle"
+    )  # no push without a known team
     belief.last_tick = 200
     vote = mode.decide(belief, ActionState())
     assert vote.kind == "vote" and vote.target_color is None  # falls back to skip

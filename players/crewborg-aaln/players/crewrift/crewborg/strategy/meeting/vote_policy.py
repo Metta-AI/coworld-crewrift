@@ -26,7 +26,10 @@ from collections import Counter
 
 from players.crewrift.crewborg.perception.entities import SKIP_VOTE_TARGET
 from players.crewrift.crewborg.strategy.meeting.schema import VOTE_SKIP
-from players.crewrift.crewborg.strategy.suspicion import VOTE_PROBABILITY, _imposter_count
+from players.crewrift.crewborg.strategy.suspicion import (
+    VOTE_PROBABILITY,
+    _imposter_count,
+)
 from players.crewrift.crewborg.types import Accusation, Belief
 
 # State-dependent evidence bars (posterior P(imposter)) for the crewmate vote.
@@ -191,7 +194,7 @@ def crewmate_fallback_vote(belief: Belief) -> str:
     }
     if not candidates:
         return VOTE_SKIP
-    color, p = max(candidates.items(), key=lambda kv: kv[1])
+    color, p = min(candidates.items(), key=lambda kv: (-kv[1], kv[0]))
     return color if p >= vote_bar(belief) else VOTE_SKIP
 
 

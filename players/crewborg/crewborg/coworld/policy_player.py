@@ -1,95 +1,76 @@
-"""Crewborg's Sprite-v1 websocket bridge (design §3, AGENTS.md §Transport).
+"""Sprite-v1 bridge with engine-assigned native seats and joined private artifacts.
 
-The bridge connects to the Crewrift engine, maintains a :class:`SceneState` as
-binary messages arrive, drives ``runtime.step`` once per tick, and sends an input
-packet only when the held button mask changes. It exits cleanly when the server
-closes the socket (= game over).
-
-Each incoming binary message is decoded into the ``SceneState`` and drives one
-``runtime.step``; the held button mask is sent only when it changes, and meeting
-chat is sent during Voting.
-
-Environment:
-
-- ``COWORLD_PLAYER_WS_URL`` — websocket URL including ``?slot=…&token=…``
-  (the runner fills these in; token validation is at HTTP upgrade). The legacy
-  ``COGAMES_ENGINE_WS_URL`` alias (same value) is accepted as a fallback.
-- ``CREWBORG_TRACE_OUTPUTS`` — SDK trace output specs (``format@destination``,
-  comma-separated; see ``players.player_sdk.trace_outputs``). Defaults to
-  ``jsonl@artifact``: traces/metrics stream to a temp file and are zipped and
-  uploaded to ``COWORLD_PLAYER_ARTIFACT_UPLOAD_URL`` at exit, keeping stderr
-  under Observatory's policy-log line cap. When no upload URL is present (the
-  bridge is running outside a Coworld runner), the bridge falls back to
-  ``jsonl@stderr`` instead of crashing.
-- ``CREWBORG_METRICS`` / ``CREWBORG_TRACE`` — metric fan-out and trace
-  verbosity/filtering (see ``crewborg.trace``).
+The ordinary renderer/controller still receives each binary engine frame. The
+opt-in native-evidence protocol supplies the accepted slot/index and final engine
+results. Connection closure without that terminal evidence remains truncated.
+Native requests, received bodies, controller packets, and frames stay in the
+private ZIP uploaded to COWORLD_PLAYER_ARTIFACT_UPLOAD_URL. SIGTERM/SIGINT share
+one two-second deadline with native work, socket closure, and artifact upload.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
+import signal
+import struct
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import websockets
+from crewborg_native import NativeModel, NativeSession, PlayerRegistration
+from players.player_sdk import TraceOutputs
+from pydantic import ConfigDict, Field, JsonValue, TypeAdapter
+from websockets.exceptions import WebSocketException
 
 from crewborg import build_runtime
 from crewborg.action import encode_chat, encode_input
+from crewborg.coworld.private_artifact import PrivateArtifact, PrivateOutcome
 from crewborg.coworld.scene import SceneState
 from crewborg.map import walkability_matches
+from crewborg.scripted import policy_profile_from_env
+from crewborg.strategy.meeting import chat_nlp
 from crewborg.trace import TraceConfig
 from crewborg.types import Observation
-from players.player_sdk import TraceOutputs, parse_trace_output_specs
 
 METRICS_ENV = "CREWBORG_METRICS"
 
-DEFAULT_TRACE_OUTPUTS = "jsonl@artifact"
-FALLBACK_TRACE_OUTPUTS = "jsonl@stderr"
-
-# --- aggressive initial-connect reconnect (2026-06-24) ----------------------------
-# Hosted episodes were dying at a high rate with a -100 "connect_timeout": the player
-# produced 0-1 telemetry lines and no stderr (it NEVER received a frame), and the
-# episode never reached "running". That is an INITIAL-connect failure — the player
-# container races the engine's /player websocket coming up, the single connect()
-# throws (or closes with no frames), and the process exits, failing the episode.
-#
-# Fix: retry establishing the connection until the FIRST frame arrives, on a short
-# FLAT interval (no exponential backoff — this is a startup race against the engine
-# binding its socket, so we want to be aggressive and catch it the instant it comes
-# up, not back off to multi-second waits), bounded by a wall-clock deadline (so we
-# never hang past the runner's episode timeout). Once frames flow we hand off to the
-# normal loop, where an abrupt close still means "game over" (the engine ends
-# episodes that way) — we must NOT reconnect after a legitimate game end, so the
-# discriminator is strictly "did we ever receive a frame on this connection."
-#
-# A refused connect returns almost instantly (the engine isn't listening yet), so a
-# 0.1s interval probes ~10x/sec — aggressive, but not a pure busy-loop hammering the
-# host. Over the default deadline that's ~1000+ attempts before we give up.
+CONNECT_OPEN_TIMEOUT = 10.0
 RECONNECT_DEADLINE_SECONDS = float(os.environ.get("CREWBORG_RECONNECT_DEADLINE", "120"))
-RECONNECT_INTERVAL_SECONDS = float(os.environ.get("CREWBORG_RECONNECT_INTERVAL", "0.1"))
-CONNECT_OPEN_TIMEOUT = 10.0     # per-attempt handshake timeout (don't hang one attempt)
-
-# After the game has started, a dropped socket is AMBIGUOUS: it is how the Crewrift engine
-# signals game-over (an unclean 1006 close), but it is also exactly what a transient mid-game
-# network blip looks like. So don't give up on the first drop — try to reconnect a few times.
-# If frames resume, the game was still live and we recover; if a run of reconnects delivers no
-# new frames, the game really ended and we stop. A reconnect that DOES deliver new frames is
-# progress and refreshes the idle budget (so an hour-long game survives several independent
-# blips). The overall RECONNECT_DEADLINE is the ultimate backstop.
-MIDGAME_RECONNECT_ATTEMPTS = int(os.environ.get("CREWBORG_MIDGAME_RECONNECTS", "5"))
-MIDGAME_RECONNECT_INTERVAL_SECONDS = float(os.environ.get("CREWBORG_MIDGAME_RECONNECT_INTERVAL", "0.25"))
-
-# Connection-establishment failures worth retrying (vs a real game-over close, which
-# only counts once a frame has been seen). OSError covers ECONNREFUSED while the
-# engine is still binding; the websockets handshake/timeout errors cover races.
+RECONNECT_INTERVAL_SECONDS = 0.1
 _RETRYABLE_CONNECT_ERRORS = (
     OSError,
     asyncio.TimeoutError,
-    websockets.exceptions.WebSocketException,
+    WebSocketException,
+)
+
+
+class EngineWelcome(NativeModel):
+    kind: Literal["native_welcome"]
+    protocol: Literal["crewrift.native-evidence.v1"]
+    player_slot: int = Field(ge=0, le=15)
+    engine_player_index: int = Field(ge=0)
+    configured_seat: bool
+    tick: int = Field(ge=0)
+
+
+class EngineTerminal(NativeModel):
+    kind: Literal["native_terminal"]
+    protocol: Literal["crewrift.native-evidence.v1"]
+    tick: int = Field(ge=0)
+    results: JsonValue
+
+
+ENGINE_MESSAGE = TypeAdapter(
+    EngineWelcome | EngineTerminal, config=ConfigDict(hide_input_in_errors=True)
 )
 
 
@@ -107,7 +88,46 @@ class _BridgeState:
     last_sent_mask: int | None = None
     walkability_checked: bool = False
     previous_arrival: float | None = None
-    tick_offset: int | None = None  # (server_tick - scene.tick) when the marker first appears
+    terminal: EngineTerminal | None = None
+    socket: Any = None
+    frame_owners_joined: bool = True
+    tick_offset: int | None = (
+        None  # (server_tick - scene.tick) when the marker first appears
+    )
+
+
+class _ReceivedFrames:
+    """Own ordered immutable frames on disk while the controller falls behind."""
+
+    def __init__(self):
+        self.stream = tempfile.TemporaryFile()  # noqa: SIM115 - held until both owned frame tasks join; an unjoined reader retains its spool.
+        self.read_offset = 0
+        self.received = 0
+        self.applied = 0
+        self.ready = asyncio.Event()
+
+    def append(self, frame: bytes) -> tuple[int, float]:
+        arrival = time.perf_counter()
+        self.stream.seek(0, os.SEEK_END)
+        if self.stream.tell() + 16 + len(frame) > 200 * 1024 * 1024:
+            raise ValueError("Private received-frame spool exceeds 200 MiB")
+        self.stream.write(struct.pack("!Qd", len(frame), arrival))
+        self.stream.write(frame)
+        sequence = self.received
+        self.received += 1
+        self.ready.set()
+        return sequence, arrival
+
+    async def next(self) -> tuple[int, bytes, float]:
+        while self.applied == self.received:
+            self.ready.clear()
+            await self.ready.wait()
+        self.stream.seek(self.read_offset)
+        size, arrival = struct.unpack("!Qd", self.stream.read(16))
+        frame = self.stream.read(size)
+        self.read_offset = self.stream.tell()
+        return self.applied, frame, arrival
+
 
 # The engine pushes one frame per game tick at ~24 Hz and does NOT wait for the
 # player (docs/crewrift-protocol.md). At the hosted 250m-CPU budget that gives
@@ -121,69 +141,103 @@ class _BridgeState:
 # fallen behind (server tick minus frames we've processed), not a wall-clock estimate.
 
 
-def build_trace_outputs() -> TraceOutputs:
-    """Build the SDK trace outputs, defaulting to the player artifact zip.
-
-    The artifact destination needs the runner-provided
-    ``COWORLD_PLAYER_ARTIFACT_UPLOAD_URL``; the SDK raises when it is missing
-    rather than skipping. Crashing here would happen before connect and fail
-    the episode (a -100 connect timeout), so fall back to plain stderr JSONL
-    — same content, just subject to the hosted log cap.
-    """
-
-    trace_config = TraceConfig.from_env()
-    try:
-        return TraceOutputs.from_env(
-            prefix="CREWBORG",
-            event_filter=trace_config.allows,
-            metrics_enabled=_metrics_enabled(),
-            default_outputs=DEFAULT_TRACE_OUTPUTS,
-        )
-    except ValueError as exc:
-        print(
-            f"WARNING: trace outputs unavailable ({exc}); falling back to {FALLBACK_TRACE_OUTPUTS}",
-            file=sys.stderr,
-            flush=True,
-        )
-        return TraceOutputs.from_specs(
-            parse_trace_output_specs(FALLBACK_TRACE_OUTPUTS),
-            event_filter=trace_config.allows,
-            metrics_enabled=_metrics_enabled(),
-        )
-
-
 async def run_bridge(
     engine_ws_url: str,
     *,
     connect: Callable[..., Any] = websockets.connect,
     build: Callable[..., Any] = build_runtime,
 ) -> None:
-    """Connect (retrying the initial connection) and run the per-tick loop.
-
-    Returns when the game ends (the engine closes the socket after we've received
-    frames) or when the reconnect deadline passes without ever connecting.
-    """
-
+    """Own native calls, engine transport, and private upload under one STOP deadline."""
+    directory = Path(tempfile.mkdtemp(prefix="crewborg-private-"))
+    artifact = PrivateArtifact(directory / "player.zip")
+    registration = PlayerRegistration.from_url(engine_ws_url)
+    native = NativeSession(
+        registration, directory / "native.jsonl", artifact.record_policy
+    )
+    outputs = TraceOutputs(
+        [artifact],
+        event_filter=TraceConfig.from_env().allows,
+        metrics_enabled=_metrics_enabled(),
+        fail_on_close_error=True,
+    )
+    runtime = build(
+        trace_sink=outputs.trace_sink,
+        metrics_sink=outputs.metrics_sink,
+        native_session=native,
+        policy_profile=policy_profile_from_env(),
+    )
     scene = SceneState()
-    # The with-block guarantees outputs.close() runs at exit — that close is what
-    # zips and uploads the artifact (when configured), so it must happen before
-    # the container exits and the runner tears the pod down.
-    with build_trace_outputs() as outputs:
-        runtime = build(trace_sink=outputs.trace_sink, metrics_sink=outputs.metrics_sink)
-        metrics = outputs.metrics_sink
-        # Session state lives out here so a reconnect resumes cleanly rather than
-        # rebuilding the runtime/belief (which would discard everything learned).
-        state = _BridgeState()
+    state = _BridgeState()
+    owner = asyncio.current_task()
+    assert owner is not None
+    loop = asyncio.get_running_loop()
 
-        # Guarantee runtime cleanup (the strategy runner may own background
-        # threads/tasks) even if connect, a step, or a shutdown-race send raises.
-        try:
-            await _connect_with_retry(
-                engine_ws_url, connect=connect, scene=scene, runtime=runtime,
-                metrics=metrics, state=state,
-            )
-        finally:
-            runtime.close()
+    def stop() -> None:
+        first = native.shutdown_deadline is None
+        native.begin_stop(time.monotonic() + 2)
+        if first:
+            owner.cancel()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stop)
+    split = urlsplit(engine_ws_url)
+    query = [
+        (key, value)
+        for key, value in parse_qsl(split.query)
+        if key != "native_evidence"
+    ]
+    url = urlunsplit(
+        split._replace(query=urlencode([*query, ("native_evidence", "1")]))
+    )
+    try:
+        await _connect_with_retry(
+            url,
+            connect=connect,
+            scene=scene,
+            runtime=runtime,
+            metrics=outputs.metrics_sink,
+            state=state,
+            native=native,
+            artifact=artifact,
+        )
+    finally:
+        failure = sys.exception()
+        deadline = native.begin_stop(time.monotonic() + 2)
+        runtime.close()
+        native_joined = await native.stop(deadline)
+        nlp_joined = await chat_nlp.join_loading(deadline)
+        socket_joined = state.socket is None or await NativeSession.settle(
+            state.socket.close(), deadline
+        )
+        terminal = state.terminal is not None
+        complete = (
+            terminal
+            and native_joined
+            and state.frame_owners_joined
+            and nlp_joined
+            and socket_joined
+            and failure is None
+        )
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            loop.remove_signal_handler(signum)
+        outcome = PrivateOutcome(
+            status="completed" if complete else "truncated",
+            native_work_joined=native_joined,
+            frame_owners_joined=state.frame_owners_joined,
+            nlp_work_joined=nlp_joined,
+            socket_joined=socket_joined,
+            terminal_engine_evidence=terminal,
+            requested_player_slot=registration.requested_slot,
+            engine_player_index=registration.engine_player_index,
+            source_revision=os.environ.get("COWORLD_SOURCE_REVISION"),
+            image_digest=os.environ.get("COWORLD_GAME_IMAGE_DIGEST"),
+            failure_kind=type(failure).__name__
+            if failure is not None
+            else (None if complete else "MissingTerminalOrUnjoinedWork"),
+        )
+        await artifact.finish(
+            outcome, os.environ.get("COWORLD_PLAYER_ARTIFACT_UPLOAD_URL"), deadline
+        )
 
 
 async def _connect_with_retry(
@@ -194,59 +248,41 @@ async def _connect_with_retry(
     runtime: Any,
     metrics: Any,
     state: _BridgeState,
+    native: NativeSession,
+    artifact: PrivateArtifact,
 ) -> None:
-    """Establish the websocket, retrying the INITIAL connect on a short flat interval
-    until the first frame arrives, then run the session. A connection that closes
-    *after* frames were seen is a normal game-over (stop); a failure or close
-    *before* any frame is a connect race (retry until the deadline)."""
-
     deadline = time.monotonic() + RECONNECT_DEADLINE_SECONDS
-    attempt = 0
-    midgame_idle = 0  # consecutive post-game-start reconnects that delivered no new frames
-    last_error: BaseException | None = None  # closed-with-no-frames also retries
-    while True:
-        attempt += 1
-        frames_before = state.frames_seen
+    while state.socket is None:
         try:
-            async with connect(engine_ws_url, max_size=None, open_timeout=CONNECT_OPEN_TIMEOUT) as websocket:
-                await _run_session(websocket, scene=scene, runtime=runtime, metrics=metrics, state=state)
-            # Session returned without raising: a clean close. After the game has started a
-            # clean close is a normal game-over (the engine only does an *unclean* 1006 drop
-            # mid-stream; a graceful close means it's done).
-            if state.frames_seen:
-                return  # the game ran and ended normally
-            # Closed with no frames — treat as a connect race and retry.
-        except _RETRYABLE_CONNECT_ERRORS as exc:
-            if state.frames_seen:
-                # Mid-game abrupt drop — ambiguous between game-over (1006) and a transient
-                # blip. A reconnect that delivered new frames is progress (reset the budget);
-                # otherwise count it. Conclude game-over only after a run of idle reconnects
-                # (or the overall deadline), so a real network blip gets a chance to recover.
-                midgame_idle = 0 if state.frames_seen > frames_before else midgame_idle + 1
-                if midgame_idle >= MIDGAME_RECONNECT_ATTEMPTS or time.monotonic() >= deadline:
-                    print("game over: server closed the connection", file=sys.stderr, flush=True)
-                    return
-                print(
-                    f"mid-game disconnect — reconnecting ({midgame_idle}/{MIDGAME_RECONNECT_ATTEMPTS} idle)",
-                    file=sys.stderr, flush=True,
-                )
-                await asyncio.sleep(min(MIDGAME_RECONNECT_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
-                continue
-            last_error = exc  # pre-first-frame failure: retry below
-
-        if time.monotonic() >= deadline:
-            print(
-                f"ERROR: could not connect to engine after {attempt} attempt(s) / "
-                f"{RECONNECT_DEADLINE_SECONDS:.0f}s ({type(last_error).__name__}: {last_error}); giving up.",
-                file=sys.stderr, flush=True,
+            state.socket = await connect(
+                engine_ws_url,
+                max_size=None,
+                open_timeout=min(
+                    CONNECT_OPEN_TIMEOUT, max(0.001, deadline - time.monotonic())
+                ),
+                close_timeout=1,
             )
-            return
-        # Flat, short interval — stay aggressive so we catch the engine the instant it
-        # binds, rather than backing off to multi-second waits. Log only the first few
-        # so a slow startup doesn't spew thousands of lines into the policy log.
-        if attempt <= 3:
-            print(f"connect attempt {attempt} failed (no frames yet); retrying", file=sys.stderr, flush=True)
-        await asyncio.sleep(min(RECONNECT_INTERVAL_SECONDS, max(0.0, deadline - time.monotonic())))
+        except _RETRYABLE_CONNECT_ERRORS:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "Engine connection admission deadline exceeded"
+                ) from None
+            await asyncio.sleep(
+                min(RECONNECT_INTERVAL_SECONDS, max(0, deadline - time.monotonic()))
+            )
+    await _run_session(
+        state.socket,
+        scene=scene,
+        runtime=runtime,
+        metrics=metrics,
+        state=state,
+        native=native,
+        artifact=artifact,
+    )
+    if state.terminal is None:
+        raise RuntimeError(
+            "Engine stream ended without authoritative terminal evidence"
+        )
 
 
 async def _run_session(
@@ -256,110 +292,255 @@ async def _run_session(
     runtime: Any,
     metrics: Any,
     state: _BridgeState,
+    native: NativeSession,
+    artifact: PrivateArtifact,
 ) -> None:
-    """Drive the per-tick loop on an established connection until it closes.
+    """Receive terminal independently of the ordered ordinary controller loop."""
+    frames = _ReceivedFrames()
 
-    Raises the websockets close/connection errors to the caller, which decides —
-    based on whether any frame was seen — whether it's a game-over or a connect
-    race to retry. A clean ``ConnectionClosed`` from the async iterator returns
-    normally (the caller still inspects ``state.frames_seen``)."""
-
-    async for message in websocket:
-        if isinstance(message, str):
-            # The /player stream is binary Sprite-v1; ignore stray text.
-            continue
-        state.frames_seen += 1
-        # loop_gap_ms: wall-clock between consecutive frame arrivals
-        # — sustained gaps *below* the ~42 ms frame interval mean queued
-        # frames are being drained, i.e. we had fallen behind the engine.
-        # (Measured here; emitted below, tagged with the server tick.)
-        arrival = time.perf_counter()
-        loop_gap_ms = (
-            round((arrival - state.previous_arrival) * 1000.0, 3)
-            if state.previous_arrival is not None
-            else None
-        )
-        scene.apply(message)
-        scene.tick += 1
-
-        # Ground-truth tick: prefer the engine's streamed tick-marker
-        # over our local frame counter, and drive the SDK runtime from it
-        # so perception, belief.last_tick, and ALL tracing/metrics carry
-        # the engine's true tick. step() does `self.tick += 1`, so seed it
-        # one below the server tick to land exactly on it. Before the
-        # marker arrives (first frames) fall back to the local counter.
-        server_tick = scene.server_tick()
-        tick = server_tick if server_tick >= 0 else scene.tick
-        if server_tick >= 0:
-            runtime.tick = server_tick - 1
-            if state.tick_offset is None:
-                state.tick_offset = server_tick - scene.tick
-
-        # Validate the baked map against the streamed walkability mask
-        # once it arrives (design §6); a size mismatch means a different
-        # map than croatoan. Warn loudly rather than misnavigate later.
-        if not state.walkability_checked and scene.walkability is not None:
-            state.walkability_checked = True
-            map_data = runtime.belief.map
-            if map_data is not None and not walkability_matches(
-                map_data, scene.walkability_width, scene.walkability_height
-            ):
-                print(
-                    "WARNING: walkability map "
-                    f"{scene.walkability_width}x{scene.walkability_height} does not match "
-                    f"baked map {map_data.width}x{map_data.height}; server may be running "
-                    "a different map than croatoan.",
-                    file=sys.stderr,
-                    flush=True,
+    async def receive() -> None:
+        async for message in websocket:
+            if native.shutdown_deadline is not None:
+                return
+            if isinstance(message, str):
+                event = ENGINE_MESSAGE.validate_json(message)
+                artifact.write_record(
+                    {"kind": "engine_event", "event": event.model_dump(mode="json")}
                 )
-            # Optional capture: emit the streamed walkability mask once
-            # so tools/nav_bake.py can re-bake the offline nav asset when
-            # the map changes. Inert unless CREWBORG_CAPTURE_WALKABILITY
-            # is set; the mask is the authoritative input crewborg sees.
-            if _capture_walkability_enabled():
-                _emit_walkability_capture(scene.walkability)
-
-        # step_ms: the per-tick compute budget check (~42 ms at 24 Hz).
-        step_start = time.perf_counter()
-        command = runtime.step(Observation(scene=scene, tick=tick))
-        step_end = time.perf_counter()
-        if loop_gap_ms is not None:
-            metrics.histogram("bridge.loop_gap_ms", loop_gap_ms, tags={"tick": tick})
-        metrics.histogram(
-            "bridge.step_ms",
-            round((step_end - step_start) * 1000.0, 3),
-            tags={"tick": tick},
-        )
-        # tick_drift: frames we've fallen behind the engine since the
-        # marker first appeared (ground truth: server tick minus frames
-        # processed). 0 means we're keeping up; growth means falling behind.
-        if server_tick >= 0:
-            metrics.gauge(
-                "bridge.tick_drift",
-                server_tick - scene.tick - state.tick_offset,
-                tags={"tick": tick},
+                if isinstance(event, EngineWelcome):
+                    registration = native.registration
+                    if (
+                        registration.requested_slot is not None
+                        and event.player_slot != registration.requested_slot
+                    ):
+                        raise ValueError(
+                            "Engine assigned a different requested player slot"
+                        )
+                    registration.engine_player_index = event.engine_player_index
+                    registration.authenticated_upgrade = event.configured_seat
+                    registration.assigned_slot = (
+                        event.player_slot if event.configured_seat else None
+                    )
+                    if (
+                        registration.requested_slot is not None
+                        and not event.configured_seat
+                    ):
+                        raise ValueError(
+                            "Hosted native seat lacks configured engine admission"
+                        )
+                else:
+                    state.terminal = event
+                    deadline = native.begin_stop(time.monotonic() + 2)
+                    async with asyncio.timeout_at(deadline):
+                        await websocket.send(
+                            json.dumps(
+                                {"kind": "native_terminal_ack", "tick": event.tick},
+                                separators=(",", ":"),
+                            )
+                        )
+                    return
+                continue
+            if native.registration.engine_player_index is None:
+                raise RuntimeError(
+                    "Engine sent a player frame before assigned-seat evidence"
+                )
+            sequence, received_at = frames.append(message)
+            artifact.write_record(
+                {
+                    "kind": "engine_frame",
+                    "frame_sequence": sequence,
+                    "received_monotonic": received_at,
+                    "bytes_b64": base64.b64encode(message).decode(),
+                    "engine_player_index": native.registration.engine_player_index,
+                }
+            )
+            state.frames_seen += 1
+        if state.terminal is None:
+            raise RuntimeError(
+                "Engine stream ended without authoritative terminal evidence"
             )
 
-        # Send only when the held mask changes (design §3.3). The first
-        # tick sends the neutral mask once, establishing "all released".
-        if command.held_mask != state.last_sent_mask:
-            await websocket.send(encode_input(command.held_mask))
-            state.last_sent_mask = command.held_mask
+    async def control() -> None:
+        while state.terminal is None:
+            sequence, message, arrival = await frames.next()
+            # loop_gap_ms: wall-clock between consecutive frame arrivals
+            # — sustained gaps *below* the ~42 ms frame interval mean queued
+            # frames are being drained, i.e. we had fallen behind the engine.
+            # (Measured here; emitted below, tagged with the server tick.)
+            loop_gap_ms = (
+                round((arrival - state.previous_arrival) * 1000.0, 3)
+                if state.previous_arrival is not None
+                else None
+            )
+            scene.apply(message)
+            scene.tick += 1
 
-        # Meeting chat (accepted only during Voting); sent as it appears.
-        if command.chat is not None:
-            await websocket.send(encode_chat(command.chat))
-        state.previous_arrival = arrival
+            # Ground-truth tick: prefer the engine's streamed tick-marker
+            # over our local frame counter, and drive the SDK runtime from it
+            # so perception, belief.last_tick, and ALL tracing/metrics carry
+            # the engine's true tick. step() does `self.tick += 1`, so seed it
+            # one below the server tick to land exactly on it. Before the
+            # marker arrives (first frames) fall back to the local counter.
+            server_tick = scene.server_tick()
+            tick = server_tick if server_tick >= 0 else scene.tick
+            if server_tick >= 0:
+                runtime.tick = server_tick - 1
+                if state.tick_offset is None:
+                    state.tick_offset = server_tick - scene.tick
+
+            # Validate the baked map against the streamed walkability mask
+            # once it arrives (design §6); a size mismatch means a different
+            # map than croatoan. Warn loudly rather than misnavigate later.
+            if not state.walkability_checked and scene.walkability is not None:
+                state.walkability_checked = True
+                map_data = runtime.belief.map
+                if map_data is not None and not walkability_matches(
+                    map_data, scene.walkability_width, scene.walkability_height
+                ):
+                    print(
+                        "WARNING: walkability map "
+                        f"{scene.walkability_width}x{scene.walkability_height} does not match "
+                        f"baked map {map_data.width}x{map_data.height}; server may be running "
+                        "a different map than croatoan.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                # Optional capture: emit the streamed walkability mask once
+                # so tools/nav_bake.py can re-bake the offline nav asset when
+                # the map changes. Inert unless CREWBORG_CAPTURE_WALKABILITY
+                # is set; the mask is the authoritative input crewborg sees.
+                if _capture_walkability_enabled():
+                    _emit_walkability_capture(scene.walkability)
+
+            # step_ms: the per-tick compute budget check (~42 ms at 24 Hz).
+            step_start = time.perf_counter()
+            command = runtime.step(Observation(scene=scene, tick=tick))
+            if native.shutdown_deadline is not None:
+                return
+            frames.applied += 1
+            artifact.write_record(
+                {
+                    "kind": "controller_frame_applied",
+                    "frame_sequence": sequence,
+                    "tick": tick,
+                }
+            )
+            step_end = time.perf_counter()
+            if loop_gap_ms is not None:
+                metrics.histogram(
+                    "bridge.loop_gap_ms", loop_gap_ms, tags={"tick": tick}
+                )
+            metrics.histogram(
+                "bridge.step_ms",
+                round((step_end - step_start) * 1000.0, 3),
+                tags={"tick": tick},
+            )
+            # tick_drift: frames we've fallen behind the engine since the
+            # marker first appeared (ground truth: server tick minus frames
+            # processed). 0 means we're keeping up; growth means falling behind.
+            if server_tick >= 0:
+                assert state.tick_offset is not None
+                metrics.gauge(
+                    "bridge.tick_drift",
+                    server_tick - scene.tick - state.tick_offset,
+                    tags={"tick": tick},
+                )
+
+            # Send only when the held mask changes (design §3.3). The first
+            # tick sends the neutral mask once, establishing "all released".
+            if command.held_mask != state.last_sent_mask:
+                packet = encode_input(command.held_mask)
+                artifact.write_record(
+                    {
+                        "kind": "controller_packet",
+                        "tick": tick,
+                        "phase": "input",
+                        "bytes_b64": base64.b64encode(packet).decode(),
+                    }
+                )
+                await websocket.send(packet)
+                if native.shutdown_deadline is not None:
+                    return
+                state.last_sent_mask = command.held_mask
+
+            # Meeting chat (accepted only during Voting); sent as it appears.
+            if command.chat is not None:
+                packet = encode_chat(command.chat)
+                artifact.write_record(
+                    {
+                        "kind": "controller_packet",
+                        "tick": tick,
+                        "phase": "chat",
+                        "bytes_b64": base64.b64encode(packet).decode(),
+                    }
+                )
+                await websocket.send(packet)
+                if native.shutdown_deadline is not None:
+                    return
+            if native.shutdown_deadline is not None:
+                return
+            await websocket.send(bytes([0x85]))
+            state.previous_arrival = arrival
+            await asyncio.sleep(0)
+
+    receiver = asyncio.create_task(receive())
+    controller = asyncio.create_task(control())
+    owners = {receiver, controller}
+    try:
+        done, _ = await asyncio.wait(owners, return_when=asyncio.FIRST_COMPLETED)
+        if state.terminal is not None and not receiver.done():
+            await receiver
+    finally:
+        deadline = native.begin_stop(time.monotonic() + 2)
+        for task in owners:
+            if not task.done():
+                task.cancel()
+        settled, pending = await asyncio.wait(
+            owners, timeout=max(0, deadline - time.monotonic())
+        )
+        state.frame_owners_joined = not pending
+        artifact.write_record(
+            {
+                "kind": "controller_frame_outcome",
+                "received_frames": frames.received,
+                "controller_applied_frames": frames.applied,
+                "unapplied_frames": frames.received - frames.applied,
+                "owners_joined": state.frame_owners_joined,
+            }
+        )
+        if not pending:
+            frames.stream.close()
+        else:
+
+            def release_joined_spool(_: asyncio.Task[None]) -> None:
+                if all(task.done() for task in owners):
+                    frames.stream.close()
+
+            for task in pending:
+                task.add_done_callback(release_joined_spool)
+        for task in settled:
+            if not task.cancelled():
+                task.exception()
+    for task in done:
+        task.result()
+    if not state.frame_owners_joined:
+        raise RuntimeError(
+            "Engine frame owners did not join before the original deadline"
+        )
 
 
 def main() -> None:
     # Canonical player-contract var is COWORLD_PLAYER_WS_URL; COGAMES_ENGINE_WS_URL is
     # a legacy alias the runner also sets to the same value. Prefer the canonical one,
     # fall back to the alias (see docs/reference/coworld-platform.md).
-    engine_ws_url = os.environ.get("COWORLD_PLAYER_WS_URL") or os.environ.get("COGAMES_ENGINE_WS_URL")
+    engine_ws_url = os.environ.get("COWORLD_PLAYER_WS_URL") or os.environ.get(
+        "COGAMES_ENGINE_WS_URL"
+    )
     if not engine_ws_url:
-        raise SystemExit("no player websocket URL: set COWORLD_PLAYER_WS_URL "
-                         "(or the legacy COGAMES_ENGINE_WS_URL)")
+        raise SystemExit(
+            "no player websocket URL: set COWORLD_PLAYER_WS_URL "
+            "(or the legacy COGAMES_ENGINE_WS_URL)"
+        )
     asyncio.run(run_bridge(engine_ws_url))
 
 
@@ -370,7 +551,12 @@ def _metrics_enabled() -> bool:
 
 
 def _capture_walkability_enabled() -> bool:
-    return os.environ.get("CREWBORG_CAPTURE_WALKABILITY", "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("CREWBORG_CAPTURE_WALKABILITY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _emit_walkability_capture(walkability: Any) -> None:

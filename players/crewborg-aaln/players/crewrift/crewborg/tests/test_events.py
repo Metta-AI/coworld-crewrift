@@ -7,11 +7,27 @@ counters it emits through an :class:`EventEmitter` bound to list sinks.
 
 from __future__ import annotations
 
+from crewborg_native import NativeProfile
+
 from players.crewrift.crewborg.action import BTN_A, BTN_B, BTN_LEFT
 from players.crewrift.crewborg.events import CrewborgEventTracer
 from players.crewrift.crewborg.strategy.meeting.vote_policy import vote_bar
-from players.crewrift.crewborg.types import ActionState, Belief, BodyEntry, ChatEvent, Command, Intent, PlayerRecord
-from players.player_sdk import EventEmitter, ListMetricsSink, ListTraceSink, ModeDirective, StepContext
+from players.crewrift.crewborg.types import (
+    ActionState,
+    Belief,
+    BodyEntry,
+    ChatEvent,
+    Command,
+    Intent,
+    PlayerRecord,
+)
+from players.player_sdk import (
+    EventEmitter,
+    ListMetricsSink,
+    ListTraceSink,
+    ModeDirective,
+    StepContext,
+)
 
 
 def _spatial(**fields):
@@ -41,7 +57,9 @@ class _Harness:
         active_directive: ModeDirective | None = None,
     ) -> None:
         self.emit.tick += 1
-        directive = active_directive or ModeDirective(mode="test", source="test", reason="unit test")
+        directive = active_directive or ModeDirective(
+            mode="test", source="test", reason="unit test"
+        )
         context: StepContext[Belief, ActionState, Intent, Command] = StepContext(
             tick=self.emit.tick,
             belief=belief if belief is not None else Belief(),
@@ -58,7 +76,9 @@ class _Harness:
         return [event for event in self.trace.events if event.name == name]
 
     def counters(self, name: str) -> list:
-        return [s for s in self.metrics.samples if s.name == name and s.kind == "counter"]
+        return [
+            s for s in self.metrics.samples if s.name == name and s.kind == "counter"
+        ]
 
     def gauges(self, name: str) -> list:
         return [s for s in self.metrics.samples if s.name == name and s.kind == "gauge"]
@@ -97,7 +117,9 @@ def test_role_resolved_emitted_once() -> None:
 def test_body_sighted_once_per_body_with_counter() -> None:
     h = _Harness()
     belief = Belief()
-    belief.bodies[2003] = BodyEntry(object_id=2003, color="green", world_x=110, world_y=100, first_seen_tick=1)
+    belief.bodies[2003] = BodyEntry(
+        object_id=2003, color="green", world_x=110, world_y=100, first_seen_tick=1
+    )
     h.step(belief=belief)
     h.step(belief=belief)  # same body still present: no re-emit
 
@@ -123,14 +145,22 @@ def test_task_completed_on_set_growth() -> None:
 def test_kill_landed_on_cooldown_edge() -> None:
     h = _Harness()
     h.step(belief=Belief(self_role="imposter", last_kill_tick=None))
-    belief = Belief(self_role="imposter", last_kill_tick=12, self_world_x=300, self_world_y=200)
+    belief = Belief(
+        self_role="imposter", last_kill_tick=12, self_world_x=300, self_world_y=200
+    )
     h.step(belief=belief)
     h.step(belief=belief)  # same kill tick: no re-emit
 
     [event] = h.events("domain.kill_landed")
     # Spatially annotated with the (tracked) self fix; no prior kill attempt was
     # observed in this harness, so no strike geometry is folded in.
-    assert event.data == {"world_x": 300, "world_y": 200, "self_x": 300, "self_y": 200, "room_id": None}
+    assert event.data == {
+        "world_x": 300,
+        "world_y": 200,
+        "self_x": 300,
+        "self_y": 200,
+        "room_id": None,
+    }
     assert len(h.counters("domain.kill_landed")) == 1
 
 
@@ -150,7 +180,9 @@ def test_vote_cast_fires_once_per_meeting() -> None:
             current_intent=Intent(kind="vote", target_color="red"),
         ),
     )  # cast
-    h.step(belief=meeting, action_state=ActionState(vote_confirmed=True))  # held: no re-emit
+    h.step(
+        belief=meeting, action_state=ActionState(vote_confirmed=True)
+    )  # held: no re-emit
     # The intent-change reset + re-confirm flap (the production ~64×/episode bug):
     # still the same meeting, so no new event.
     h.step(belief=meeting, action_state=ActionState(vote_confirmed=False))
@@ -163,25 +195,39 @@ def test_vote_cast_fires_once_per_meeting() -> None:
     assert len(h.counters("domain.vote_cast")) == 1
 
     # A NEW meeting (fresh phase_start_tick) casts again.
-    h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=False))
+    h.step(
+        belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=False)
+    )
     next_meeting = Belief(phase="Voting", phase_start_tick=99)
     h.step(belief=next_meeting, action_state=ActionState(vote_confirmed=True))
     assert [e.data["meeting_id"] for e in h.events("domain.vote_cast")] == [10, 99]
-    assert [e.data["intended_target"] for e in h.events("domain.vote_cast")] == ["red", "skip"]
+    assert [e.data["intended_target"] for e in h.events("domain.vote_cast")] == [
+        "red",
+        "skip",
+    ]
     assert len(h.counters("domain.vote_cast")) == 2
 
     # vote_confirmed flapping outside Voting (no meeting) never emits.
-    h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=False))
-    h.step(belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=True))
+    h.step(
+        belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=False)
+    )
+    h.step(
+        belief=Belief(phase="Playing"), action_state=ActionState(vote_confirmed=True)
+    )
     assert len(h.events("domain.vote_cast")) == 2
+
 
 def test_task_started_on_new_target_and_resume_after_interruption() -> None:
     h = _Harness()
     h.step(intent=Intent(kind="complete_task", task_index=4))
     h.step(intent=Intent(kind="complete_task", task_index=4))  # same target: no re-emit
     h.step(intent=Intent(kind="complete_task", task_index=9))  # new target
-    h.step(intent=Intent(kind="flee_from", target_id=1))  # interruption clears the latch
-    h.step(intent=Intent(kind="complete_task", task_index=9))  # resume counts as a new start
+    h.step(
+        intent=Intent(kind="flee_from", target_id=1)
+    )  # interruption clears the latch
+    h.step(
+        intent=Intent(kind="complete_task", task_index=9)
+    )  # resume counts as a new start
 
     started = h.events("domain.task_started")
     assert [e.data["task_index"] for e in started] == [4, 9, 9]
@@ -190,7 +236,9 @@ def test_task_started_on_new_target_and_resume_after_interruption() -> None:
 def test_kill_attempted_requires_the_a_edge_in_the_command() -> None:
     h = _Harness()
     # Navigating toward the target (d-pad held, no A) is not an attempt.
-    h.step(intent=Intent(kind="kill", target_id=1007), command=Command(held_mask=BTN_LEFT))
+    h.step(
+        intent=Intent(kind="kill", target_id=1007), command=Command(held_mask=BTN_LEFT)
+    )
     assert not h.events("domain.kill_attempted")
 
     # The fresh A press is the attempt.
@@ -217,10 +265,20 @@ def test_kill_attempted_carries_geometry_and_kill_landed_inherits_it() -> None:
         self_world_y=100,
     )
     belief.roster["green"] = PlayerRecord(
-        color="green", object_id=1004, world_x=112, world_y=109, last_seen_tick=22, life_status="alive"
+        color="green",
+        object_id=1004,
+        world_x=112,
+        world_y=109,
+        last_seen_tick=22,
+        life_status="alive",
     )
     belief.roster["blue"] = PlayerRecord(
-        color="blue", object_id=1005, world_x=140, world_y=100, last_seen_tick=22, life_status="alive"
+        color="blue",
+        object_id=1005,
+        world_x=140,
+        world_y=100,
+        last_seen_tick=22,
+        life_status="alive",
     )
     belief.recent_frames.append(
         PerceptionFrame(
@@ -264,9 +322,14 @@ def test_kill_attempted_carries_geometry_and_kill_landed_inherits_it() -> None:
 
 def test_report_vent_and_chat_attempts() -> None:
     h = _Harness()
-    h.step(intent=Intent(kind="report", target_id=2003), command=Command(held_mask=BTN_A))
+    h.step(
+        intent=Intent(kind="report", target_id=2003), command=Command(held_mask=BTN_A)
+    )
     h.step(intent=Intent(kind="vent", target_id=0), command=Command(held_mask=BTN_B))
-    h.step(intent=Intent(kind="chat", text="no read, skipping"), command=Command(chat="no read, skipping"))
+    h.step(
+        intent=Intent(kind="chat", text="no read, skipping"),
+        command=Command(chat="no read, skipping"),
+    )
 
     assert h.events("domain.report_attempted")[0].data == _spatial(body_id=2003)
     assert h.events("domain.vent_attempted")
@@ -298,7 +361,9 @@ def test_chat_received_emits_each_meeting_line_once_and_resets_per_meeting() -> 
 
 def test_decision_snapshot_is_debug_only() -> None:
     h = _Harness()
-    h.step(belief=Belief(phase="Playing"), intent=Intent(kind="idle"), command=Command())
+    h.step(
+        belief=Belief(phase="Playing"), intent=Intent(kind="idle"), command=Command()
+    )
 
     assert not h.events("domain.decision_snapshot")
 
@@ -312,7 +377,9 @@ def test_decision_trace_group_enables_compact_decision_snapshot(monkeypatch) -> 
         belief=Belief(phase="Voting"),
         intent=Intent(kind="chat", text="no read, skipping"),
         command=Command(chat="no read, skipping"),
-        active_directive=ModeDirective(mode="attend_meeting", source="strategy", reason="unit"),
+        active_directive=ModeDirective(
+            mode="attend_meeting", source="strategy", reason="unit"
+        ),
     )
 
     [event] = h.events("domain.decision_snapshot")
@@ -322,8 +389,15 @@ def test_decision_trace_group_enables_compact_decision_snapshot(monkeypatch) -> 
     assert event.data["command"] == {"held_mask": 0, "buttons": [], "chat": True}
 
 
-def test_debug_decision_snapshot_includes_visibility_threat_task_and_command_geometry() -> None:
-    from players.crewrift.crewborg.map.types import MapData, MapPoint, MapRect, TaskStation
+def test_debug_decision_snapshot_includes_visibility_threat_task_and_command_geometry() -> (
+    None
+):
+    from players.crewrift.crewborg.map.types import (
+        MapData,
+        MapPoint,
+        MapRect,
+        TaskStation,
+    )
 
     map_data = MapData(
         width=200,
@@ -358,8 +432,12 @@ def test_debug_decision_snapshot_includes_visibility_threat_task_and_command_geo
     h = _Harness(debug=True)
     h.step(
         belief=belief,
-        action_state=ActionState(route=[(100, 100), (110, 100)], route_cursor=1, route_goal=(102, 100)),
-        intent=Intent(kind="complete_task", task_index=0, reason="completing assigned task"),
+        action_state=ActionState(
+            route=[(100, 100), (110, 100)], route_cursor=1, route_goal=(102, 100)
+        ),
+        intent=Intent(
+            kind="complete_task", task_index=0, reason="completing assigned task"
+        ),
         command=Command(held_mask=BTN_LEFT),
         active_directive=ModeDirective(mode="normal", source="strategy", reason="unit"),
     )
@@ -368,7 +446,11 @@ def test_debug_decision_snapshot_includes_visibility_threat_task_and_command_geo
     data = event.data
     assert data["mode"] == "normal"
     assert data["intent"]["kind"] == "complete_task"
-    assert data["command"] == {"held_mask": BTN_LEFT, "buttons": ["left"], "chat": False}
+    assert data["command"] == {
+        "held_mask": BTN_LEFT,
+        "buttons": ["left"],
+        "chat": False,
+    }
     assert data["self"] == {"x": 100, "y": 100}
     assert data["visible_players"][0]["color"] == "red"
     assert data["visible_players"][0]["believed_imposter"] is True
@@ -405,7 +487,9 @@ def test_debug_decision_snapshot_marks_offscreen_last_known_flee_target() -> Non
     h = _Harness(debug=True)
     h.step(
         belief=belief,
-        intent=Intent(kind="flee_from", target_color="red", reason="fleeing believed imposter"),
+        intent=Intent(
+            kind="flee_from", target_color="red", reason="fleeing believed imposter"
+        ),
         command=Command(held_mask=BTN_B),
         active_directive=ModeDirective(mode="flee", source="strategy", reason="unit"),
     )
@@ -442,19 +526,35 @@ def test_player_event_emitted_for_each_newly_opened_interval() -> None:
     h = _Harness()
     belief = Belief()
     record = belief.roster["red"] = PlayerRecord(color="red")
-    record.events.append(PlayerEvent(kind="vent", start_tick=5, end_tick=5, region_index=2))
+    record.events.append(
+        PlayerEvent(kind="vent", start_tick=5, end_tick=5, region_index=2)
+    )
     h.step(belief=belief)
     # Extending the open interval (same list length) emits nothing new...
     record.events[0].end_tick = 9
     h.step(belief=belief)
     # ...a freshly opened interval does.
-    record.events.append(PlayerEvent(kind="near_body", start_tick=10, end_tick=10, target_color="green", min_dist=7))
+    record.events.append(
+        PlayerEvent(
+            kind="near_body",
+            start_tick=10,
+            end_tick=10,
+            target_color="green",
+            min_dist=7,
+        )
+    )
     h.step(belief=belief)
 
     events = h.events("domain.player_event")
-    assert [(e.data["kind"], e.data["color"]) for e in events] == [("vent", "red"), ("near_body", "red")]
+    assert [(e.data["kind"], e.data["color"]) for e in events] == [
+        ("vent", "red"),
+        ("near_body", "red"),
+    ]
     assert events[1].data["min_dist"] == 7
-    assert [s.tags["kind"] for s in h.counters("domain.player_event")] == ["vent", "near_body"]
+    assert [s.tags["kind"] for s in h.counters("domain.player_event")] == [
+        "vent",
+        "near_body",
+    ]
 
 
 def test_player_died_fires_once_on_the_alive_to_dead_edge() -> None:
@@ -469,7 +569,9 @@ def test_player_died_fires_once_on_the_alive_to_dead_edge() -> None:
     h.step(belief=belief)  # still dead: no re-emit
 
     [event] = h.events("domain.player_died")
-    assert event.data == _spatial(color="blue", source="body", death_tick=40, body_xy=[120, 80])
+    assert event.data == _spatial(
+        color="blue", source="body", death_tick=40, body_xy=[120, 80]
+    )
     assert len(h.counters("domain.player_died")) == 1
 
 
@@ -501,7 +603,11 @@ def test_suspicion_snapshot_once_per_meeting_with_ranking_and_vote() -> None:
     h = _Harness()
     belief = _crewmate_belief(phase="Playing")
     red = belief.roster["red"] = PlayerRecord(color="red", life_status="alive")
-    red.events.append(PlayerEvent(kind="near_body", start_tick=3, end_tick=6, target_color="green", min_dist=5))
+    red.events.append(
+        PlayerEvent(
+            kind="near_body", start_tick=3, end_tick=6, target_color="green", min_dist=5
+        )
+    )
     belief.roster["blue"] = PlayerRecord(color="blue", life_status="alive")
     belief.suspicion = {"red": 0.91, "blue": 0.12}
     belief.believed_imposters = {"red"}
@@ -512,14 +618,21 @@ def test_suspicion_snapshot_once_per_meeting_with_ranking_and_vote() -> None:
     h.step(belief=belief)  # still Voting: no re-emit
 
     [snap] = h.events("domain.suspicion_snapshot")
-    assert [r["color"] for r in snap.data["ranking"]] == ["red", "blue"]  # sorted desc by P
+    assert [r["color"] for r in snap.data["ranking"]] == [
+        "red",
+        "blue",
+    ]  # sorted desc by P
     assert snap.data["would_vote"] == "red"
     assert snap.data["would_vote_p"] == 0.91
     # The bar is state-dependent now (vote_policy): 8 declared players but only 2
     # known alive reads as a must-eject endgame, so the bar collapses to 0.
     assert snap.data["vote_bar"] == vote_bar(belief)
     assert snap.data["ranking"][0]["events"][0] == {
-        "kind": "near_body", "dur": 4, "target": "green", "region": None, "min_dist": 5,
+        "kind": "near_body",
+        "dur": 4,
+        "target": "green",
+        "region": None,
+        "min_dist": 5,
     }
 
     # Leaving and re-entering Voting arms a second snapshot.
@@ -577,7 +690,12 @@ def test_kill_ready_changed_on_cooldown_edges_imposter_only() -> None:
     # Imposter: first sight (cooldown) → ready → cooldown each emit one edge.
     imp = Belief(self_role="imposter", self_kill_ready=False)
     h.step(belief=imp)  # first sight: not ready
-    imp2 = Belief(self_role="imposter", self_kill_ready=True, kill_ready_since_tick=10, last_tick=15)
+    imp2 = Belief(
+        self_role="imposter",
+        self_kill_ready=True,
+        kill_ready_since_tick=10,
+        last_tick=15,
+    )
     h.step(belief=imp2)  # edge → ready
     h.step(belief=imp2)  # still ready: no re-emit
     imp3 = Belief(self_role="imposter", self_kill_ready=False, last_kill_tick=20)
@@ -588,7 +706,10 @@ def test_kill_ready_changed_on_cooldown_edges_imposter_only() -> None:
     assert edges[1].data["ready_since_tick"] == 10
     assert edges[1].data["urgency_ticks"] == 5  # last_tick 15 − ready_since 10
     assert edges[2].data["last_kill_tick"] == 20
-    assert {s.tags["ready"] for s in h.counters("domain.kill_ready_changed")} == {"True", "False"}
+    assert {s.tags["ready"] for s in h.counters("domain.kill_ready_changed")} == {
+        "True",
+        "False",
+    }
 
 
 def test_kill_state_debug_tick_imposter_only() -> None:
@@ -599,7 +720,14 @@ def test_kill_state_debug_tick_imposter_only() -> None:
     on = _Harness(debug=True)
     on.step(belief=Belief(self_role="crewmate", self_kill_ready=True))
     assert not on.events("domain.kill_state")  # crewmate: nothing
-    on.step(belief=Belief(self_role="imposter", self_kill_ready=True, kill_ready_since_tick=3, last_tick=8))
+    on.step(
+        belief=Belief(
+            self_role="imposter",
+            self_kill_ready=True,
+            kill_ready_since_tick=3,
+            last_tick=8,
+        )
+    )
     [state] = on.events("domain.kill_state")
     assert state.data["ready"] is True
     assert state.data["urgency_ticks"] == 5
@@ -610,7 +738,10 @@ def test_kill_state_debug_tick_imposter_only() -> None:
 def test_occupancy_substrate_and_seek_target_events_are_lean() -> None:
     import numpy as np
 
-    from players.crewrift.crewborg.agent_tracking import OccupancySnapshot, update_agent_tracking
+    from players.crewrift.crewborg.agent_tracking import (
+        OccupancySnapshot,
+        update_agent_tracking,
+    )
     from players.crewrift.crewborg.map.types import MapData, MapPoint, MapRect
     from players.crewrift.crewborg.nav import build_nav_graph
 
@@ -689,7 +820,14 @@ def test_occupancy_reacquisition_events_are_emitted_once() -> None:
 
 
 def test_viewer_trace_emits_map_and_frame_payloads() -> None:
-    from players.crewrift.crewborg.map.types import MapData, MapPoint, MapRect, Room, TaskStation, Vent
+    from players.crewrift.crewborg.map.types import (
+        MapData,
+        MapPoint,
+        MapRect,
+        Room,
+        TaskStation,
+        Vent,
+    )
 
     map_data = MapData(
         width=320,
@@ -733,7 +871,10 @@ def test_viewer_trace_emits_map_and_frame_payloads() -> None:
 
 
 def test_viewer_trace_emits_occupancy_grid_once() -> None:
-    from players.crewrift.crewborg.agent_tracking import OccupancyCell, OccupancySubstrate
+    from players.crewrift.crewborg.agent_tracking import (
+        OccupancyCell,
+        OccupancySubstrate,
+    )
 
     belief = Belief()
     belief.agent_tracking.substrate = OccupancySubstrate(
@@ -786,7 +927,10 @@ def test_meeting_called_emitted_once_per_meeting_with_attribution() -> None:
     # A later meeting (new phase_start_tick) emits again.
     h.step(belief=Belief(phase="Playing"))
     button_meeting = Belief(
-        phase="MeetingCall", phase_start_tick=300, meeting_called_by="blue", meeting_trigger="button"
+        phase="MeetingCall",
+        phase_start_tick=300,
+        meeting_called_by="blue",
+        meeting_trigger="button",
     )
     h.step(belief=button_meeting)
     assert [e.data["by"] for e in h.events("domain.meeting_called")] == ["red", "blue"]
@@ -816,12 +960,17 @@ def test_spatial_annotation_includes_room_and_survives_meetings() -> None:
         height=300,
         tasks=(),
         vents=(),
-        rooms=(Room(name="Engine", x=0, y=0, w=100, h=100), Room(name="Bridge", x=100, y=0, w=100, h=100)),
+        rooms=(
+            Room(name="Engine", x=0, y=0, w=100, h=100),
+            Room(name="Bridge", x=100, y=0, w=100, h=100),
+        ),
         button=MapRect(x=10, y=10, w=8, h=8),
         home=MapPoint(x=5, y=5),
     )
     h = _Harness()
-    h.step(belief=Belief(phase="Playing", map=map_data, self_world_x=150, self_world_y=50))
+    h.step(
+        belief=Belief(phase="Playing", map=map_data, self_world_x=150, self_world_y=50)
+    )
     [event] = h.events("domain.phase_change")
     assert event.data["self_x"] == 150
     assert event.data["room_id"] == 1  # Bridge
@@ -905,7 +1054,9 @@ def test_tracer_streams_positions_and_episode_info_to_recorder() -> None:
             intent=Intent(kind="idle"),
             command=Command(),
             active_mode_name="idle",
-            active_directive=ModeDirective(mode="idle", source="default", reason="unit"),
+            active_directive=ModeDirective(
+                mode="idle", source="default", reason="unit"
+            ),
             emit=emit,
         )
     )
@@ -927,14 +1078,16 @@ def test_env_flag_enables_debug_dump(monkeypatch) -> None:
     assert tracer._debug is False
 
 
-def test_build_runtime_wires_the_tracer_as_on_step_complete() -> None:
+def test_build_runtime_wires_the_tracer_as_on_step_complete(native_session) -> None:
     from players.crewrift.crewborg import build_runtime
 
-    runtime = build_runtime()
+    runtime = build_runtime(
+        native_session=native_session, policy_profile=NativeProfile(origin="native")
+    )
     assert isinstance(runtime.on_step_complete, CrewborgEventTracer)
 
 
-def test_domain_event_flows_through_a_real_runtime_step() -> None:
+def test_domain_event_flows_through_a_real_runtime_step(native_session) -> None:
     """End-to-end: a real step drives the hook and routes through the trace sink."""
 
     from players.crewrift.crewborg import build_runtime
@@ -943,7 +1096,11 @@ def test_domain_event_flows_through_a_real_runtime_step() -> None:
     from players.crewrift.crewborg.types import Observation
 
     trace = ListTraceSink()
-    runtime = build_runtime(trace_sink=trace)
+    runtime = build_runtime(
+        native_session=native_session,
+        trace_sink=trace,
+        policy_profile=NativeProfile(origin="native"),
+    )
     scene = SceneState()
     scene.apply(w.clear_objects())
     scene.apply(w.define_sprite(50, 1, 1, "STARTING"))  # interstitial text => Lobby

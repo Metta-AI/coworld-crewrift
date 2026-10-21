@@ -10,7 +10,7 @@
 # the build context (so the Dockerfile's `COPY crewborg …` resolves). All inputs are
 # public, so the host needs only Docker — no credentials: the Dockerfile pip-installs the
 # shared SDK from the public coworld-tools repo (players/ subdir) at PLAYERS_SDK_REF and
-# copies the crewborg package; the image CMD launches `python -m crewborg.coworld.policy_player`.
+# copies the crewborg package and shared native module; the image CMD launches `python -m crewborg.coworld.policy_player`.
 #
 # HOW TO EDIT: the version pins live in tools/build/versions.env (one source of truth) —
 # change PLAYERS_SDK_REF there, not here. This script is crewborg-specific by design;

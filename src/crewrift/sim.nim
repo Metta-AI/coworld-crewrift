@@ -360,6 +360,9 @@ type
     closedRoster*: bool
     slots*: seq[PlayerSlotConfig]
 
+  ClosedRosterAllocation* = enum
+    configuredSlotAllocation, archivalArrivalAllocation
+
   Player* = object
     x*, y*: int
     homeX*, homeY*: int
@@ -370,6 +373,7 @@ type
     role*: PlayerRole
     alive*: bool
     connected*: bool
+    admitted*: bool
     disconnectTick*: int
     killCooldown*: int
     joinOrder*: int
@@ -399,6 +403,7 @@ type
 
   SimServer* = object
     config*: GameConfig
+    closedRosterAllocation*: ClosedRosterAllocation
     players*: seq[Player]
     chatMessages*: seq[ChatMessage]
     rewardAccounts*: seq[RewardAccount]
@@ -1622,9 +1627,34 @@ proc effectiveImposterCount*(config: GameConfig, playerCount: int): int =
       config.imposterCount
   min(desired, max(0, playerCount - 1))
 
+proc usesStableClosedRoster*(sim: SimServer): bool =
+  sim.config.closedRoster and
+    sim.closedRosterAllocation == configuredSlotAllocation
+
+proc admittedPlayerCount*(sim: SimServer): int =
+  ## Dead or grace-disconnected admitted seats still belong to the match.
+  for player in sim.players:
+    if player.admitted:
+      inc result
+
+proc lobbyPlayerCount*(sim: SimServer): int =
+  ## Reserved roster entries do not count as physically admitted connections.
+  if sim.usesStableClosedRoster():
+    for player in sim.players:
+      if player.admitted and player.connected:
+        inc result
+  else:
+    result = sim.players.len
+
+proc requiredLobbyPlayers*(sim: SimServer): int =
+  ## Returns the player count required before the lobby can start.
+  if sim.config.closedRoster and sim.config.slots.len > 0:
+    return sim.config.slots.len
+  sim.config.minPlayers
+
 proc lobbyIsStarting*(sim: SimServer): bool =
   ## Returns whether the lobby is in the start countdown.
-  sim.players.len >= sim.config.minPlayers
+  sim.lobbyPlayerCount() >= sim.requiredLobbyPlayers()
 
 proc lobbyStartTicksRemaining*(sim: SimServer): int =
   ## Returns ticks left before the lobby starts the game.
@@ -1681,12 +1711,6 @@ proc taskIdsText(tasks: openArray[int]): string =
     if i > 0:
       result.add ","
     result.add $task
-
-proc requiredLobbyPlayers(sim: SimServer): int =
-  ## Returns the player count required before the lobby can start.
-  if sim.config.closedRoster and sim.config.slots.len > 0:
-    return sim.config.slots.len
-  sim.config.minPlayers
 
 proc logGameEvent(sim: SimServer, text: string) =
   ## Writes one game event to stdout for Docker logs.
@@ -1749,8 +1773,8 @@ proc logLobbyWaiting(sim: var SimServer) =
   ## Logs waiting-for-player state when it changes.
   let
     required = sim.requiredLobbyPlayers()
-    needed = max(0, required - sim.players.len)
-    players = sim.players.len
+    needed = max(0, required - sim.lobbyPlayerCount())
+    players = sim.lobbyPlayerCount()
   if players == sim.lastLobbyPlayersLogged and
       needed == sim.lastLobbyNeededLogged:
     return
@@ -1818,6 +1842,8 @@ proc gameHash*(sim: SimServer): uint64 =
     result.mixHashInt(ord(player.role))
     result.mixHashBool(player.alive)
     result.mixHashBool(player.connected)
+    if sim.usesStableClosedRoster():
+      result.mixHashBool(player.admitted)
     result.mixHashInt(player.disconnectTick)
     result.mixHashInt(player.killCooldown)
     result.mixHashInt(player.joinOrder)
@@ -1915,6 +1941,11 @@ proc playerSlotLimit(config: GameConfig): int =
 
 proc canAddPlayer*(sim: SimServer): bool =
   ## Returns whether the game has room for another player.
+  if sim.usesStableClosedRoster():
+    for player in sim.players:
+      if not player.admitted:
+        return true
+    return false
   sim.players.len < sim.config.playerSlotLimit()
 
 proc playerLimitError(config: GameConfig): string =
@@ -2024,7 +2055,7 @@ proc playerJoinAllowed*(
 proc slotOccupied(sim: SimServer, slotIndex: int): bool =
   ## Returns true when a player already owns a slot.
   for player in sim.players:
-    if player.joinOrder == slotIndex:
+    if player.admitted and player.joinOrder == slotIndex:
       return true
   false
 
@@ -2210,7 +2241,7 @@ proc rewardAccountIndexForSlot(sim: SimServer, slotIndex: int): int =
 proc playerIndexForSlot*(sim: SimServer, slotIndex: int): int =
   ## Returns the live player index for a player slot.
   for i in 0 ..< sim.players.len:
-    if sim.players[i].joinOrder == slotIndex:
+    if sim.players[i].admitted and sim.players[i].joinOrder == slotIndex:
       return i
   -1
 
@@ -2246,13 +2277,25 @@ proc playerResultSlotCount(sim: SimServer): int =
 proc playerAddressOccupied*(sim: SimServer, address: string): bool =
   ## Returns true when a player identity is already connected.
   for player in sim.players:
-    if player.address == address:
+    if player.admitted and player.address == address:
       return true
   false
 
 proc removePlayerAt*(sim: var SimServer, playerIndex: int) =
   ## Removes one live player and keeps index-keyed state aligned.
   if playerIndex < 0 or playerIndex >= sim.players.len:
+    return
+  if sim.usesStableClosedRoster():
+    sim.players[playerIndex].connected = false
+    sim.players[playerIndex].alive = false
+    sim.players[playerIndex].velX = 0
+    sim.players[playerIndex].velY = 0
+    sim.players[playerIndex].carryX = 0
+    sim.players[playerIndex].carryY = 0
+    sim.players[playerIndex].disconnectTick = sim.tickCount
+    if sim.phase != Lobby:
+      # Permanent gameplay removal must not become a reconnect revival.
+      sim.players[playerIndex].admitted = false
     return
   sim.players.delete(playerIndex)
   if playerIndex < sim.shadowCaches.len:
@@ -2289,6 +2332,47 @@ proc lowestOpenSlot(sim: SimServer): int =
       return slotIndex
   -1
 
+proc playerForSlot(sim: SimServer, order: int, address: string): Player =
+  let
+    slot = sim.config.slotConfig(order)
+    spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
+    color =
+      if slot.hasColor:
+        slot.color
+      else:
+        PlayerColors[order mod PlayerColors.len]
+  Player(
+    x: spawn.x,
+    y: spawn.y,
+    homeX: spawn.x,
+    homeY: spawn.y,
+    role: Crewmate,
+    alive: false,
+    connected: false,
+    admitted: false,
+    disconnectTick: -1,
+    killCooldown: sim.config.killCooldownTicks,
+    joinOrder: order,
+    address: address,
+    color: color,
+    lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
+    lastMoveTick: sim.tickCount,
+    activeTask: -1
+  )
+
+proc allocateClosedRoster(sim: var SimServer) =
+  ## Logical seats exist before any socket or welcome; they remain offline.
+  if not sim.usesStableClosedRoster():
+    return
+  for order in 0 ..< sim.config.slots.len:
+    sim.players.add sim.playerForSlot(order, "")
+    sim.shadowCaches.add PlayerShadowMask(
+      valid: false, mask: newSeq[bool](ScreenPixelCount)
+    )
+    for task in sim.tasks.mitems:
+      task.completed.add(false)
+  sim.arrangeHomePositions()
+
 proc addPlayer*(
   sim: var SimServer,
   address: string,
@@ -2316,46 +2400,29 @@ proc addPlayer*(
       "Player slot " & $order & " cannot join before slot " &
         $sim.lowestOpenSlot() & "."
     )
-  let
-    slot = sim.config.slotConfig(order)
-    spawn = sim.homePosition(order, max(sim.players.len + 1, order + 1))
-    color =
-      if slot.hasColor:
-        slot.color
-      else:
-        PlayerColors[order mod PlayerColors.len]
-    accountIndex = sim.ensureRewardAccount(address)
+  let accountIndex = sim.ensureRewardAccount(address)
   sim.bindRewardAccountSlot(accountIndex, order)
   sim.rewardAccounts[accountIndex].hasRole = false
   sim.rewardAccounts[accountIndex].won = false
   sim.rewardAccounts[accountIndex].abandoned = false
-  sim.players.add Player(
-    x: spawn.x,
-    y: spawn.y,
-    homeX: spawn.x,
-    homeY: spawn.y,
-    role: Crewmate,
-    alive: true,
-    connected: true,
-    disconnectTick: -1,
-    killCooldown: sim.config.killCooldownTicks,
-    joinOrder: order,
-    address: address,
-    color: color,
-    lastChatTick: sim.tickCount - sim.config.messageCooldownTicks,
-    lastMoveTick: sim.tickCount,
-    activeTask: -1,
-    reward: sim.rewardAccounts[accountIndex].reward
-  )
-  sim.shadowCaches.add PlayerShadowMask(
-    valid: false,
-    mask: newSeq[bool](ScreenPixelCount)
-  )
+  var player = sim.playerForSlot(order, address)
+  player.alive = true
+  player.connected = true
+  player.admitted = true
+  player.reward = sim.rewardAccounts[accountIndex].reward
+  if sim.usesStableClosedRoster():
+    sim.players[order] = player
+    result = order
+  else:
+    sim.players.add player
+    sim.shadowCaches.add PlayerShadowMask(
+      valid: false, mask: newSeq[bool](ScreenPixelCount)
+    )
+    for task in sim.tasks.mitems:
+      task.completed.add(false)
+    result = sim.players.high
   sim.advanceJoinOrder()
   sim.arrangeHomePositions()
-  for task in sim.tasks.mitems:
-    task.completed.add(false)
-  sim.players.high
 
 proc hasTask*(player: Player, taskIdx: int): bool =
   for t in player.assignedTasks:
@@ -2500,6 +2567,8 @@ proc markPlayerConnected*(sim: var SimServer, playerIndex: int) =
   if playerIndex < 0 or playerIndex >= sim.players.len:
     return
   sim.players[playerIndex].connected = true
+  if sim.phase == Lobby:
+    sim.players[playerIndex].alive = true
   sim.players[playerIndex].disconnectTick = -1
   let index = sim.rewardAccountForPlayer(playerIndex)
   if index >= 0:
@@ -2514,7 +2583,7 @@ proc reconnectPlayerIndex*(
 ): int =
   ## Returns the disconnected player index matching one reconnect request.
   for i, player in sim.players:
-    if player.connected:
+    if not player.admitted or player.connected:
       continue
     if requestedSlot >= 0 and requestedSlot != player.joinOrder:
       continue
@@ -3738,7 +3807,7 @@ proc trackMovementAndStuckPenalty(
 
 proc totalTasksRemaining*(sim: SimServer): int =
   for i in 0 ..< sim.players.len:
-    if sim.players[i].role != Crewmate:
+    if not sim.players[i].admitted or sim.players[i].role != Crewmate:
       continue
     for t in sim.players[i].assignedTasks:
       if t < sim.tasks.len and i < sim.tasks[t].completed.len and
@@ -3809,10 +3878,10 @@ proc shouldAbortFiniteMatch*(sim: SimServer): bool =
   if sim.phase == Lobby:
     if sim.config.closedRoster and sim.config.connectTimeoutTicks > 0:
       return false
-    return sim.startWaitTimer > 0 and sim.players.len < sim.config.minPlayers
+    return sim.startWaitTimer > 0 and sim.lobbyPlayerCount() < sim.config.minPlayers
   sim.phase in {GameInfo, RoleReveal, Playing, MeetingCall, Voting,
     VoteResult} and
-    sim.players.len == 0
+    sim.admittedPlayerCount() == 0
 
 proc checkWinCondition*(sim: var SimServer) {.measure.} =
   var
@@ -3820,6 +3889,8 @@ proc checkWinCondition*(sim: var SimServer) {.measure.} =
     aliveCrewmates = 0
     aliveImposters = 0
   for p in sim.players:
+    if not p.admitted:
+      continue
     if p.role == Imposter:
       hasImposters = true
     if p.alive:
@@ -3827,12 +3898,12 @@ proc checkWinCondition*(sim: var SimServer) {.measure.} =
         inc aliveCrewmates
       else:
         inc aliveImposters
-  if hasImposters and aliveImposters == 0 and sim.players.len > 0:
+  if hasImposters and aliveImposters == 0 and sim.admittedPlayerCount() > 0:
     sim.finishGame(Crewmate)
   elif hasImposters and aliveImposters >= aliveCrewmates and
-      sim.players.len > 0:
+      sim.admittedPlayerCount() > 0:
     sim.finishGame(Imposter)
-  elif sim.allTasksDone() and sim.players.len > 0:
+  elif sim.allTasksDone() and sim.admittedPlayerCount() > 0:
     sim.finishGame(Crewmate)
 
 proc spritePlayerObservationPointShadowed(
@@ -4282,10 +4353,13 @@ proc writeSpritePlayerObservation*(
   else:
     sim.writeSpritePlayerObservationUiPlayers(playerIndex, output)
 
-proc initSimServer*(config: GameConfig): SimServer =
+proc initSimWithAllocation(
+  config: GameConfig, allocation: ClosedRosterAllocation
+): SimServer =
   var resolvedConfig = config
   resolvedConfig.resolveRandomSeed()
   result.config = resolvedConfig
+  result.closedRosterAllocation = allocation
   result.rng = initRand(resolvedConfig.seed)
   loadPalette(clientDataDir() / "pallete.png")
   result.asciiSprites = readTiny5Font()
@@ -4364,6 +4438,15 @@ proc initSimServer*(config: GameConfig): SimServer =
   result.lastLobbyPlayersLogged = -1
   result.lastLobbyNeededLogged = -1
   result.lastLobbySecondsLogged = -1
+  result.allocateClosedRoster()
+
+proc initSimServer*(config: GameConfig): SimServer =
+  ## Ordinary live closed rosters always use immutable configured seat indices.
+  initSimWithAllocation(config, configuredSlotAllocation)
+
+proc initArrivalReplaySim*(config: GameConfig): SimServer =
+  ## Decoder for stored replays written before the configured-seat marker.
+  initSimWithAllocation(config, archivalArrivalAllocation)
 
 proc resetToLobby*(sim: var SimServer) =
   sim.phase = Lobby
@@ -4395,6 +4478,8 @@ proc resetToLobby*(sim: var SimServer) =
     account.hasRole = false
     account.won = false
     account.abandoned = false
+
+  sim.allocateClosedRoster()
 
 proc setLiveConnectedSlots*(sim: var SimServer, slots: openArray[int]) =
   ## Records the slots with a live/accepted /player socket on this tick.
@@ -4454,7 +4539,7 @@ proc checkDisconnectTimeout(sim: var SimServer): bool =
 proc stepLobby(sim: var SimServer) {.measure.} =
   ## Advances the lobby start countdown.
   let required = sim.requiredLobbyPlayers()
-  if sim.players.len < required:
+  if sim.lobbyPlayerCount() < required:
     sim.startWaitTimer = 0
     sim.logLobbyWaiting()
     return

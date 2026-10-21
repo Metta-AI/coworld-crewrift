@@ -1,23 +1,23 @@
 # Crewborg player image — self-contained build for coworld-crewrift.
 #
 # Build context = the player directory `players/crewborg/`, which holds the `crewborg/`
-# package (the policy source). Only the package is copied into the image; the
-# surrounding optimizer toolkit stays out.
+# package and shared `crewborg_native.py` lifecycle owner. Both are copied into
+# the image; the surrounding optimizer toolkit stays out.
 #
-#   docker build -f crewborg/coworld/Dockerfile -t crewborg players/crewborg
+#   docker build -f players/crewborg/crewborg/coworld/Dockerfile -t crewborg players/crewborg
 #   (add --platform=linux/amd64 via buildx; the cluster is amd64)
 #
 # crewborg is the `crewborg` package and imports only `players.player_sdk`
 # from the shared SDK. We install that SDK from the public Metta-AI/coworld-tools
 # monorepo (pinned via PLAYERS_SDK_REF — pass a fixed ref for a reproducible build;
-# `main` is only a fallback) and put the package on PYTHONPATH. We install NO lab
+# the ordinary build uses this fixed ref) and put the package on PYTHONPATH. We install NO lab
 # tooling, and bake NO behavior/experiment env (e.g. CREWBORG_BE_DUMB) — those are
 # set at upload time so the image stays behavior-neutral and reproducible.
 
 # Platform is set by the build invocation (buildx --platform=linux/amd64), not here.
 FROM python:3.12-slim
 
-ARG PLAYERS_SDK_REF=main
+ARG PLAYERS_SDK_REF=3c61631e9806d5a93f04c72c47c859e18cac84b4
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -30,10 +30,10 @@ WORKDIR /app
 # players' base deps). The players repo moved into the coworld-tools monorepo as the
 # `players/` subdirectory; install from its GitHub source tarball at the pinned ref
 # (tarball = no git/submodules or local checkout needed in the build).
-# `[bedrock]` adds boto3 so the meeting LLM can route through AWS Bedrock when the
-# policy is uploaded with `--use-bedrock`; inert otherwise.
 RUN pip install --upgrade pip \
- && pip install "players[bedrock] @ https://github.com/Metta-AI/coworld-tools/archive/${PLAYERS_SDK_REF}.tar.gz#subdirectory=players"
+ && pip install "players @ https://github.com/Metta-AI/coworld-tools/archive/${PLAYERS_SDK_REF}.tar.gz#subdirectory=players"
+
+RUN pip install "httpx==0.28.1"
 
 # Meeting chat NLP (imposter bandwagon, design §10.5): spaCy dependency-parse negation
 # scope over opponents' chat. Loaded lazily in a background thread and gated by
@@ -50,6 +50,7 @@ RUN pip install "spacy>=3.8.0,<3.9.0" click \
 # directory, so the `crewborg/` package is copied directly onto PYTHONPATH (/app).
 # (A `.dockerignore` could later trim tests/docs/viewer from the image.)
 COPY crewborg /app/crewborg
+COPY crewborg_native.py /app/crewborg_native.py
 
 # Reads COWORLD_PLAYER_WS_URL (canonical) / COGAMES_ENGINE_WS_URL (alias), connects,
 # plays one slot, and exits when the episode ends.

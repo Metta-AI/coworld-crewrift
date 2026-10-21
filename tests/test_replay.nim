@@ -13,8 +13,7 @@ proc initReplaySim(data: ReplayData): SimServer =
   let previousDir = getCurrentDir()
   setCurrentDir(GameDir)
   try:
-    let config = data.replayGameConfig()
-    result = initSimServer(config)
+    result = data.initReplaySimulation()
     result.gameEventLoggingEnabled = false
   finally:
     setCurrentDir(previousDir)

@@ -10,8 +10,19 @@ from __future__ import annotations
 import os
 from typing import Protocol
 
-from crewborg.agent_tracking import update_agent_tracking
+from crewborg_native import NativeSession, PolicyProfile
+from players.player_sdk import (
+    AgentRuntime,
+    MetricsSink,
+    ModeDirective,
+    ModeRegistry,
+    Strategy,
+    SynchronousStrategyRunner,
+    TraceSink,
+)
+
 from crewborg.action import resolve_action
+from crewborg.agent_tracking import update_agent_tracking
 from crewborg.events import CrewborgEventTracer
 from crewborg.map import MapData, load_croatoan_map
 from crewborg.modes import (
@@ -31,11 +42,18 @@ from crewborg.strategy import (
     update_social_evidence,
     update_suspicion,
 )
-from crewborg.strategy.commander.llm import build_commander_client_from_env, commander_feature_enabled
-from crewborg.strategy.commander.strategy import CommanderStrategy, apply_commander_inferences
+from crewborg.strategy.commander.llm import (
+    build_commander_client_from_env,
+    commander_feature_enabled,
+)
+from crewborg.strategy.commander.strategy import (
+    CommanderStrategy,
+    apply_commander_inferences,
+)
 from crewborg.strategy.commander.trace import CommanderTrace
 from crewborg.strategy.commander.worker import CommanderWorker
 from crewborg.strategy.meeting import chat_nlp
+from crewborg.strategy.meeting.llm import build_meeting_llm_client_from_env
 from crewborg.types import (
     ActionState,
     Belief,
@@ -46,23 +64,17 @@ from crewborg.types import (
     perceive,
     update_belief,
 )
-from players.player_sdk import (
-    AgentRuntime,
-    MetricsSink,
-    ModeDirective,
-    ModeRegistry,
-    SynchronousStrategyRunner,
-    TraceSink,
-)
 
 __all__ = ["build_runtime"]
 
 
-class _CloseableStrategy(Protocol):
+class _CloseableStrategy(Strategy[Belief, ActionState], Protocol):
     def close(self) -> None: ...
 
 
-class CloseAwareSynchronousStrategyRunner(SynchronousStrategyRunner[Belief, ActionState]):
+class CloseAwareSynchronousStrategyRunner(
+    SynchronousStrategyRunner[Belief, ActionState]
+):
     """Sync runner that also closes the wrapped strategy if it owns resources."""
 
     def __init__(self, strategy: _CloseableStrategy, **kwargs) -> None:
@@ -76,6 +88,8 @@ class CloseAwareSynchronousStrategyRunner(SynchronousStrategyRunner[Belief, Acti
 
 def build_runtime(
     *,
+    native_session: NativeSession,
+    policy_profile: PolicyProfile,
     trace_sink: TraceSink | None = None,
     metrics_sink: MetricsSink | None = None,
     map_data: MapData | None = None,
@@ -109,7 +123,17 @@ def build_runtime(
     registry: ModeRegistry[Belief, ActionState, Intent] = ModeRegistry()
     registry.register(IdleMode)
     registry.register(NormalMode)
-    registry.register(AttendMeetingMode)
+
+    class SessionAttendMeetingMode(AttendMeetingMode):
+        def __init__(self, params=None):
+            super().__init__(
+                params,
+                llm_client=build_meeting_llm_client_from_env(
+                    native_session, policy_profile=policy_profile
+                ),
+            )
+
+    registry.register(SessionAttendMeetingMode)
     registry.register(ReportBodyMode)
     registry.register(AccuseMode)
     registry.register(EvadeMode)
@@ -133,7 +157,13 @@ def build_runtime(
     feature_on = commander_feature_enabled(dict(os.environ))
     commander_strategy = CommanderStrategy(
         RuleBasedStrategy(),
-        CommanderWorker(build_commander_client_from_env, trace=commander_trace),
+        CommanderWorker(
+            lambda: build_commander_client_from_env(
+                native_session, policy_profile=policy_profile
+            ),
+            session=native_session,
+            trace=commander_trace,
+        ),
         feature_enabled=feature_on,
     )
 
@@ -144,7 +174,9 @@ def build_runtime(
         update_belief=fold_belief,
         resolve_action=resolve_action,
         mode_registry=registry,
-        default_directive=ModeDirective(mode="idle", source="default", reason="default idle"),
+        default_directive=ModeDirective(
+            mode="idle", source="default", reason="default idle"
+        ),
         strategy_runner=CloseAwareSynchronousStrategyRunner(
             commander_strategy,
             trace_sink=trace_sink,

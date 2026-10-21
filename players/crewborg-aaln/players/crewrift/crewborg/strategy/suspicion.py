@@ -69,7 +69,12 @@ from players.crewrift.crewborg.strategy.occupancy import (
     players_in_rect,
     rect_visible,
 )
-from players.crewrift.crewborg.types import Belief, PerceptionFrame, PlayerEvent, PlayerRecord
+from players.crewrift.crewborg.types import (
+    Belief,
+    PerceptionFrame,
+    PlayerEvent,
+    PlayerRecord,
+)
 
 # Each evidence type contributes a log-likelihood-ratio, log(P(e|imp)/P(e|crew)), to
 # the posterior. Witnessed kill/vent are definitional near-certainties (a constant).
@@ -361,7 +366,7 @@ def _recompute(belief: Belief) -> None:
     suspicion: dict[str, float] = {}
     believed: set[str] = set()
 
-    for color in set(belief.roster) | belief.confirmed_imposters:
+    for color in sorted(set(belief.roster) | belief.confirmed_imposters):
         record = belief.roster.get(color)
         if record is not None and record.life_status == "dead":
             continue  # the dead are no threat (the confirmation is kept for the record)
@@ -391,7 +396,10 @@ def _hunter_log_lr(belief: Belief, color: str) -> float:
     social terms instead of convicting alone.
     """
 
-    from players.crewrift.crewborg.strategy.hunter import early_button_caller_log_lr, hunter_enabled
+    from players.crewrift.crewborg.strategy.hunter import (
+        early_button_caller_log_lr,
+        hunter_enabled,
+    )
 
     if not hunter_enabled():
         return 0.0
@@ -404,7 +412,7 @@ def top_suspect(belief: Belief) -> str | None:
 
     if not belief.suspicion:
         return None
-    color, p = max(belief.suspicion.items(), key=lambda kv: kv[1])
+    color, p = min(belief.suspicion.items(), key=lambda kv: (-kv[1], kv[0]))
     return color if p >= VOTE_PROBABILITY else None
 
 
